@@ -1,0 +1,14 @@
+[package]
+name = "mineflayer"
+version = "0.1.0"
+edition = "2024"
+description = "The mineflayer bot API, ported to Rust on top of azalea"
+license = "MIT"
+
+[dependencies]
+azalea = "0.16"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+thiserror = "2"
+futures = "0.3"
+regex = "1"
+serde = { version = "1", features = ["derive"] }

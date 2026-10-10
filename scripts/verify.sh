@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# verify.sh — per-unit verification gate for mineflayer-rs.
+# Runs fmt, clippy, tests, and build via bare `cargo`, which resolves the
+# toolchain pinned in rust-toolchain.toml (nightly-2026-10-01). Do NOT switch
+# to `cargo +nightly` — that bypasses the pin and hits the rustc ICE
+# documented there.
+# Prints PASS/FAIL per step; exits nonzero if any step failed.
+set -u
+cd "$(dirname "$0")/.."
+
+failures=0
+
+run_step() {
+    local name="$1"; shift
+    echo "=== $name"
+    if "$@"; then
+        echo "--- $name: PASS"
+    else
+        echo "--- $name: FAIL"
+        failures=$((failures + 1))
+    fi
+}
+
+run_step "fmt"    cargo fmt --check
+run_step "clippy" cargo clippy --all-targets -- -D warnings
+run_step "test"   cargo test
+run_step "build"  cargo build
+
+echo "==="
+if [ "$failures" -eq 0 ]; then
+    echo "verify: PASS"
+    exit 0
+else
+    echo "verify: FAIL ($failures step(s) failed)"
+    exit 1
+fi

@@ -1,2 +1,4 @@
 ref/
 target/
+.live/
+.DS_Store
