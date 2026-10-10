@@ -105,8 +105,7 @@ pub enum BotEvent {
     /// `scoreboardCreated` — a scoreboard objective was added.
     ScoreboardCreated(ScoreBoard),
     /// `scoreboardDeleted` — an objective was removed. Payload is the
-    /// removed board (upstream emits `undefined` here — it deletes before
-    /// emitting; see api-parity.md).
+    /// removed board (upstream emits the same object before deleting).
     ScoreboardDeleted(ScoreBoard),
     /// `scoreboardTitleChanged` — an objective's display name changed.
     ScoreboardTitleChanged(ScoreBoard),
@@ -144,7 +143,8 @@ pub enum BotEvent {
     TeamMemberRemoved(Team),
     /// `bossBarCreated` (undocumented upstream).
     BossBarCreated(BossBar),
-    /// `bossBarDeleted` — payload is the removed bar.
+    /// `bossBarDeleted` — payload is the removed bar (upstream emits the
+    /// same object before deleting).
     BossBarDeleted(BossBar),
     /// `bossBarUpdated` — progress/title/style/flags changed.
     BossBarUpdated(BossBar),
@@ -206,9 +206,12 @@ pub enum BotEvent {
         /// The note pitch (0–24), the block-event action parameter.
         pitch: u8,
     },
-    /// `resourcePack` — the server pushed a resource pack. azalea's
-    /// `AcceptResourcePacksPlugin` auto-accepts every push (see
-    /// [`Bot::deny_resource_pack`]/api-parity.md for the caveat).
+    /// `resourcePack` — the server pushed a resource pack. Only *game-phase*
+    /// pushes produce this event: azalea's `Event::Packet` wraps
+    /// `ClientboundGamePacket`, so config-phase pushes (server.properties /
+    /// proxy packs — the dominant modern path) never reach it. azalea's
+    /// `AcceptResourcePacksPlugin` also auto-accepts every push (see
+    /// [`Bot::deny_resource_pack`]/api-parity.md).
     ResourcePack {
         /// The pack's wire UUID.
         uuid: String,

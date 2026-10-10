@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 
-use azalea::{BlockPos, entity::HumanoidArm, inventory::ItemStack};
+use azalea::{BlockPos, entity::HumanoidArm, inventory::ItemStack, registry::builtin::ItemKind};
 use mineflayer::{Bot, BotEvent};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
@@ -120,11 +120,14 @@ async fn misc_domains() {
     );
 
     // creative: a survival-mode server silently ignores creative slot
-    // packets; the echo wait times out and resolves ok
-    bot.creative()
-        .set_inventory_slot(9, ItemStack::Empty)
-        .await
-        .expect("creative slot set should resolve");
+    // packets; the echo wait rejects after 5s like upstream. (The item
+    // must be non-empty — Empty into an empty slot is a no-op.)
+    assert!(matches!(
+        bot.creative()
+            .set_inventory_slot(9, ItemStack::new(ItemKind::Apple, 1))
+            .await,
+        Err(mineflayer::Error::Timeout)
+    ));
 
     bot.quit(None);
     let end = wait_for(

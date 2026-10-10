@@ -399,10 +399,10 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `Team.displayName(member)` | misc | `team.member_display_name(member) -> FormattedText` | ported | prefix + colored member + suffix |
 | `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog}` | ported | `entity_uuid` is the bar uuid string; `flags` folded into the three bools |
 | `event('scoreboardCreated')` | misc | `BotEvent::ScoreboardCreated(sb)` | ported | — |
-| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | diverges | carries the removed board; upstream emits `undefined` (deletes before emitting) |
+| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | ported | carries the removed board — upstream emits before deleting, same object |
 | `event('scoreboardTitleChanged')` | misc | `BotEvent::ScoreboardTitleChanged(sb)` | ported | — |
 | `event('scoreUpdated')` | misc | `BotEvent::ScoreUpdated{scoreboard,item}` | ported | — |
-| `event('scoreRemoved')` | misc | `BotEvent::ScoreRemoved{scoreboard,item}` | ported | — |
+| `event('scoreRemoved')` | misc | `BotEvent::ScoreRemoved{scoreboard,item}` | diverges | no scan-all-boards fallback when the named objective is absent, and nothing emitted when the owner is missing (upstream emits `undefined` item) |
 | `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,scoreboard}` | ported | — |
 | `event('teamCreated')` | misc | `BotEvent::TeamCreated(team)` | ported | — |
 | `event('teamRemoved')` | misc | `BotEvent::TeamRemoved(team)` | diverges | carries the removed team; upstream emits `undefined` |
@@ -410,9 +410,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('teamMemberAdded')` | misc | `BotEvent::TeamMemberAdded(team)` | ported | team payload, like upstream |
 | `event('teamMemberRemoved')` | misc | `BotEvent::TeamMemberRemoved(team)` | ported | team payload, like upstream |
 | `event('bossBarCreated')` | misc | `BotEvent::BossBarCreated(bar)` | ported | — |
-| `event('bossBarDeleted')` | misc | `BotEvent::BossBarDeleted(bar)` | diverges | carries the removed bar; upstream emits `undefined` |
+| `event('bossBarDeleted')` | misc | `BotEvent::BossBarDeleted(bar)` | ported | carries the removed bar — upstream emits before deleting, same object |
 | `event('bossBarUpdated')` | misc | `BotEvent::BossBarUpdated(bar)` | ported | — |
-| `event('title')` | misc | `BotEvent::Title{text,kind}` | ported | `TitleKind::{Title,Subtitle}` |
+| `event('title')` | misc | `BotEvent::Title{text,kind}` | diverges | `text` renders the whole component tree; upstream `parseTitle` returns only the root `.text` |
 | `event('title_times')` | misc | `BotEvent::TitleTimes{fade_in,stay,fade_out}` | ported | — |
 | `event('title_clear')` | misc | `BotEvent::TitleClear` | ported | — |
 
@@ -420,12 +420,12 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `Particle fields` | misc | `particle.{id,name,position,offset,long_distance_render,count,movement_speed,data}` | ported | plus typed `data` (azalea particle enum) |
+| `Particle fields` | misc | `particle.{id,name,position,offset,long_distance_render,count,movement_speed,data}` | diverges | `id` is the u32 registry id (upstream's `particle.id` is the type string); `name` is `minecraft:*` vs upstream's mcdata name |
 | `Particle.fromNetwork(packet)` | misc | `Particle::from_packet(&packet)` | ported | — |
 | `event('particle')` | misc | `BotEvent::ParticleSpawned(Particle)` | ported | — |
 | `event('soundEffectHeard')` | misc | `BotEvent::SoundHeard{name,pos,volume,pitch}` | ported | entity sounds resolve to entity position |
 | `event('hardcodedSoundEffectHeard')` | misc | `BotEvent::HardcodedSound{id,category,pos,volume,pitch}` | diverges | never emitted — azalea's registry Holder always resolves a name |
-| `event('noteHeard')` | misc | `BotEvent::NoteHeard{block,instrument,pitch}` | ported | `block` is `BlockPos`; `instrument` is the `Instrument` enum |
+| `event('noteHeard')` | misc | `BotEvent::NoteHeard{block,instrument,pitch}` | diverges | decoded from packet action id/param; upstream re-reads the block's metadata and skips when the block is unloaded — slight over-emission |
 
 ## Time / weather / game state
 
@@ -500,7 +500,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | ported | merge via `Settings { field, ..bot.settings() }`; rejects view_distance == 0 |
 | `bot.settings.chat` | misc | `bot.settings().chat_visibility` | ported | `ChatVisibility` enum |
 | `bot.settings.colorsEnabled` | misc | `bot.settings().chat_colors` | ported | — |
-| `bot.settings.viewDistance` | misc | `bot.settings().view_distance` | ported | chunks; azalea default is 8, upstream `normal` is 10 |
+| `bot.settings.viewDistance` | misc | `bot.settings().view_distance` | diverges | chunks; azalea default is 8, upstream default `'far'` is 12 |
 | `bot.settings.difficulty` | misc | `bot.settings().difficulty` | ported | client-side store, default 2 |
 | `bot.settings.skinParts` | misc | `bot.settings().model_customization` | ported | `ModelCustomization` flag struct |
 | `bot.settings.enableTextFiltering` | misc | `bot.settings().text_filtering_enabled` | ported | — |
@@ -512,15 +512,15 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | ported | sends Accepted+SuccessfullyLoaded for the latest push |
-| `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | diverges | azalea's built-in `AcceptResourcePacksPlugin` auto-accepts on arrival, so a later denial usually has no effect |
-| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid,url,hash,required}` | ported | decoded from `resource_pack_push` |
+| `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | diverges | only game-phase pushes are tracked (config-phase pushes — server.properties/proxy packs — never emit the event or populate state); azalea also auto-accepts every push |
+| `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | diverges | only game-phase pushes are tracked; azalea's built-in `AcceptResourcePacksPlugin` auto-accepts on arrival, so a later denial usually has no effect |
+| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid,url,hash,required}` | diverges | game-phase `resource_pack_push` only — config-phase pushes (server.properties/proxy packs, the dominant modern path) never reach `Event::Packet` |
 
 ## Creative mode (bot.creative)
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | ported | waits for container_set_slot echo; 400ms timeout resolves ok |
+| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | ported | waits for `container_set_slot` echo; rejects after 5s like upstream |
 | `bot.creative.clearSlot(slot)` | inventory | `bot.creative().clear_slot(slot).await` | ported | — |
 | `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | ported | — |
 | `bot.creative.flyTo(dest)` | inventory | `bot.creative().fly_to(Vec3).await` | ported | straight-line 0.5-block steps per 50ms |

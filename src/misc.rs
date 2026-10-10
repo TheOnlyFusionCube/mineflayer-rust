@@ -777,9 +777,8 @@ pub struct Creative {
 impl Creative {
     /// `bot.creative.setInventorySlot(slot, item)` — the
     /// `s_set_creative_mode_slot` packet, then a wait for the server's
-    /// `container_set_slot` echo like upstream (a mismatch is a rejection).
-    /// A timeout resolves as success — the stats-round-trip wait upstream
-    /// uses has the same semantics.
+    /// `container_set_slot` echo like upstream (a mismatch is a rejection,
+    /// and upstream rejects after 5s with no echo).
     ///
     /// Upstream asserts `0 <= slot <= 44`; slots are unsigned here.
     pub async fn set_inventory_slot(&self, slot: u16, item: ItemStack) -> Result<()> {
@@ -836,9 +835,9 @@ impl Creative {
                 }
             }
         };
-        match tokio::time::timeout(Duration::from_millis(400), wait).await {
+        match tokio::time::timeout(Duration::from_secs(5), wait).await {
             Ok(result) => result,
-            Err(_) => Ok(()),
+            Err(_) => Err(Error::Timeout),
         }
     }
 
