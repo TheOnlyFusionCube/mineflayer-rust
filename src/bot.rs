@@ -20,7 +20,10 @@ use azalea::{
 };
 use tokio::sync::{broadcast, watch};
 
-use crate::{Error, Result, bridge};
+use crate::{
+    Error, Result, bridge,
+    chat::{ChatPatternMatch, ChatShared, MessagePosition},
+};
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
@@ -42,6 +45,9 @@ pub struct Bot {
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
+    /// Chat-domain state shared with the bridge (pattern registry, tablist
+    /// header/footer, `tab_complete` correlation) — see `chat::ChatShared`.
+    pub(crate) chat: Arc<Mutex<ChatShared>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -74,8 +80,9 @@ pub enum BotEvent {
     /// `error` — a non-fatal error was surfaced (currently: connection
     /// failures before login).
     Error(String),
-    /// `chat` — a chat packet arrived. Richer `message`/`whisper`/pattern
-    /// events land with the chat unit.
+    /// `chat` — a chat packet arrived (raw payload; the derived
+    /// `Message`/`MessageStr`/`Whisper`/`ChatPattern` family follows it in
+    /// emission order).
     Chat(azalea::chat::ChatPacket),
     /// `physicsTick` — a game tick elapsed while the world was loaded.
     Tick,
@@ -117,6 +124,42 @@ pub enum BotEvent {
     /// `abilities` — the server sent new player abilities; the payload is
     /// what the `PlayerAbilities` component now holds.
     Abilities(azalea::entity::PlayerAbilities),
+    /// `whisper` — an incoming whisper addressed to the bot
+    /// (`ChatPacket::is_whisper` heuristic; upstream derives this event
+    /// from its deprecated default chat patterns instead).
+    Whisper(azalea::chat::ChatPacket),
+    /// `message` — any incoming message (chat, system, or game_info
+    /// position). The upstream `sender` UUID is on the packet
+    /// (`sender_uuid()`); upstream's `verified` flag has no azalea analog.
+    Message {
+        /// The packet the message arrived in.
+        packet: azalea::chat::ChatPacket,
+        /// Where the message was displayed.
+        position: MessagePosition,
+    },
+    /// `messagestr` — the plain-text form of `message` (the string that
+    /// chat patterns and `await_message` match on). `packet` carries
+    /// upstream's `originalMsg` argument.
+    MessageStr {
+        /// The rendered message text.
+        message: String,
+        /// Where the message was displayed.
+        position: MessagePosition,
+        /// The packet the message arrived in.
+        packet: azalea::chat::ChatPacket,
+    },
+    /// `actionBar` — game_info/overlay text, from mc26's dedicated
+    /// `c_set_action_bar_text` packet or an overlay system-chat packet.
+    ActionBar(azalea::FormattedText),
+    /// `chat:{name}` — a registered chat pattern (set) completed;
+    /// `name` is the pattern name, `matches` mirrors upstream's payload.
+    ChatPattern {
+        /// The pattern's registered name (the `chat:{name}` suffix).
+        name: String,
+        /// Whole matched messages, or per-pattern capture groups when the
+        /// pattern was added with `parse: true`.
+        matches: ChatPatternMatch,
+    },
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -295,6 +338,7 @@ impl BotBuilder {
 
         let (events, _) = broadcast::channel(256);
         let quit_reason = Arc::new(Mutex::new(None));
+        let chat = Arc::new(Mutex::new(ChatShared::default()));
         let (alive, alive_rx) = watch::channel(());
         bridge::spawn(
             client.clone(),
@@ -303,6 +347,7 @@ impl BotBuilder {
             view_distance,
             quit_reason.clone(),
             alive_rx,
+            chat.clone(),
         );
 
         Ok(Bot {
@@ -310,6 +355,7 @@ impl BotBuilder {
             events,
             quit_reason,
             _alive: alive,
+            chat,
         })
     }
 }
@@ -334,6 +380,7 @@ impl Bot {
             events,
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
+            chat: Arc::new(Mutex::new(ChatShared::default())),
         }
     }
 

@@ -26,3 +26,8 @@ pub mod world;
 pub use bot::{Auth, Bot, BotBuilder, BotEvent};
 pub use error::{Error, Result};
 pub use movement::{Control, ControlState, PhysicsSettings};
+
+pub use chat::{
+    ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
+    MessagePosition, TabList,
+};

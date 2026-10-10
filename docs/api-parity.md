@@ -109,23 +109,23 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.chat(message)` | chat | `bot.chat(&str) -> Result<()>` | ported | /-prefixed -> command; long-message splitting is the chat unit's |
-| `bot.whisper(user, msg)` | chat | `bot.whisper(&str, &str)` | pending | /tell shortcut |
-| `bot.chatAddPattern(...) (dep)` | chat | `deprecated alias` | pending | deprecated upstream; skip or alias |
-| `bot.addChatPattern(name, re, opts)` | chat | `bot.add_chat_pattern(name, Regex, opts) -> usize` | pending | — |
-| `bot.addChatPatternSet(name, res, opts)` | chat | `bot.add_chat_pattern_set(name, &[Regex], opts) -> usize` | pending | — |
-| `bot.removeChatPattern(name\|id)` | chat | `bot.remove_chat_pattern(key)` | pending | — |
-| `bot.awaitMessage(...args)` | chat | `bot.await_message(...) -> impl Future` | pending | string/regex args |
-| `bot.tabComplete(str, ...)` | chat | `bot.tab_complete(&str, ...) -> Result<Vec<String>>` | pending | c_command_suggestions dropped by azalea; packet bridge |
-| `bot.chatPatterns` | chat | `bot.chat_patterns() -> &[ChatPattern]` | pending | — |
-| `bot.tablist` | chat | `bot.tablist() -> (header, footer)` | pending | c_tab_list dropped by azalea; packet bridge |
-| `event('chat')` | chat | `BotEvent::Chat(azalea::chat::ChatPacket)` | ported | raw packet payload now; pattern-matched events are the chat unit's |
-| `event('whisper')` | chat | `BotEvent::Whisper{...}` | pending | same shape as chat |
-| `event('actionBar')` | chat | `BotEvent::ActionBar{..}` | pending | packet bridge: c_set_action_bar_text |
-| `event('message')` | chat | `BotEvent::Message{..}` | pending | — |
-| `event('messagestr')` | chat | `BotEvent::MessageStr{..}` | pending | — |
-| `event('unmatchedMessage')` | chat | `BotEvent::UnmatchedMessage{..}` | pending | typed-only upstream, not emitted |
-| `event('chat:{name}')` | chat | `BotEvent::ChatPattern{name, matches}` | pending | dynamic per pattern name |
+| `bot.chat(message)` | chat | `bot.chat(&str) -> Result<()>` | ported | /-prefixed -> command; >256 split like upstream (newline-aware, header counts) |
+| `bot.whisper(user, msg)` | chat | `bot.whisper(&str, &str) -> Result<()>` | ported | `/tell user ` header counts against the 256 limit; upstream uses /tell only (no /msg fallback) |
+| `bot.chatAddPattern(...) (dep)` | chat | `n/a` | wontfix | deprecated upstream alias of addChatPattern; use `add_chat_pattern` |
+| `bot.addChatPattern(name, re, opts)` | chat | `bot.add_chat_pattern(&str, Regex, ChatPatternOpts) -> usize` | ported | `opts{repeat=true,parse=false}`; upstream `deprecated` opt skipped (covered by BotEvent::Whisper) |
+| `bot.addChatPatternSet(name, res, opts)` | chat | `bot.add_chat_pattern_set(&str, Vec<Regex>, ChatPatternOpts) -> usize` | diverges | sequential pattern matching ported; returns the real id — upstream's set return is off-by-one vs its removal key |
+| `bot.removeChatPattern(name\|id)` | chat | `bot.remove_chat_pattern(impl Into<ChatPatternKey>)` | ported | `ChatPatternKey::{Id,Name}`; name removes all sets with it |
+| `bot.awaitMessage(...args)` | chat | `bot.await_message(impl IntoIterator<Item = impl Into<MessageMatcher>>) -> Result<String>` | diverges | `MessageMatcher::{Exact,OneOf,Regex}` vs JS arg coercion; resolves messagestr; 20s default timeout; no trailing-timeout arg |
+| `bot.tabComplete(str, ...)` | chat | `bot.tab_complete(&str) -> Result<Vec<String>>` | diverges | s_command_suggestion via write_packet + id-correlated reply registry (azalea drops c_command_suggestions); assumeCommand/sendBlockInSight have no mc26 wire fields — dropped; include `/` in text for command completion |
+| `bot.chatPatterns` | chat | `bot.chat_patterns() -> Vec<ChatPattern>` | diverges | owned snapshot, not a live view; fields `{id,name,patterns,repeat,parse}` vs upstream `{pattern,type,description}` |
+| `bot.tablist` | chat | `bot.tablist() -> TabList` | ported | `TabList{header,footer: FormattedText}`; bridge stores c_tab_list (dropped by azalea) |
+| `event('chat')` | chat | `BotEvent::Chat(azalea::chat::ChatPacket)` | diverges | raw packet for every incoming chat (upstream 'chat' fires only via the legacy default pattern); derived family: Message/MessageStr/Whisper/ChatPattern |
+| `event('whisper')` | chat | `BotEvent::Whisper(ChatPacket)` | ported | `ChatPacket::is_whisper` (signed incoming-whisper key + legacy text shapes) vs upstream's deprecated default patterns |
+| `event('actionBar')` | chat | `BotEvent::ActionBar(FormattedText)` | ported | from c_set_action_bar_text and overlay system-chat (azalea drops the packet; bridge decodes) |
+| `event('message')` | chat | `BotEvent::Message{packet, position}` | diverges | sender UUID via `packet.sender_uuid()` (no `verified` flag — azalea doesn't verify signatures); disguised chat counts as 'chat' position |
+| `event('messagestr')` | chat | `BotEvent::MessageStr{message, position, packet}` | ported | `packet.message().to_string()` render; drives patterns + await_message like upstream |
+| `event('unmatchedMessage')` | chat | `n/a` | wontfix | typed-only upstream, never emitted |
+| `event('chat:{name}')` | chat | `BotEvent::ChatPattern{name, matches}` | ported | `matches: ChatPatternMatch::{Messages,Groups}` — capture groups when `parse` |
 
 ## World / blocks
 

@@ -27,3 +27,8 @@ required-features = ["live"]
 name = "live_movement"
 path = "tests/live/movement.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live-chat"
+path = "tests/live/chat.rs"
+required-features = ["live"]
