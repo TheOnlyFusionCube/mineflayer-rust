@@ -84,7 +84,7 @@ async fn movement() {
     assert!(bot.control_state(Control::Forward));
     assert!(bot.control_state(Control::Jump));
     assert!(bot.jump_queued());
-    assert_eq!(bot.control_states().forward, true);
+    assert!(bot.control_states().forward);
     collect_until(
         &mut rx,
         Duration::from_secs(3),

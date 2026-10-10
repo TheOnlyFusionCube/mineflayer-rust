@@ -699,15 +699,21 @@ impl Bot {
     /// a cap on that result rather than driving an independent raycast.
     /// Default upstream: 3.5.
     pub fn entity_at_cursor(&self, max_distance: f64) -> Option<azalea::EntityRef> {
-        let hit = self.client.get_component::<HitResultComponent>()?;
-        let HitResult::Entity(hit) = &**hit else {
-            return None;
+        // copy the hit out and drop the component guard — eye_pos /
+        // entity_ref_for re-lock the ECS and nested reads deadlock behind
+        // a queued writer
+        let (target, location) = {
+            let hit = self.client.get_component::<HitResultComponent>()?;
+            let HitResult::Entity(hit) = &**hit else {
+                return None;
+            };
+            (hit.entity, hit.location)
         };
         let eye = self.eye_pos()?;
-        if hit.location.distance_to(eye) > max_distance {
+        if location.distance_to(eye) > max_distance {
             return None;
         }
-        Some(self.client.entity_ref_for(hit.entity))
+        Some(self.client.entity_ref_for(target))
     }
 
     /// `bot.blockAtEntityCursor(entity, maxDistance, matcher)` — ray from

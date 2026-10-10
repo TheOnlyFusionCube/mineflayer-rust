@@ -766,9 +766,11 @@ impl Bot {
     /// `c_set_equipment` (azalea drops that packet). Empty for entities that
     /// never sent equipment.
     pub fn equipment(&self, entity: &EntityRef) -> HashMap<EquipmentSlot, ItemStack> {
-        entity
-            .get_component::<MinecraftEntityId>()
-            .and_then(|id| self.entities.read().unwrap().equipment.get(&id).cloned())
+        // resolve the id before touching the tracker — holding the
+        // component guard across the tracker read inverts the bridge's
+        // (tracker-write → ecs-read) lock order and deadlocks
+        let id = entity.get_component::<MinecraftEntityId>().map(|id| *id);
+        id.and_then(|id| self.entities.read().unwrap().equipment.get(&id).cloned())
             .unwrap_or_default()
     }
 
@@ -786,10 +788,13 @@ impl Bot {
     pub fn attack(&self, entity: &EntityRef, swing: bool) {
         if swing {
             self.client.attack(entity.id());
-        } else if let Some(entity_id) = entity.get_component::<MinecraftEntityId>() {
-            self.client.write_packet(ServerboundAttack {
-                entity_id: *entity_id,
-            });
+        } else {
+            // copy the id out and drop the component guard — write_packet
+            // locks the ECS and a read guard held across it deadlocks
+            let entity_id = entity.get_component::<MinecraftEntityId>().map(|id| *id);
+            if let Some(entity_id) = entity_id {
+                self.client.write_packet(ServerboundAttack { entity_id });
+            }
         }
     }
 
@@ -879,10 +884,14 @@ impl Bot {
             return Err(Error::Operation("already elytra flying".to_string()));
         }
         let physics = me.get_component::<Physics>().ok_or(Error::NotConnected)?;
-        if physics.on_ground() {
+        // extract before the later get_component calls — the guard holds an
+        // ECS read lock and nested reads deadlock behind a queued writer
+        let (on_ground, in_water) = (physics.on_ground(), physics.is_in_water());
+        drop(physics);
+        if on_ground {
             return Err(Error::Operation("unable to fly from ground".to_string()));
         }
-        if physics.is_in_water() {
+        if in_water {
             return Err(Error::Operation(
                 "unable to elytra fly while in water".to_string(),
             ));
