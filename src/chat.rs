@@ -255,7 +255,11 @@ impl ChatPatterns {
         let matched: Vec<usize> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.patterns[e.position].is_match(message))
+            .filter(|(_, e)| {
+                e.patterns
+                    .get(e.position)
+                    .is_some_and(|re| re.is_match(message))
+            })
             .map(|(&id, _)| id)
             .collect();
         let mut events = Vec::new();
@@ -718,6 +722,20 @@ mod tests {
         assert_eq!(p.list().len(), 1);
         p.remove(&ChatPatternKey::Name("x".to_string()));
         assert!(p.list().is_empty());
+    }
+
+    #[test]
+    fn empty_pattern_set_never_matches() {
+        // an empty set must not panic the bridge-side matcher
+        let mut shared = ChatShared::default();
+        shared.add_pattern("empty", vec![], ChatPatternOpts::default());
+        let events = shared.message_events(&ChatPacket::new("anything"));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, BotEvent::ChatPattern { .. }))
+        );
+        assert_eq!(shared.list_patterns().len(), 1);
     }
 
     #[test]
