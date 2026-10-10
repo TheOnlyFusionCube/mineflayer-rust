@@ -16,9 +16,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `createBot(options)` | module | `Bot::builder() -> BotBuilder; BotBuilder::connect() -> Result<Bot>` | ported | builder style; connect runs bot on a dedicated thread (azalea LocalSet) |
 | `Location` | module | `struct Location` | pending | legacy helper; azalea BlockPos/Vec3 cover most uses |
 | `Painting` | module | `struct Painting` | pending | entity metadata wrapper |
-| `ScoreBoard (class)` | module | `struct ScoreBoard` | pending | see Scoreboard section |
-| `BossBar (class)` | module | `struct BossBar` | pending | see Scoreboard section |
-| `Particle (class)` | module | `struct Particle` | pending | see Particles section |
+| `ScoreBoard (class)` | module | `mineflayer::ScoreBoard` | ported | see Scoreboard section |
+| `BossBar (class)` | module | `mineflayer::BossBar` | ported | see Scoreboard section |
+| `Particle (class)` | module | `mineflayer::Particle` | ported | see Particles section |
 | `testedVersions` | module | `n/a` | diverges | azalea tracks latest MC only (standing order 11); no multi-version list |
 | `latestSupportedVersion` | module | `const MC_VERSION: &str` | diverges | single-version: equals the azalea-targeted MC version |
 | `oldestSupportedVersion` | module | `n/a` | diverges | single-version: same as latest |
@@ -31,8 +31,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `mcdata.biomes` | module | `azalea::registry::data / builtin::Biome` | pending | — |
 | `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
 | `Vec3 (prismarine)` | module | `azalea::Vec3 (re-export)` | pending | azalea_core::position::Vec3 |
-| `Entity (prismarine-entity)` | module | `azalea::EntityRef` + `EntityExt` trait | ported | handle + trait carries the extra reads |
-| `Block (prismarine-block)` | module | `own Block type over azalea BlockState+pos` | pending | incl. blockEntity, getSignText() |
+| `Entity (prismarine-entity)` | module | `azalea::EntityRef` + `EntityExt` trait | diverges | EntityExt covers look/velocity/onGround/username/skin only; uuid/kind/attributes/effects/metadata need raw `get_component`, equipment needs `bot.equipment` |
+| `Block (prismarine-block)` | module | `mineflayer::world::Block { pos, state, world }` | diverges | name/kind/state_id/bounding_box/diggable/property/behavior ported; no blockEntity/getSignText (azalea has no block-entity storage — U11) |
 | `Biome (prismarine-biome)` | module | `azalea::registry Biome` | pending | — |
 | `Item (prismarine-item)` | module | `azalea_inventory::ItemStack wrapper` | pending | — |
 | `Recipe (prismarine-recipe)` | module | `own Recipe type` | pending | — |
@@ -109,53 +109,53 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.chat(message)` | chat | `bot.chat(&str) -> Result<()>` | ported | /-prefixed -> command; long-message splitting is the chat unit's |
-| `bot.whisper(user, msg)` | chat | `bot.whisper(&str, &str)` | pending | /tell shortcut |
-| `bot.chatAddPattern(...) (dep)` | chat | `deprecated alias` | pending | deprecated upstream; skip or alias |
-| `bot.addChatPattern(name, re, opts)` | chat | `bot.add_chat_pattern(name, Regex, opts) -> usize` | pending | — |
-| `bot.addChatPatternSet(name, res, opts)` | chat | `bot.add_chat_pattern_set(name, &[Regex], opts) -> usize` | pending | — |
-| `bot.removeChatPattern(name\|id)` | chat | `bot.remove_chat_pattern(key)` | pending | — |
-| `bot.awaitMessage(...args)` | chat | `bot.await_message(...) -> impl Future` | pending | string/regex args |
-| `bot.tabComplete(str, ...)` | chat | `bot.tab_complete(&str, ...) -> Result<Vec<String>>` | pending | c_command_suggestions dropped by azalea; packet bridge |
-| `bot.chatPatterns` | chat | `bot.chat_patterns() -> &[ChatPattern]` | pending | — |
-| `bot.tablist` | chat | `bot.tablist() -> (header, footer)` | pending | c_tab_list dropped by azalea; packet bridge |
-| `event('chat')` | chat | `BotEvent::Chat(azalea::chat::ChatPacket)` | ported | raw packet payload now; pattern-matched events are the chat unit's |
-| `event('whisper')` | chat | `BotEvent::Whisper{...}` | pending | same shape as chat |
-| `event('actionBar')` | chat | `BotEvent::ActionBar{..}` | pending | packet bridge: c_set_action_bar_text |
-| `event('message')` | chat | `BotEvent::Message{..}` | pending | — |
-| `event('messagestr')` | chat | `BotEvent::MessageStr{..}` | pending | — |
-| `event('unmatchedMessage')` | chat | `BotEvent::UnmatchedMessage{..}` | pending | typed-only upstream, not emitted |
-| `event('chat:{name}')` | chat | `BotEvent::ChatPattern{name, matches}` | pending | dynamic per pattern name |
+| `bot.chat(message)` | chat | `bot.chat(&str) -> Result<()>` | ported | /-prefixed -> command; >256 split like upstream (newline-aware, header counts) |
+| `bot.whisper(user, msg)` | chat | `bot.whisper(&str, &str) -> Result<()>` | ported | `/tell user ` header counts against the 256 limit; upstream uses /tell only (no /msg fallback) |
+| `bot.chatAddPattern(...) (dep)` | chat | `n/a` | wontfix | deprecated upstream alias of addChatPattern; use `add_chat_pattern` |
+| `bot.addChatPattern(name, re, opts)` | chat | `bot.add_chat_pattern(&str, Regex, ChatPatternOpts) -> usize` | ported | `opts{repeat=true,parse=false}`; upstream `deprecated` opt skipped (covered by BotEvent::Whisper) |
+| `bot.addChatPatternSet(name, res, opts)` | chat | `bot.add_chat_pattern_set(&str, Vec<Regex>, ChatPatternOpts) -> usize` | diverges | sequential pattern matching ported; returns the real id — upstream's set return is off-by-one vs its removal key |
+| `bot.removeChatPattern(name\|id)` | chat | `bot.remove_chat_pattern(impl Into<ChatPatternKey>)` | ported | `ChatPatternKey::{Id,Name}`; name removes all sets with it |
+| `bot.awaitMessage(...args)` | chat | `bot.await_message(impl IntoIterator<Item = impl Into<MessageMatcher>>) -> Result<String>` | diverges | `MessageMatcher::{Exact,OneOf,Regex}` vs JS arg coercion; resolves messagestr; 20s default timeout; no trailing-timeout arg |
+| `bot.tabComplete(str, ...)` | chat | `bot.tab_complete(&str) -> Result<Vec<String>>` | diverges | s_command_suggestion via write_packet + id-correlated reply registry (azalea drops c_command_suggestions); assumeCommand/sendBlockInSight have no mc26 wire fields — dropped; include `/` in text for command completion |
+| `bot.chatPatterns` | chat | `bot.chat_patterns() -> Vec<ChatPattern>` | diverges | owned snapshot, not a live view; fields `{id,name,patterns,repeat,parse}` vs upstream `{pattern,type,description}` |
+| `bot.tablist` | chat | `bot.tablist() -> TabList` | ported | `TabList{header,footer: FormattedText}`; bridge stores c_tab_list (dropped by azalea) |
+| `event('chat')` | chat | `BotEvent::Chat(azalea::chat::ChatPacket)` | diverges | raw packet for every incoming chat (upstream 'chat' fires only via the legacy default pattern); derived family: Message/MessageStr/Whisper/ChatPattern |
+| `event('whisper')` | chat | `BotEvent::Whisper(ChatPacket)` | ported | `ChatPacket::is_whisper` (signed incoming-whisper key + legacy text shapes) vs upstream's deprecated default patterns |
+| `event('actionBar')` | chat | `BotEvent::ActionBar(FormattedText)` | ported | from c_set_action_bar_text and overlay system-chat (azalea drops the packet; bridge decodes) |
+| `event('message')` | chat | `BotEvent::Message{packet, position}` | diverges | sender UUID via `packet.sender_uuid()` (no `verified` flag — azalea doesn't verify signatures); disguised chat counts as 'chat' position |
+| `event('messagestr')` | chat | `BotEvent::MessageStr{message, position, packet}` | ported | `packet.message().to_string()` render; drives patterns + await_message like upstream |
+| `event('unmatchedMessage')` | chat | `n/a` | wontfix | typed-only upstream, never emitted |
+| `event('chat:{name}')` | chat | `BotEvent::ChatPattern{name, matches}` | ported | `matches: ChatPatternMatch::{Messages,Groups}` — capture groups when `parse` |
 
 ## World / blocks
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.blockAt(point)` | world | `bot.block_at(pos) -> Option<Block>` | pending | — |
+| `bot.blockAt(point)` | world | `bot.block_at(pos) -> Option<Block>` | ported | None when the chunk isn't loaded |
 | `bot.waitForChunksToLoad()` | world | `bot.wait_for_chunks_to_load() -> Result<()>` | ported | resolves when the 5×5 chunk area around the bot is loaded; 10s timeout |
-| `bot.blockInSight() (dep)` | world | `deprecated -> block_at_cursor` | pending | — |
-| `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(..) -> Option<Block>` | pending | azalea hit_result() |
-| `bot.entityAtCursor(maxDist)` | world | `bot.entity_at_cursor(..) -> Option<EntityRef>` | pending | — |
-| `bot.blockAtEntityCursor(e, max, m)` | world | `bot.block_at_entity_cursor(..)` | pending | — |
-| `bot.canSeeBlock(block)` | world | `bot.can_see_block(&block) -> bool` | pending | — |
-| `bot.findBlocks(options)` | world | `bot.find_blocks(opts) -> Vec<BlockPos>` | pending | closest-first sort |
-| `bot.findBlock(options)` | world | `bot.find_block(opts) -> Option<Block>` | pending | — |
-| `bot.updateSign(block, text, back)` | world | `bot.update_sign(..)` | pending | azalea lacks block-entity storage; packet bridge |
-| `bot.world` | world | `bot.world() -> WorldRef` | pending | prismarine-world analog over azalea World |
-| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | pending | azalea logs+drops default-spawn-position packet; deferred to U3 |
-| `bot._updateBlockState (internal)` | world | `pub(crate) helpers — internal` | pending | chunk block-state write |
-| `bot._getBlockAtEyeLevel (internal)` | world | `pub(crate) helpers — internal` | pending | ray/eye-height block lookup |
-| `event('blockUpdate')` | world | `BotEvent::BlockUpdate{old,new}` | pending | tier-2 packet bridge (QueuedServerBlockUpdates is internal) |
-| `event('blockUpdate:(x,y,z)')` | world | `bot.world().on_block_update(pos, cb)?` | pending | per-position filter; maybe wontfix -> subscribe+filter |
+| `bot.blockInSight() (dep)` | world | `bot.block_in_sight() -> Option<Block>` | ported | `#[deprecated]`; = block_at_cursor(80) |
+| `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(max_distance, matcher) -> Option<Block>` | ported | own DDA raycast — upstream WorldSync.raycast semantics: matcher accepts on voxel entry, no-matcher clips collision shapes (block.shapes); max default 256 |
+| `bot.entityAtCursor(maxDist)` | world | `bot.entity_at_cursor(max_distance) -> Option<EntityRef>` | diverges | uses azalea's cached crosshair HitResult (pick-plugin range); max_distance only caps the result |
+| `bot.blockAtEntityCursor(e, max, m)` | world | `bot.block_at_entity_cursor(&entity, max_distance, matcher) -> Option<Block>` | diverges | uses eye height, upstream uses entity.height |
+| `bot.canSeeBlock(block)` | world | `bot.can_see_block(&block) -> bool` | ported | eye->center ray, range = distance to corner; matcher = collision-shape clip OR voxel entry into target (upstream blocks.js match) |
+| `bot.findBlocks(options)` | world | `bot.find_blocks(FindBlocksOpts) -> Vec<BlockPos>` | ported | euclid closest-first; defaults max_distance=16, count=1; chunk-layer early exit |
+| `bot.findBlock(options)` | world | `bot.find_block(FindBlocksOpts) -> Option<Block>` | ported | — |
+| `bot.updateSign(block, text, back)` | world | `bot.update_sign(&block, text, back) -> Result<()>` | diverges | write-only: sends s_sign_update (front/back); sign text unreadable (no block-entity storage — U11) |
+| `bot.world` | world | `bot.world() -> Option<WorldRef>` | diverges | WorldRef wraps the client (parking_lot lock type isn't nameable); get_block_state/block_at/raycast/find_blocks/set_block_state |
+| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | ported | c_set_default_spawn_position decoded in packet bridge |
+| `bot._updateBlockState (internal)` | world | `n/a` | wontfix | azalea applies block updates to the world itself |
+| `bot._getBlockAtEyeLevel (internal)` | world | `n/a` | wontfix | internal helper; eye raycasts go through `block_at_cursor` |
+| `event('blockUpdate')` | world | `BotEvent::BlockUpdate { old, new }` | ported | c_block_update + c_section_blocks_update decoded; old=None when chunk unloaded |
+| `event('blockUpdate:(x,y,z)')` | world | `match` on `BotEvent::BlockUpdate`'s `new.pos` | diverges | no per-position emitter; subscribers filter |
 | `event('blockPlaced')` | world | `BotEvent::BlockPlaced{old,new}` | pending | bot's own placements |
-| `event('blockEntityData')` | world | `BotEvent::BlockEntityData{..}` | pending | packet bridge; azalea drops block-entity data |
-| `event('signOpen')` | world | `BotEvent::SignOpen{block}` | pending | c_open_sign_editor packet |
+| `event('blockEntityData')` | world | `BotEvent::BlockEntityData(ClientboundBlockEntityData)` | ported | whole packet forwarded (pos + kind + NBT) |
+| `event('signOpen')` | world | `BotEvent::SignOpen { block, is_front_text }` | ported | c_open_sign_editor decoded |
 | `event('chunkColumnLoad')` | world | `BotEvent::ChunkColumnLoad(ChunkPos)` | ported | azalea Event::ReceiveChunk |
-| `event('chunkColumnUnload')` | world | `BotEvent::ChunkUnload(ChunkPos)` | pending | c_forget_level_chunk packet |
-| `event('pistonMove')` | world | `BotEvent::PistonMove{..}` | pending | c_piston_event via packet bridge |
-| `event('chestLidMove')` | world | `BotEvent::ChestLidMove{..}` | pending | c_block_event via packet bridge |
-| `event('blockBreakProgressObserved')` | world | `BotEvent::BlockBreakProgress{block,stage,entity}` | pending | — |
-| `event('blockBreakProgressEnd')` | world | `BotEvent::BlockBreakEnd{block,entity}` | pending | — |
+| `event('chunkColumnUnload')` | world | `BotEvent::ChunkUnload(ChunkPos)` | ported | c_forget_level_chunk decoded |
+| `event('pistonMove')` | world | `BotEvent::PistonMove { block, is_pulling, direction }` | ported | c_block_event; direction is the raw facing byte like upstream |
+| `event('chestLidMove')` | world | `BotEvent::ChestLidMove { block, open_count, second }` | ported | c_block_event + openCountByPos dedup port |
+| `event('blockBreakProgressObserved')` | world | `BotEvent::BlockBreakProgress { block, stage, entity }` | ported | c_block_destruction stage<=9; entity via entity_by_minecraft_id |
+| `event('blockBreakProgressEnd')` | world | `BotEvent::BlockBreakEnd { block, entity }` | ported | c_block_destruction stage>9 |
 
 ## Entities / players / combat
 
@@ -236,26 +236,26 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.setControlState(c, state)` | movement | `bot.set_control_state(Control, bool)` | pending | — |
-| `bot.getControlState(c)` | movement | `bot.control_state(Control) -> bool` | pending | — |
-| `bot.clearControlStates()` | movement | `bot.clear_control_states()` | pending | — |
-| `bot.look(yaw, pitch, force?)` | movement | `bot.look(yaw, pitch).await` | pending | yaw CCW rad from east |
-| `bot.lookAt(point, force?)` | movement | `bot.look_at(vec3).await` | pending | azalea Client::look_at |
+| `bot.setControlState(c, state)` | movement | `bot.set_control_state(Control, bool)` | ported | writes PhysicsState/Jumping components directly (Client::walk/sprint would clobber other inputs); silent no-op pre-spawn. Divergence: opposing keys collapse (fwd+back -> none, releasing one doesn't resume) since WalkDirection can't hold contradictory pairs |
+| `bot.getControlState(c)` | movement | `bot.control_state(Control) -> bool` | ported | reads azalea components — reflects pathfinder movement too |
+| `bot.clearControlStates()` | movement | `bot.clear_control_states()` | ported | — |
+| `bot.look(yaw, pitch, force?)` | movement | `bot.look(yaw, pitch, force).await` | ported | radians, upstream convention; resolves after the tick carrying the rotation (upstream eases at yaw/pitchSpeed, azalea snaps); force skips the wait |
+| `bot.lookAt(point, force?)` | movement | `bot.look_at(vec3, force).await` | ported | eye-height + upstream atan2 trig -> look() |
 | `bot.waitForTicks(n)` | movement | `bot.wait_for_ticks(n) -> Result<()>` | ported | azalea wait_ticks + upstream's n*50ms+5s timeout |
-| `bot._replyOnNextTick(reply)` | movement | `pub(crate) helper` | pending | internal upstream |
-| `bot.controlState` | movement | `bot.control_states() -> ControlState` | pending | forward/back/left/right/jump/sprint/sneak |
-| `bot.physics` | movement | `bot.physics() -> PhysicsSettings` | pending | editable prismarine-physics knobs -> azalea physics where exposed |
-| `bot.physicsEnabled` | movement | `bot.physics_enabled() -> bool` | pending | — |
-| `bot.jumpQueued (undoc)` | movement | `bot.jump_queued() -> bool` | pending | — |
-| `bot.jumpTicks (undoc)` | movement | `bot.jump_ticks() -> u32` | pending | — |
-| `bot.abilities` | movement | `bot.abilities() -> Abilities` | pending | PlayerAbilities component |
-| `event('move')` | movement | `BotEvent::Move{old_pos}` | pending | — |
-| `event('forcedMove')` | movement | `BotEvent::ForcedMove` | pending | server teleport/spawn |
-| `event('mount')` | movement | `BotEvent::Mounted{vehicle}` | ported | c_set_passengers diff (entity unit) |
-| `event('dismount')` | movement | `BotEvent::Dismounted{vehicle}` | ported | c_set_passengers diff + vehicle-gone (entity unit) |
+| `bot._replyOnNextTick(reply)` | movement | — | wontfix | internal upstream plumbing; azalea handles teleport acks itself, no reply queue needed |
+| `bot.controlState` | movement | `bot.control_states() -> ControlState` | ported | snapshot struct (not a live get/set proxy); mutate via set_control_state |
+| `bot.physics` | movement | `bot.physics() -> PhysicsSettings` | diverges | read-only struct of vanilla constants; upstream's knobs are mutable, azalea physics has no mutation seam |
+| `bot.physicsEnabled` | movement | `bot.physics_enabled() -> bool` | diverges | always true; azalea physics runs unconditionally |
+| `bot.jumpQueued (undoc)` | movement | `bot.jump_queued() -> bool` | diverges | reads held Jumping input; upstream's flag is a queued one-shot cleared per tick |
+| `bot.jumpTicks (undoc)` | movement | — | wontfix | autojump cooldown; azalea intentionally implements no autojump |
+| `bot.abilities` | movement | `bot.abilities() -> PlayerAbilities` | ported | PlayerAbilities component, default before first packet |
+| `event('move')` | movement | `BotEvent::Move{old_pos}` | ported | per-tick Position/LookDirection diff in bridge = upstream's per-sent-packet signal |
+| `event('forcedMove')` | movement | `BotEvent::ForcedMove` | ported | on ClientboundPlayerPosition packet (teleport/spawn) |
+| `event('mount')` | movement | `BotEvent::Mounted{vehicle: Option<EntityRef>}` | ported | c_set_passengers diff in the entity tracker (single decoder; azalea tracks no vehicle component) |
+| `event('dismount')` | movement | `BotEvent::Dismounted{vehicle: Option<EntityRef>}` | ported | c_set_passengers diff + vehicle-despawn path (entity tracker) |
 | `event('physicsTick')` | movement | `BotEvent::Tick` | ported | azalea Event::Tick |
 | `event('physicTick') (dep)` | movement | `alias of physicsTick` | ported | deprecated; same BotEvent::Tick |
-| `event('abilities')` | movement | `BotEvent::Abilities(abilities)` | pending | — |
+| `event('abilities')` | movement | `BotEvent::Abilities(abilities)` | ported | on ClientboundPlayerAbilities packet |
 
 ## Inventory / containers / windows
 
@@ -381,81 +381,81 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.scoreboards` | misc | `bot.scoreboards() -> &Map<name,ScoreBoard>` | pending | reset each login; packet bridge |
-| `bot.scoreboard` | misc | `bot.scoreboard() -> &Map<slot,ScoreBoard>` | pending | display slots incl. aliases |
-| `bot.teams` | misc | `bot.teams() -> &Map<name,Team>` | pending | — |
-| `bot.teamMap` | misc | `bot.team_map() -> &Map<member,Team>` | pending | — |
-| `bot.bossBars (undoc)` | misc | `bot.boss_bars() -> &[BossBar]` | pending | — |
-| `ScoreBoard.name` | misc | `scoreboard.name()` | pending | — |
-| `ScoreBoard.title` | misc | `scoreboard.title()` | pending | — |
-| `ScoreBoard.itemsMap` | misc | `scoreboard.items_map()` | pending | — |
-| `ScoreBoard.items` | misc | `scoreboard.items() -> sorted` | pending | — |
-| `ScoreBoard.setTitle(t)` | misc | `scoreboard.set_title(t)` | pending | client-side view mutation |
-| `ScoreBoard.add(name,value)` | misc | `scoreboard.add(..)` | pending | — |
-| `ScoreBoard.remove(name)` | misc | `scoreboard.remove(..)` | pending | — |
-| `Team fields` | misc | `team.{name,friendly_fire,nametag_visibility,collision_rule,color,prefix,suffix,members}` | pending | c_set_player_team data |
-| `Team.parseMessage` | misc | `team.parse_message(..)` | pending | — |
-| `Team.add / remove / update` | misc | `team.add/remove/update(..)` | pending | — |
-| `Team.displayName(member)` | misc | `team.display_name(member) -> FormattedText` | pending | — |
-| `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog,flags}` | pending | c_boss_event |
-| `event('scoreboardCreated')` | misc | `BotEvent::ScoreboardCreated(sb)` | pending | — |
-| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | pending | — |
-| `event('scoreboardTitleChanged')` | misc | `BotEvent::ScoreboardTitleChanged(sb)` | pending | — |
-| `event('scoreUpdated')` | misc | `BotEvent::ScoreUpdated{sb,item}` | pending | — |
-| `event('scoreRemoved')` | misc | `BotEvent::ScoreRemoved{sb,item}` | pending | — |
-| `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,sb}` | pending | — |
-| `event('teamCreated')` | misc | `BotEvent::TeamCreated(team)` | pending | — |
-| `event('teamRemoved')` | misc | `BotEvent::TeamRemoved(team)` | pending | — |
-| `event('teamUpdated')` | misc | `BotEvent::TeamUpdated(team)` | pending | — |
-| `event('teamMemberAdded')` | misc | `BotEvent::TeamMemberAdded(team)` | pending | — |
-| `event('teamMemberRemoved')` | misc | `BotEvent::TeamMemberRemoved(team)` | pending | — |
-| `event('bossBarCreated')` | misc | `BotEvent::BossBarCreated(bar)` | pending | — |
-| `event('bossBarDeleted')` | misc | `BotEvent::BossBarDeleted(bar)` | pending | — |
-| `event('bossBarUpdated')` | misc | `BotEvent::BossBarUpdated(bar)` | pending | — |
-| `event('title')` | misc | `BotEvent::Title{text,kind}` | pending | — |
-| `event('title_times')` | misc | `BotEvent::TitleTimes{fade_in,stay,fade_out}` | pending | — |
-| `event('title_clear')` | misc | `BotEvent::TitleClear` | pending | — |
+| `bot.scoreboards` | misc | `bot.scoreboards() -> HashMap<String,ScoreBoard>` | ported | cloned snapshot; reset each login |
+| `bot.scoreboard` | misc | `bot.scoreboard(ScoreboardSlot) -> Option<ScoreBoard>` | diverges | slot-enum accessor instead of a slot-keyed map |
+| `bot.teams` | misc | `bot.teams() -> HashMap<String,Team>` | ported | cloned snapshot |
+| `bot.teamMap` | misc | `bot.team_map() -> HashMap<String,Team>` | ported | cloned snapshot |
+| `bot.bossBars (undoc)` | misc | `bot.boss_bars() -> Vec<BossBar>` | ported | — |
+| `ScoreBoard.name` | misc | `scoreboard.name` (field) | ported | — |
+| `ScoreBoard.title` | misc | `scoreboard.title` (field) | ported | `FormattedText`, not pre-rendered |
+| `ScoreBoard.itemsMap` | misc | `scoreboard.items_map() -> &HashMap` | ported | — |
+| `ScoreBoard.items` | misc | `scoreboard.items() -> Vec<&ScoreItem>` | ported | name-sorted like upstream |
+| `ScoreBoard.setTitle(t)` | misc | `scoreboard.set_title(FormattedText)` | ported | client-side only, like upstream |
+| `ScoreBoard.add(name,value)` | misc | `scoreboard.add(name, value)` | ported | — |
+| `ScoreBoard.remove(name)` | misc | `scoreboard.remove(&str)` | ported | — |
+| `Team fields` | misc | `team.{name,display_name,friendly_fire,see_friendly_invisibles,nametag_visibility,collision_rule,color,prefix,suffix,members}` | ported | color is `ChatFormatting` (Reset = none) |
+| `Team.parseMessage` | misc | `n/a` | diverges | upstream internal helper; packet reducer decodes directly |
+| `Team.add / remove / update` | misc | `n/a` | diverges | upstream internal helpers; state mutates via packets only |
+| `Team.displayName(member)` | misc | `team.member_display_name(member) -> FormattedText` | ported | prefix + colored member + suffix |
+| `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog}` | ported | `entity_uuid` is the bar uuid string; `flags` folded into the three bools |
+| `event('scoreboardCreated')` | misc | `BotEvent::ScoreboardCreated(sb)` | ported | — |
+| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | ported | carries the removed board — upstream emits before deleting, same object |
+| `event('scoreboardTitleChanged')` | misc | `BotEvent::ScoreboardTitleChanged(sb)` | ported | — |
+| `event('scoreUpdated')` | misc | `BotEvent::ScoreUpdated{scoreboard,item}` | ported | — |
+| `event('scoreRemoved')` | misc | `BotEvent::ScoreRemoved{scoreboard,item}` | diverges | no scan-all-boards fallback when the named objective is absent, and nothing emitted when the owner is missing (upstream emits `undefined` item) |
+| `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,scoreboard}` | ported | — |
+| `event('teamCreated')` | misc | `BotEvent::TeamCreated(team)` | ported | — |
+| `event('teamRemoved')` | misc | `BotEvent::TeamRemoved(team)` | diverges | carries the removed team; upstream emits `undefined` |
+| `event('teamUpdated')` | misc | `BotEvent::TeamUpdated(team)` | ported | — |
+| `event('teamMemberAdded')` | misc | `BotEvent::TeamMemberAdded(team)` | ported | team payload, like upstream |
+| `event('teamMemberRemoved')` | misc | `BotEvent::TeamMemberRemoved(team)` | ported | team payload, like upstream |
+| `event('bossBarCreated')` | misc | `BotEvent::BossBarCreated(bar)` | ported | — |
+| `event('bossBarDeleted')` | misc | `BotEvent::BossBarDeleted(bar)` | ported | carries the removed bar — upstream emits before deleting, same object |
+| `event('bossBarUpdated')` | misc | `BotEvent::BossBarUpdated(bar)` | ported | — |
+| `event('title')` | misc | `BotEvent::Title{text,kind}` | diverges | `text` renders the whole component tree; upstream `parseTitle` returns only the root `.text` |
+| `event('title_times')` | misc | `BotEvent::TitleTimes{fade_in,stay,fade_out}` | ported | — |
+| `event('title_clear')` | misc | `BotEvent::TitleClear` | ported | — |
 
 ## Particles / sound
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `Particle fields` | misc | `particle.{id,name,position,offset,long_distance_render,count,movement_speed}` | pending | c_level_particles |
-| `Particle.fromNetwork(packet)` | misc | `Particle::from_packet(..)` | pending | — |
-| `event('particle')` | misc | `BotEvent::ParticleSpawned(particle)` | pending | — |
-| `event('soundEffectHeard')` | misc | `BotEvent::SoundHeard{name,pos,vol,pitch}` | pending | — |
-| `event('hardcodedSoundEffectHeard')` | misc | `BotEvent::HardcodedSound{id,category,pos,vol,pitch}` | pending | — |
-| `event('noteHeard')` | misc | `BotEvent::NoteHeard{block,instrument,pitch}` | pending | — |
+| `Particle fields` | misc | `particle.{id,name,position,offset,long_distance_render,count,movement_speed,data}` | diverges | `id` is the u32 registry id (upstream's `particle.id` is the type string); `name` is `minecraft:*` vs upstream's mcdata name |
+| `Particle.fromNetwork(packet)` | misc | `Particle::from_packet(&packet)` | ported | — |
+| `event('particle')` | misc | `BotEvent::ParticleSpawned(Particle)` | ported | — |
+| `event('soundEffectHeard')` | misc | `BotEvent::SoundHeard{name,pos,volume,pitch}` | ported | entity sounds resolve to entity position |
+| `event('hardcodedSoundEffectHeard')` | misc | `BotEvent::HardcodedSound{id,category,pos,volume,pitch}` | diverges | never emitted — azalea's registry Holder always resolves a name |
+| `event('noteHeard')` | misc | `BotEvent::NoteHeard{block,instrument,pitch}` | diverges | decoded from packet action id/param; upstream re-reads the block's metadata and skips when the block is unloaded — slight over-emission |
 
 ## Time / weather / game state
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.time.doDaylightCycle` | state | `bot.time().do_daylight_cycle()` | pending | — |
-| `bot.time.bigTime` | state | `bot.time().big_time() -> u64` | pending | — |
-| `bot.time.time` | state | `bot.time().time()` | pending | — |
-| `bot.time.timeOfDay` | state | `bot.time().time_of_day()` | pending | — |
-| `bot.time.day` | state | `bot.time().day()` | pending | — |
-| `bot.time.isDay` | state | `bot.time().is_day()` | pending | — |
-| `bot.time.moonPhase` | state | `bot.time().moon_phase()` | pending | — |
-| `bot.time.bigAge` | state | `bot.time().big_age()` | pending | — |
-| `bot.time.age` | state | `bot.time().age()` | pending | — |
-| `bot.isRaining` | state | `bot.is_raining() -> bool` | pending | c_level_event bridge; azalea drops it |
-| `bot.rainState` | state | `bot.rain_state() -> f32` | pending | — |
-| `bot.thunderState` | state | `bot.thunder_state() -> f32` | pending | — |
-| `bot.game.levelType` | state | `bot.game().level_type()` | pending | — |
+| `bot.time.doDaylightCycle` | state | `bot.time()?.do_daylight_cycle` | ported | `bot.time() -> Option<Time>`; None until first c_set_time |
+| `bot.time.bigTime` | state | `bot.time()?.big_time` | ported | u64 — no BigInt/Number split needed |
+| `bot.time.time` | state | `bot.time()?.time` | ported | — |
+| `bot.time.timeOfDay` | state | `bot.time()?.time_of_day` | ported | — |
+| `bot.time.day` | state | `bot.time()?.day` | ported | — |
+| `bot.time.isDay` | state | `bot.time()?.is_day` | ported | — |
+| `bot.time.moonPhase` | state | `bot.time()?.moon_phase` | ported | — |
+| `bot.time.bigAge` | state | `bot.time()?.big_age` | ported | — |
+| `bot.time.age` | state | `bot.time()?.age` | ported | — |
+| `bot.isRaining` | state | `bot.is_raining() -> bool` | ported | c_game_event decoded (weather is a game event, not level event) |
+| `bot.rainState` | state | `bot.rain_state() -> f32` | ported | — |
+| `bot.thunderState` | state | `bot.thunder_state() -> f32` | ported | — |
+| `bot.game.levelType` | state | `bot.game().level_type` | ported | "flat"/"default" from is_flat on login+respawn |
 | `bot.game.dimension` | state | `bot.dimension() -> Option<WorldName>` | ported | top-level `bot.dimension()`; `bot.game()` facade deferred |
-| `bot.game.difficulty` | state | `bot.game().difficulty()` | pending | — |
+| `bot.game.difficulty` | state | `bot.game().difficulty` | ported | c_change_difficulty decoded |
 | `bot.game.gameMode` | state | `bot.game_mode() -> Option<GameMode>` | ported | top-level `bot.game_mode()`; `bot.game()` facade deferred |
-| `bot.game.hardcore` | state | `bot.game().hardcore()` | pending | — |
-| `bot.game.maxPlayers` | state | `bot.game().max_players()` | pending | — |
-| `bot.game.serverBrand` | state | `bot.game().server_brand()` | pending | — |
-| `bot.game.minY` | state | `bot.game().min_y()` | pending | — |
-| `bot.game.height` | state | `bot.game().height()` | pending | — |
-| `event('time')` | state | `BotEvent::Time` | pending | — |
-| `event('rain')` | state | `BotEvent::Rain` | pending | — |
-| `event('weatherUpdate')` | state | `BotEvent::WeatherUpdate` | pending | — |
-| `event('game')` | state | `BotEvent::GameStateChanged` | pending | — |
+| `bot.game.hardcore` | state | `bot.game().hardcore` | ported | from c_login |
+| `bot.game.maxPlayers` | state | `bot.game().max_players` | ported | from c_login |
+| `bot.game.serverBrand` | state | `bot.game().server_brand` | diverges | vanilla sends minecraft:brand in *configuration* phase — unreachable via Event::Packet (game packets only); stays None |
+| `bot.game.minY` | state | `bot.game().min_y` | ported | world.chunks.min_y() |
+| `bot.game.height` | state | `bot.game().height` | ported | world.chunks.height() |
+| `event('time')` | state | `BotEvent::Time` | ported | per c_set_time; clocks also tick forward one tick per Tick like vanilla |
+| `event('rain')` | state | `BotEvent::Rain` | ported | emitted when is_raining flips |
+| `event('weatherUpdate')` | state | `BotEvent::WeatherUpdate` | ported | rain/thunder level changes |
+| `event('game')` | state | `BotEvent::GameStateChanged` | ported | login, respawn, gamemode change, spawn-position update |
 
 ## Health / food / experience / oxygen
 
@@ -469,63 +469,63 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.experience.level` | state | `bot.experience() -> Experience { level, .. }` | ported | azalea Experience component |
 | `bot.experience.points` | state | `bot.experience() -> Experience { total, .. }` | ported | named `total` in azalea |
 | `bot.experience.progress` | state | `bot.experience() -> Experience { progress, .. }` | ported | azalea Experience component |
-| `event('health')` | state | `BotEvent::Health` | pending | component diff |
+| `event('health')` | state | `BotEvent::Health` | ported | emitted per `set_health` packet |
 | `event('death')` | state | `BotEvent::Death` | ported | azalea Event::Death (payload packet dropped) |
-| `event('breath')` | state | `BotEvent::Breath` | pending | — |
-| `event('experience')` | state | `BotEvent::Experience` | pending | — |
-| `event('spawnReset')` | state | `BotEvent::SpawnReset` | pending | bed spawn invalidated |
+| `event('breath')` | state | `BotEvent::Breath` | ported | AirSupply tick diff |
+| `event('experience')` | state | `BotEvent::Experience` | ported | emitted per `set_experience` packet |
+| `event('spawnReset')` | state | `BotEvent::SpawnReset` | ported | `game_event` NoRespawnBlockAvailable |
 
 ## Bed / sleep
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.sleep(bedBlock)` | misc | `bot.sleep(block).await` | pending | block_interact on bed + timing |
-| `bot.wake()` | misc | `bot.wake().await` | pending | — |
-| `bot.isABed(bedBlock)` | misc | `bot.is_a_bed(block) -> bool` | pending | — |
-| `bot.isSleeping` | misc | `bot.is_sleeping() -> bool` | pending | — |
-| `bot.parseBedMetadata (undoc)` | misc | `pub(crate) helper` | pending | — |
-| `event('sleep')` | misc | `BotEvent::Sleep` | pending | — |
-| `event('wake')` | misc | `BotEvent::Wake` | pending | — |
+| `bot.sleep(bedBlock)` | misc | `bot.sleep(BlockPos).await` | diverges | same flow minus upstream's client-side night/monster/occupancy checks (server-enforced) |
+| `bot.wake()` | misc | `bot.wake()` | diverges | sync send of `s_player_command` StopSleeping (upstream's await only wraps packet write) |
+| `bot.isABed(bedBlock)` | misc | `bot.is_a_bed(BlockState) -> bool` | ported | takes a block *state* like upstream's block.type check |
+| `bot.isSleeping` | misc | `bot.is_sleeping() -> bool` | ported | `Pose::Sleeping` |
+| `bot.parseBedMetadata (undoc)` | misc | `n/a` | diverges | upstream internal helper; azalea's `Pose` covers it |
+| `event('sleep')` | misc | `BotEvent::Sleep` | ported | Pose diff per tick |
+| `event('wake')` | misc | `BotEvent::Wake` | ported | Pose diff per tick |
 
 ## Fishing
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.fish()` | misc | `bot.fish().await` | pending | no azalea helper; bobber metadata + particles |
+| `bot.fish()` | misc | `bot.fish().await` | ported | bobber spawn + 6-splash-particle radius like upstream; 2nd call cancels 1st |
 
 ## Settings
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | pending | ClientInformation |
-| `bot.settings.chat` | misc | `settings.chat_visibility` | pending | — |
-| `bot.settings.colorsEnabled` | misc | `settings.chat_colors` | pending | — |
-| `bot.settings.viewDistance` | misc | `settings.view_distance` | pending | — |
-| `bot.settings.difficulty` | misc | `settings.difficulty -> u8` | pending | stored setting; not sent in ClientInformation |
-| `bot.settings.skinParts` | misc | `settings.model_customization` | pending | — |
-| `bot.settings.enableTextFiltering` | misc | `settings.text_filtering_enabled` | pending | — |
-| `bot.settings.enableServerListing` | misc | `settings.allows_listing` | pending | — |
-| `bot.settings.particleStatus` | misc | `settings.particle_status` | pending | — |
-| `bot.settings.mainHand (typed-only)` | misc | `settings.main_hand` | pending | — |
+| `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | ported | merge via `Settings { field, ..bot.settings() }`; rejects view_distance == 0 |
+| `bot.settings.chat` | misc | `bot.settings().chat_visibility` | ported | `ChatVisibility` enum |
+| `bot.settings.colorsEnabled` | misc | `bot.settings().chat_colors` | ported | — |
+| `bot.settings.viewDistance` | misc | `bot.settings().view_distance` | diverges | chunks; azalea default is 8, upstream default `'far'` is 12 |
+| `bot.settings.difficulty` | misc | `bot.settings().difficulty` | ported | client-side store, default 2 |
+| `bot.settings.skinParts` | misc | `bot.settings().model_customization` | ported | `ModelCustomization` flag struct |
+| `bot.settings.enableTextFiltering` | misc | `bot.settings().text_filtering_enabled` | ported | — |
+| `bot.settings.enableServerListing` | misc | `bot.settings().allows_listing` | ported | azalea default is `false` vs upstream `true` |
+| `bot.settings.particleStatus` | misc | `bot.settings().particle_status` | ported | `ParticleStatus` enum |
+| `bot.settings.mainHand (typed-only)` | misc | `bot.settings().main_hand` | ported | `HumanoidArm` |
 
 ## Resource packs
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | pending | AcceptResourcePacksPlugin or manual |
-| `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | pending | — |
-| `event('resourcePack')` | misc | `BotEvent::ResourcePack{url,hash,uuid}` | pending | ResourcePackEvent |
+| `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | diverges | only game-phase pushes are tracked (config-phase pushes — server.properties/proxy packs — never emit the event or populate state); azalea also auto-accepts every push |
+| `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | diverges | only game-phase pushes are tracked; azalea's built-in `AcceptResourcePacksPlugin` auto-accepts on arrival, so a later denial usually has no effect |
+| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid,url,hash,required}` | diverges | game-phase `resource_pack_push` only — config-phase pushes (server.properties/proxy packs, the dominant modern path) never reach `Event::Packet` |
 
 ## Creative mode (bot.creative)
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(..).await` | pending | s_set_creative_mode_slot; raw packet only upstream |
-| `bot.creative.clearSlot(slot)` | inventory | `bot.creative().clear_slot(..).await` | pending | — |
-| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | pending | — |
-| `bot.creative.flyTo(dest)` | inventory | `bot.creative().fly_to(vec3).await` | pending | — |
-| `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | pending | — |
-| `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | pending | — |
+| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | ported | waits for `container_set_slot` echo; rejects after 5s like upstream |
+| `bot.creative.clearSlot(slot)` | inventory | `bot.creative().clear_slot(slot).await` | ported | — |
+| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | ported | — |
+| `bot.creative.flyTo(dest)` | inventory | `bot.creative().fly_to(Vec3).await` | ported | straight-line 0.5-block steps per 50ms |
+| `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | ported | sets `PlayerAbilities.flying` + s_player_abilities |
+| `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | ported | — |
 
 ## Plugin ecosystem (in port scope — U7/U12)
 

@@ -848,14 +848,14 @@ impl Bot {
             .map(|f| f.0)
             .unwrap_or(false)
         {
-            return Err(Error::Entity("already elytra flying".to_string()));
+            return Err(Error::Operation("already elytra flying".to_string()));
         }
         let physics = me.get_component::<Physics>().ok_or(Error::NotConnected)?;
         if physics.on_ground() {
-            return Err(Error::Entity("unable to fly from ground".to_string()));
+            return Err(Error::Operation("unable to fly from ground".to_string()));
         }
         if physics.is_in_water() {
-            return Err(Error::Entity(
+            return Err(Error::Operation(
                 "unable to elytra fly while in water".to_string(),
             ));
         }
@@ -864,7 +864,7 @@ impl Bot {
             .map(|effects| effects.0.contains_key(&MobEffect::Levitation))
             .unwrap_or(false)
         {
-            return Err(Error::Entity(
+            return Err(Error::Operation(
                 "unable to elytra fly with levitation effect".to_string(),
             ));
         }

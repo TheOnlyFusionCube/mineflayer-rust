@@ -19,9 +19,25 @@ pub mod inventory;
 pub mod misc;
 pub mod movement;
 pub mod pathfinder;
+pub mod scoreboard;
 pub mod state;
 pub mod windows;
 pub mod world;
 
 pub use bot::{Auth, Bot, BotBuilder, BotEvent};
 pub use error::{Error, Result};
+pub use movement::{Control, ControlState, PhysicsSettings};
+
+pub use chat::{
+    ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
+    MessagePosition, TabList,
+};
+pub use misc::{
+    ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
+    TitleKind,
+};
+pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
+pub use world::{
+    Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
+    Game, Time, WorldRef,
+};

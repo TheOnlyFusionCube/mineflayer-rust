@@ -2015,6 +2015,7 @@ name = "mineflayer"
 version = "0.1.0"
 dependencies = [
  "azalea",
+ "azalea-chat",
  "futures",
  "regex",
  "serde",

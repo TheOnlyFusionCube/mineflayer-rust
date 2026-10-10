@@ -22,10 +22,15 @@ pub enum Error {
     /// An operation did not complete in time.
     #[error("timed out")]
     Timeout,
-    /// An entity-domain operation failed a precondition (upstream throws a
-    /// plain `Error` with the same message).
+    /// A bot operation failed with an upstream-style message (e.g.
+    /// `already sleeping`, `Fishing cancelled`) — the Rust analog of
+    /// mineflayer's `new Error(message)` rejections.
     #[error("{0}")]
-    Entity(String),
+    Operation(String),
+    /// Sign text failed validation (upstream emits the same as an error
+    /// event from `updateSign` before writing).
+    #[error("invalid sign text: {0}")]
+    SignText(String),
 }
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.

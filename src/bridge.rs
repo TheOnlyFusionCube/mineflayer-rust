@@ -7,11 +7,28 @@
 
 use std::sync::{Arc, Mutex};
 
-use azalea::{ClientInformation, Event};
+use azalea::{
+    ClientInformation, Event,
+    chat::ChatPacket,
+    protocol::packets::game::{ClientboundGamePacket, c_system_chat::ClientboundSystemChat},
+};
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver, watch};
 
-use crate::BotEvent;
-use crate::entity;
+use crate::{
+    BotEvent, entity,
+    chat::{ChatShared, TabList},
+};
+
+/// Shared state the bridge needs beyond its own bookkeeping — one struct so
+/// `spawn` stays under `clippy::too_many_arguments` as domains add theirs.
+pub(crate) struct BridgeDeps {
+    /// `Bot::quit`/`end` reason, consumed by `translate` on `End`.
+    pub quit_reason: Arc<Mutex<Option<String>>>,
+    /// Chat-domain state (pattern registry, tablist, `tab_complete` correlation).
+    pub chat: Arc<Mutex<ChatShared>>,
+    /// Entity-domain packet decode state — see [`entity::EntityTracker`].
+    pub entities: Arc<std::sync::RwLock<entity::EntityTracker>>,
+}
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
 /// azalea's event channel closes (disconnect/shutdown) or when the last
@@ -21,15 +38,22 @@ pub(crate) fn spawn(
     mut rx: UnboundedReceiver<Event>,
     events: broadcast::Sender<BotEvent>,
     view_distance: Option<u8>,
-    quit_reason: Arc<Mutex<Option<String>>>,
     mut alive: watch::Receiver<()>,
-    entity_tracker: Arc<std::sync::RwLock<entity::EntityTracker>>,
+    deps: BridgeDeps,
 ) {
     tokio::spawn(async move {
+        let BridgeDeps {
+            quit_reason,
+            chat,
+            entities,
+        } = deps;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
         let _ = alive.borrow_and_update();
-        let mut state = BridgeState::default();
+        let mut state = BridgeState {
+            chat,
+            ..Default::default()
+        };
         loop {
             tokio::select! {
                 event = rx.recv() => {
@@ -42,13 +66,24 @@ pub(crate) fn spawn(
                             ..Default::default()
                         });
                     }
-                    // Entity-domain decode runs before translate borrows the
-                    // event; its events are emitted right after the raw
-                    // `Packet`/`Spawn` they were derived from.
-                    let derived = entity::observe_event(&entity_tracker, &client, &event);
+                    // Domain decodes azalea doesn't lift into `Event`s
+                    // (movement: move diff/forcedMove/abilities; entities:
+                    // the whole entity event family). Both run before
+                    // translate borrows the event; their events are emitted
+                    // right after the raw `Packet`/`Spawn` they came from.
+                    let movement_events =
+                        crate::movement::bridge_events(&client, &mut state.movement, &event);
+                    let derived = entity::observe_event(&entities, &client, &event);
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
+                        let _ = events.send(bot_event.clone());
+                        // misc domains (scoreboards, sounds, …) decode Packet
+                        // events into facade state + their own BotEvents,
+                        // emitted after the source event itself.
+                        crate::misc::after_event(&client, &bot_event, &events);
+                    }
+                    for bot_event in movement_events {
                         let _ = events.send(bot_event);
                     }
                     for bot_event in derived {
@@ -74,6 +109,11 @@ struct BridgeState {
     /// Whether `End` has been emitted — dedupes disconnect signals so `end`
     /// fires exactly once, like upstream.
     ended: bool,
+    /// Movement tracking for `move`/`mount`/`dismount` (U5).
+    movement: crate::movement::MovementTracker,
+    /// Chat-domain state shared with `Bot` (pattern registry, tablist,
+    /// `tab_complete` correlation).
+    chat: Arc<Mutex<ChatShared>>,
 }
 
 /// Translate one azalea event into zero or more `BotEvent`s, in emission
@@ -128,9 +168,17 @@ fn translate(
                 BotEvent::End("socketClosed".to_string()),
             ]
         }
-        Event::Chat(packet) => vec![BotEvent::Chat(packet)],
+        Event::Chat(packet) => {
+            let mut out = vec![BotEvent::Chat(packet.clone())];
+            out.extend(state.chat.lock().unwrap().message_events(&packet));
+            out
+        }
         Event::Tick => vec![BotEvent::Tick],
-        Event::Packet(packet) => vec![BotEvent::Packet(packet)],
+        Event::Packet(packet) => {
+            let mut out = vec![BotEvent::Packet(packet.clone())];
+            out.extend(packet_side_events(&state.chat, &packet));
+            out
+        }
         Event::AddPlayer(info) => vec![BotEvent::PlayerJoined(info)],
         Event::UpdatePlayer(info) => vec![BotEvent::PlayerUpdated(info)],
         Event::RemovePlayer(info) => vec![BotEvent::PlayerLeft(info)],
@@ -141,6 +189,39 @@ fn translate(
         // azalea's Event is #[non_exhaustive]: anything it adds upstream in
         // the future is dropped rather than crashing the bridge. (No logging
         // facade is in our dependency set, so there is nothing to log to.)
+        _ => vec![],
+    }
+}
+
+/// Extra `BotEvent`s decoded from raw clientbound packets azalea's own
+/// handlers drop (chat domain): the dedicated action-bar packet feeds the
+/// same message family as a chat packet, `c_tab_list` updates the stored
+/// header/footer, and `c_command_suggestions` resolves a `tab_complete` call.
+/// The raw packet itself still goes out as `BotEvent::Packet` first.
+fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) -> Vec<BotEvent> {
+    match packet {
+        ClientboundGamePacket::SetActionBarText(p) => {
+            // upstream routes game_info text through
+            // message/messagestr/actionBar, so synthesize the overlay chat
+            // packet it would have arrived as on older versions.
+            let chat_packet = ChatPacket::System(Arc::new(ClientboundSystemChat {
+                content: p.text.clone(),
+                overlay: true,
+            }));
+            chat.lock().unwrap().message_events(&chat_packet)
+        }
+        ClientboundGamePacket::TabList(p) => {
+            chat.lock().unwrap().store_tablist(TabList {
+                header: p.header.clone(),
+                footer: p.footer.clone(),
+            });
+            vec![]
+        }
+        ClientboundGamePacket::CommandSuggestions(p) => {
+            let matches = p.suggestions.list().iter().map(|s| s.text()).collect();
+            chat.lock().unwrap().complete_suggestions(p.id, matches);
+            vec![]
+        }
         _ => vec![],
     }
 }
@@ -251,5 +332,110 @@ mod tests {
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         assert!(translate(&mut s, &qr, Event::KeepAlive(42)).is_empty());
+    }
+
+    #[test]
+    fn translate_chat_emits_message_family() {
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        let out = translate(
+            &mut s,
+            &qr,
+            Event::Chat(azalea::chat::ChatPacket::new("<a> hi")),
+        );
+        assert!(
+            matches!(&out[..],
+                [
+                    BotEvent::Chat(_),
+                    BotEvent::Message { position: crate::MessagePosition::System, .. },
+                    BotEvent::MessageStr { message, .. },
+                ] if message == "<a> hi"),
+            "expected Chat+Message+MessageStr, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn translate_action_bar_packet_feeds_message_family() {
+        use azalea::protocol::packets::game::c_set_action_bar_text::ClientboundSetActionBarText;
+
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        let packet = ClientboundGamePacket::SetActionBarText(ClientboundSetActionBarText {
+            text: azalea::FormattedText::from("bar!"),
+        });
+        let out = translate(&mut s, &qr, Event::Packet(Arc::new(packet)));
+        assert!(
+            matches!(&out[..],
+                [
+                    BotEvent::Packet(_),
+                    BotEvent::Message { position: crate::MessagePosition::GameInfo, .. },
+                    BotEvent::MessageStr { message, .. },
+                    BotEvent::ActionBar(_),
+                ] if message == "bar!"),
+            "expected Packet+Message+MessageStr+ActionBar, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn translate_tab_list_packet_updates_shared() {
+        use azalea::protocol::packets::game::c_tab_list::ClientboundTabList;
+
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        let packet = ClientboundGamePacket::TabList(ClientboundTabList {
+            header: azalea::FormattedText::from("h"),
+            footer: azalea::FormattedText::from("f"),
+        });
+        let out = translate(&mut s, &qr, Event::Packet(Arc::new(packet)));
+        assert!(matches!(&out[..], [BotEvent::Packet(_)]));
+        let tablist = s.chat.lock().unwrap().tablist();
+        assert_eq!(tablist.header.to_string(), "h");
+        assert_eq!(tablist.footer.to_string(), "f");
+    }
+
+    #[test]
+    fn translate_command_suggestions_resolves_pending() {
+        use azalea::{
+            brigadier::{
+                context::StringRange,
+                suggestion::{Suggestion, Suggestions},
+            },
+            protocol::packets::game::c_command_suggestions::ClientboundCommandSuggestions,
+        };
+
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        let (id, mut rx) = s.chat.lock().unwrap().register_completion();
+        let packet = ClientboundGamePacket::CommandSuggestions(ClientboundCommandSuggestions {
+            id,
+            suggestions: Suggestions::new(
+                StringRange::new(0, 2),
+                vec![Suggestion::new(StringRange::new(0, 2), "gamemode")],
+            ),
+        });
+        let out = translate(&mut s, &qr, Event::Packet(Arc::new(packet)));
+        assert!(matches!(&out[..], [BotEvent::Packet(_)]));
+        assert_eq!(rx.try_recv().unwrap(), vec!["gamemode".to_string()]);
+    }
+
+    #[test]
+    fn translate_chat_runs_patterns() {
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        s.chat.lock().unwrap().add_pattern(
+            "probe",
+            vec![regex::Regex::new("worked").unwrap()],
+            crate::ChatPatternOpts::default(),
+        );
+        let out = translate(
+            &mut s,
+            &qr,
+            Event::Chat(azalea::chat::ChatPacket::new("it worked")),
+        );
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, BotEvent::ChatPattern { name, .. } if name == "probe")),
+            "expected a ChatPattern event, got {out:?}"
+        );
     }
 }

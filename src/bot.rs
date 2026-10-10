@@ -12,15 +12,29 @@ use std::{
 };
 
 use azalea::{
+    EntityRef, Vec3,
     auto_reconnect::AutoReconnectDelay,
-    core::{position::ChunkPos, registry_holder::RegistryHolder},
+    core::{
+        position::{BlockPos, ChunkPos},
+        registry_holder::RegistryHolder,
+    },
     player::PlayerInfo,
-    protocol::packets::game::ClientboundGamePacket,
+    protocol::packets::game::{
+        ClientboundGamePacket, c_block_entity_data::ClientboundBlockEntityData,
+        c_sound::SoundSource,
+    },
     world::WorldName,
 };
+use std::sync::RwLock;
 use tokio::sync::{broadcast, watch};
 
-use crate::{Error, Result, bridge};
+use crate::{
+    Error, Result, bridge,
+    chat::{ChatPatternMatch, ChatShared, MessagePosition},
+    misc::{Instrument, Particle, TitleKind},
+    scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team},
+    world::{Block, WorldState},
+};
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
@@ -42,6 +56,13 @@ pub struct Bot {
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
+    /// Chat-domain state shared with the bridge (pattern registry, tablist
+    /// header/footer, `tab_complete` correlation) — see `chat::ChatShared`.
+    pub(crate) chat: Arc<Mutex<ChatShared>>,
+    /// Facade-kept world/game state (spawn point, clocks, weather, login
+    /// metadata) maintained by the packet bridge in [`crate::world`] —
+    /// azalea drops most of these packets upstream.
+    pub(crate) world_state: Arc<RwLock<WorldState>>,
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links), shared with the bridge task — see `entity::EntityTracker`.
     pub(crate) entities: Arc<std::sync::RwLock<crate::entity::EntityTracker>>,
@@ -77,8 +98,9 @@ pub enum BotEvent {
     /// `error` — a non-fatal error was surfaced (currently: connection
     /// failures before login).
     Error(String),
-    /// `chat` — a chat packet arrived. Richer `message`/`whisper`/pattern
-    /// events land with the chat unit.
+    /// `chat` — a chat packet arrived (raw payload; the derived
+    /// `Message`/`MessageStr`/`Whisper`/`ChatPattern` family follows it in
+    /// emission order).
     Chat(azalea::chat::ChatPacket),
     /// `physicsTick` — a game tick elapsed while the world was loaded.
     Tick,
@@ -95,6 +117,243 @@ pub enum BotEvent {
     PlayerLeft(PlayerInfo),
     /// `chunkColumnLoad` — a chunk column was received.
     ChunkColumnLoad(ChunkPos),
+    /// `move` — the bot's position or look direction changed this tick
+    /// (upstream fires on every sent movement packet; the per-tick
+    /// component diff is the azalea equivalent). Carries the previous
+    /// position, like upstream's `oldPos` argument.
+    Move {
+        /// The bot's position before this move.
+        old_pos: azalea::Vec3,
+    },
+    /// `forcedMove` — the server placed us (teleport, spawn).
+    ForcedMove,
+    /// `abilities` — the server sent new player abilities; the payload is
+    /// what the `PlayerAbilities` component now holds.
+    Abilities(azalea::entity::PlayerAbilities),
+    /// `whisper` — an incoming whisper addressed to the bot
+    /// (`ChatPacket::is_whisper` heuristic; upstream derives this event
+    /// from its deprecated default chat patterns instead).
+    Whisper(azalea::chat::ChatPacket),
+    /// `message` — any incoming message (chat, system, or game_info
+    /// position). The upstream `sender` UUID is on the packet
+    /// (`sender_uuid()`); upstream's `verified` flag has no azalea analog.
+    Message {
+        /// The packet the message arrived in.
+        packet: azalea::chat::ChatPacket,
+        /// Where the message was displayed.
+        position: MessagePosition,
+    },
+    /// `messagestr` — the plain-text form of `message` (the string that
+    /// chat patterns and `await_message` match on). `packet` carries
+    /// upstream's `originalMsg` argument.
+    MessageStr {
+        /// The rendered message text.
+        message: String,
+        /// Where the message was displayed.
+        position: MessagePosition,
+        /// The packet the message arrived in.
+        packet: azalea::chat::ChatPacket,
+    },
+    /// `actionBar` — game_info/overlay text, from mc26's dedicated
+    /// `c_set_action_bar_text` packet or an overlay system-chat packet.
+    ActionBar(azalea::FormattedText),
+    /// `chat:{name}` — a registered chat pattern (set) completed;
+    /// `name` is the pattern name, `matches` mirrors upstream's payload.
+    ChatPattern {
+        /// The pattern's registered name (the `chat:{name}` suffix).
+        name: String,
+        /// Whole matched messages, or per-pattern capture groups when the
+        /// pattern was added with `parse: true`.
+        matches: ChatPatternMatch,
+    },
+    // — misc domains (scoreboards, teams, boss bars, titles, particles,
+    // sounds, health/experience, bed, resource packs) —
+    /// `scoreboardCreated` — a scoreboard objective was added.
+    ScoreboardCreated(ScoreBoard),
+    /// `scoreboardDeleted` — an objective was removed. Payload is the
+    /// removed board (upstream emits the same object before deleting).
+    ScoreboardDeleted(ScoreBoard),
+    /// `scoreboardTitleChanged` — an objective's display name changed.
+    ScoreboardTitleChanged(ScoreBoard),
+    /// `scoreUpdated` — a score was set on an objective.
+    ScoreUpdated {
+        /// The objective the score landed on.
+        scoreboard: ScoreBoard,
+        /// The score entry that was added or updated.
+        item: ScoreItem,
+    },
+    /// `scoreRemoved` — a score was removed from an objective.
+    ScoreRemoved {
+        /// The objective the score was removed from.
+        scoreboard: ScoreBoard,
+        /// The score entry that was removed.
+        item: ScoreItem,
+    },
+    /// `scoreboardPosition` — an objective was bound to a display slot.
+    ScoreboardPosition {
+        /// Where the objective is shown (sidebar, list, team sidebar, …).
+        slot: ScoreboardSlot,
+        /// The objective now shown in that slot.
+        scoreboard: ScoreBoard,
+    },
+    /// `teamCreated` — a team was added (already populated with members).
+    TeamCreated(Team),
+    /// `teamRemoved` — a team was removed. Payload is the removed team
+    /// (upstream emits `undefined` — it deletes before emitting).
+    TeamRemoved(Team),
+    /// `teamUpdated` — team parameters (not members) changed.
+    TeamUpdated(Team),
+    /// `teamMemberAdded` — payload is the updated team, like upstream.
+    TeamMemberAdded(Team),
+    /// `teamMemberRemoved` — payload is the updated team, like upstream.
+    TeamMemberRemoved(Team),
+    /// `bossBarCreated` (undocumented upstream).
+    BossBarCreated(BossBar),
+    /// `bossBarDeleted` — payload is the removed bar (upstream emits the
+    /// same object before deleting).
+    BossBarDeleted(BossBar),
+    /// `bossBarUpdated` — progress/title/style/flags changed.
+    BossBarUpdated(BossBar),
+    /// `title` — fires for both `set_title_text` (`kind == Title`) and
+    /// `set_subtitle_text` (`kind == Subtitle`), like upstream.
+    Title {
+        /// The plain text content.
+        text: String,
+        /// Which packet produced the event (upstream's second arg).
+        kind: TitleKind,
+    },
+    /// `title_times` — title fade-in/stay/fade-out in ticks.
+    TitleTimes {
+        /// Fade-in ticks.
+        fade_in: u32,
+        /// Display ticks.
+        stay: u32,
+        /// Fade-out ticks.
+        fade_out: u32,
+    },
+    /// `title_clear`.
+    TitleClear,
+    /// `particle` — a `level_particles` packet.
+    ParticleSpawned(Particle),
+    /// `soundEffectHeard` — a named sound effect or entity sound.
+    /// `hardcodedSoundEffectHeard` is unreachable on the modern protocol
+    /// (azalea always resolves the registry id to a name); the variant
+    /// exists for parity but is never emitted.
+    SoundHeard {
+        /// The sound identifier, e.g. `minecraft:entity.experience_orb.pickup`.
+        name: String,
+        /// The source position (entity sounds are resolved to the entity's
+        /// current position; `Vec3::ZERO` if it isn't loaded).
+        pos: Vec3,
+        /// Playback volume.
+        volume: f32,
+        /// Playback pitch.
+        pitch: f32,
+    },
+    /// `hardcodedSoundEffectHeard` — see [`BotEvent::SoundHeard`].
+    HardcodedSound {
+        /// The sound's registry id.
+        id: u32,
+        /// The sound category (master, music, hostile, …).
+        category: SoundSource,
+        /// The source position.
+        pos: Vec3,
+        /// Playback volume.
+        volume: f32,
+        /// Playback pitch.
+        pitch: f32,
+    },
+    /// `noteHeard` — a note block was played.
+    NoteHeard {
+        /// The note block's position (upstream passes a `Block`).
+        block: BlockPos,
+        /// The instrument, decoded from the block-event action id.
+        instrument: Instrument,
+        /// The note pitch (0–24), the block-event action parameter.
+        pitch: u8,
+    },
+    /// `resourcePack` — the server pushed a resource pack. Only *game-phase*
+    /// pushes produce this event: azalea's `Event::Packet` wraps
+    /// `ClientboundGamePacket`, so config-phase pushes (server.properties /
+    /// proxy packs — the dominant modern path) never reach it. azalea's
+    /// `AcceptResourcePacksPlugin` also auto-accepts every push (see
+    /// [`Bot::deny_resource_pack`]/api-parity.md).
+    ResourcePack {
+        /// The pack's wire UUID.
+        uuid: String,
+        /// The download URL.
+        url: String,
+        /// The expected SHA-1 hash.
+        hash: String,
+        /// Whether the server requires the pack to join.
+        required: bool,
+    },
+    /// `sleep` — the bot's pose became `Sleeping`.
+    Sleep,
+    /// `wake` — the bot's pose left `Sleeping`.
+    Wake,
+    /// `breath` — the air supply changed.
+    Breath,
+    /// `health` — a `set_health` packet arrived.
+    Health,
+    /// `experience` — a `set_experience` packet arrived.
+    Experience,
+    /// `spawnReset` — a bed/respawn-anchor spawn point was invalidated.
+    SpawnReset,
+    /// `chunkColumnUnload` — a chunk column was unloaded by the server.
+    ChunkUnload(ChunkPos),
+    /// `blockUpdate` — a block changed in the world. `old` is `None` when
+    /// the previous state wasn't observed; `new` is what the server
+    /// reported. Azalea applies updates to the world itself on the next
+    /// tick, so `block_at` may briefly still return `old`.
+    ///
+    /// mineflayer's position-filtered `blockUpdate:x,y,z` is spelled by
+    /// matching `new.pos` on this variant.
+    BlockUpdate { old: Option<Block>, new: Block },
+    /// `blockEntityData` — raw block-entity NBT. Azalea doesn't store
+    /// block entities, so the packet is forwarded as received.
+    BlockEntityData(ClientboundBlockEntityData),
+    /// `signOpen` — the server opened a sign editor (usually right after
+    /// a sign was placed); answer with `Bot::update_sign`.
+    SignOpen {
+        block: Option<Block>,
+        is_front_text: bool,
+    },
+    /// `pistonMove` — a piston extended (`is_pulling: false`) or
+    /// retracted. `direction` is the raw protocol facing byte
+    /// (0=down, 1=up, 2=north, 3=south, 4=west, 5=east).
+    PistonMove {
+        block: Block,
+        is_pulling: bool,
+        direction: u8,
+    },
+    /// `chestLidMove` — the open-count of a chest or other lidded
+    /// container changed. `second` is the other half for double chests.
+    ChestLidMove {
+        block: Block,
+        open_count: u8,
+        second: Option<Block>,
+    },
+    /// `blockBreakProgressObserved` — a break-animation stage (0–9).
+    BlockBreakProgress {
+        block: Option<Block>,
+        stage: u8,
+        entity: Option<EntityRef>,
+    },
+    /// `blockBreakProgressEnd` — the break animation was removed.
+    BlockBreakEnd {
+        block: Option<Block>,
+        entity: Option<EntityRef>,
+    },
+    /// `time` — a `set_time` packet updated the world clocks.
+    Time,
+    /// `rain` — `is_raining` flipped.
+    Rain,
+    /// `weatherUpdate` — the rain or thunder level changed.
+    WeatherUpdate,
+    /// `game` — game state changed (login/respawn metadata, gamemode,
+    /// default spawn position).
+    GameStateChanged,
     /// `entitySpawn` — an entity appeared in the world (also emitted for the
     /// bot itself right after `Spawn`, like upstream).
     EntitySpawn(azalea::EntityRef),
@@ -146,11 +405,13 @@ pub enum BotEvent {
     EntityCriticalEffect(azalea::EntityRef),
     /// `entityMagicCriticalEffect` — magic critical particles (animation 5).
     EntityMagicCriticalEffect(azalea::EntityRef),
-    /// `entityCrouch` — entity started sneaking (metadata edge).
+    /// `entityCrouch` — a metadata packet flagged the entity as sneaking
+    /// (fires per packet carrying the flag, like upstream).
     EntityCrouch(azalea::EntityRef),
-    /// `entityUncrouch` — entity stopped sneaking (metadata edge).
+    /// `entityUncrouch` — entity stopped sneaking (transition only).
     EntityUncrouch(azalea::EntityRef),
-    /// `entitySleep` — entity went to sleep (metadata edge).
+    /// `entitySleep` — a metadata packet flagged the entity as sleeping
+    /// (fires per packet carrying the flag, like upstream).
     EntitySleep(azalea::EntityRef),
     /// `entityElytraFlew` — entity started elytra flight (metadata edge).
     EntityElytraFlew(azalea::EntityRef),
@@ -391,9 +652,20 @@ impl BotBuilder {
             .entity_mut(client.entity)
             .insert(AutoReconnectDelay::new(Duration::MAX));
 
+        // the misc domains keep their state in one component so it exists
+        // before the first packet arrives
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(crate::misc::MiscState::default());
+
         let (events, _) = broadcast::channel(256);
         let quit_reason = Arc::new(Mutex::new(None));
+        let chat = Arc::new(Mutex::new(ChatShared::default()));
         let (alive, alive_rx) = watch::channel(());
+        let world_state = Arc::new(RwLock::new(WorldState::default()));
+        let world_alive = alive_rx.clone();
         let entities = Arc::new(std::sync::RwLock::new(
             crate::entity::EntityTracker::default(),
         ));
@@ -402,9 +674,18 @@ impl BotBuilder {
             rx,
             events.clone(),
             view_distance,
-            quit_reason.clone(),
             alive_rx,
-            entities.clone(),
+            bridge::BridgeDeps {
+                quit_reason: quit_reason.clone(),
+                chat: chat.clone(),
+                entities: entities.clone(),
+            },
+        );
+        crate::world::spawn_packet_bridge(
+            client.clone(),
+            events.clone(),
+            world_state.clone(),
+            world_alive,
         );
 
         Ok(Bot {
@@ -412,6 +693,8 @@ impl BotBuilder {
             events,
             quit_reason,
             _alive: alive,
+            chat,
+            world_state,
             entities,
         })
     }
@@ -437,6 +720,8 @@ impl Bot {
             events,
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
+            chat: Arc::new(Mutex::new(ChatShared::default())),
+            world_state: Arc::new(RwLock::new(WorldState::default())),
             entities: Arc::new(std::sync::RwLock::new(
                 crate::entity::EntityTracker::default(),
             )),
