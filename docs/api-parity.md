@@ -147,7 +147,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot._getBlockAtEyeLevel (internal)` | world | `n/a` | wontfix | internal helper; eye raycasts go through `block_at_cursor` |
 | `event('blockUpdate')` | world | `BotEvent::BlockUpdate { old, new }` | ported | c_block_update + c_section_blocks_update decoded; old=None when chunk unloaded |
 | `event('blockUpdate:(x,y,z)')` | world | `match` on `BotEvent::BlockUpdate`'s `new.pos` | diverges | no per-position emitter; subscribers filter |
-| `event('blockPlaced')` | world | `BotEvent::BlockPlaced{old,new}` | pending | bot's own placements |
+| `event('blockPlaced')` | world | `BotEvent::BlockPlaced{old,new}` | ported | emitted by `place_block` after the server confirms |
 | `event('blockEntityData')` | world | `BotEvent::BlockEntityData(ClientboundBlockEntityData)` | ported | whole packet forwarded (pos + kind + NBT) |
 | `event('signOpen')` | world | `BotEvent::SignOpen { block, is_front_text }` | ported | c_open_sign_editor decoded |
 | `event('chunkColumnLoad')` | world | `BotEvent::ChunkColumnLoad(ChunkPos)` | ported | azalea Event::ReceiveChunk |
@@ -224,7 +224,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('entityDetach')` | entity | `BotEvent::EntityDetach{entity,vehicle}` | diverges | see entityAttach |
 | `event('entityEffect')` | entity | `BotEvent::EntityEffect{entity,effect,data}` | ported | c_update_mob_effect |
 | `event('entityEffectEnd')` | entity | `BotEvent::EntityEffectEnd{entity,effect}` | ported | c_remove_mob_effect |
-| `event('entityPlaced') (undoc)` | entity | — | wontfix | emitted by placeEntity (block placement) — owned by the block-place unit |
+| `event('entityPlaced') (undoc)` | entity | `BotEvent::EntityPlaced(EntityRef)` | ported | emitted by `place_entity` after the spawn packet |
 | `event('itemDrop')` | entity | `BotEvent::ItemDrop(EntityRef)` | ported | item-stack metadata entry, like upstream |
 | `event('playerCollect')` | entity | `BotEvent::PlayerCollect{collector,collected}` | ported | c_take_item_entity |
 | `event('playerJoined')` | entity | `BotEvent::PlayerJoined(PlayerInfo)` | ported | azalea Event::AddPlayer |
@@ -360,22 +360,22 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.dig(block, forceLook, digFace)` | interact | `bot.dig(block).await` | pending | azalea Client::mine; events on finish/abort |
-| `bot.stopDigging()` | interact | `bot.stop_digging()` | pending | remove Mining / abort |
-| `bot.digTime(block)` | interact | `bot.dig_time(block) -> Duration` | pending | azalea get_mine_progress |
-| `bot.canDigBlock(block)` | interact | `bot.can_dig_block(block) -> bool` | pending | — |
-| `bot.placeBlock(ref, faceVec)` | interact | `bot.place_block(block, dir).await` | pending | block_interact + prediction gap |
-| `bot.placeEntity(ref, faceVec)` | interact | `bot.place_entity(..).await -> EntityRef` | pending | armor stand/end crystal |
-| `bot.activateBlock(b, dir, cursor)` | interact | `bot.activate_block(b).await` | pending | azalea block_interact |
-| `bot._nextSequence (internal)` | interact | `pub(crate) helpers — internal` | pending | server action-sequence counter (dig/place) |
-| `bot.targetDigBlock (undoc)` | interact | `bot.target_dig_block() -> Option<Block>` | pending | — |
-| `bot.targetDigFace (undoc)` | interact | `bot.target_dig_face()` | pending | — |
-| `bot.lastDigTime (undoc)` | interact | `bot.last_dig_time()` | pending | — |
-| `bot._genericPlace (internal)` | interact | `pub(crate) helper` | pending | — |
-| `bot._placeBlockWithOptions (internal)` | interact | `pub(crate) helper` | pending | — |
-| `bot._placeEntityWithOptions (internal)` | interact | `pub(crate) helper` | pending | — |
-| `event('diggingCompleted')` | interact | `BotEvent::DiggingCompleted(block)` | pending | azalea FinishMiningBlockEvent |
-| `event('diggingAborted')` | interact | `BotEvent::DiggingAborted(block)` | pending | — |
+| `bot.dig(block, forceLook, digFace)` | interact | `bot.dig(block).await` / `bot.dig_opts(block, ForceLook, DigFace).await` | ported | `start_mining` + `Mining` watch; resolves on air, `'Digging aborted'` on stop/interrupt/timeout |
+| `bot.stopDigging()` | interact | `bot.stop_digging()` | ported | `StopMiningBlockEvent` → AbortDestroyBlock + `MiningQueued` drop |
+| `bot.digTime(block)` | interact | `bot.dig_time(block) -> Option<Duration>` | diverges | `None` = upstream `Infinity`; azalea `get_mine_progress`, `ceil(1/p)` ticks → ms |
+| `bot.canDigBlock(block)` | interact | `bot.can_dig_block(block) -> bool` | ported | diggable && eye-to-center ≤ 5.1 |
+| `bot.placeBlock(ref, faceVec)` | interact | `bot.place_block(block, face).await -> Result<Block>` | diverges | same blockUpdate ack→dest gate and "still unchanged" refusal; bounded 5s wait (upstream waits forever) |
+| `bot.placeEntity(ref, faceVec)` | interact | `bot.place_entity(..).await -> Result<EntityRef>` | diverges | EntitySpawn correlation within maxDistance (bat 4 / boat 3 / else 2), 5s timeout; boat also sends use_item |
+| `bot.activateBlock(b, dir, cursor)` | interact | `bot.activate_block(b, dir, cursor).await` | ported | raw `ServerboundUseItemOn` — cursor hits the wire (azalea `block_interact` re-raycasts instead) |
+| `bot._nextSequence (internal)` | interact | `Bot::next_sequence()` (private) | ported | `BlockStatePredictionHandler::start_predicting` |
+| `bot.targetDigBlock (undoc)` | interact | `bot.target_dig_block() -> Option<Block>` | ported | azalea `Mining`/`MiningQueued` pos |
+| `bot.targetDigFace (undoc)` | interact | `bot.target_dig_face() -> Option<Direction>` | diverges | azalea `Direction` (same 0–5 ordinals), engine-derived from the hit result |
+| `bot.lastDigTime (undoc)` | interact | `bot.last_dig_time() -> Option<Instant>` | ported | set on dig resolve or abort, like upstream |
+| `bot._genericPlace (internal)` | interact | `Bot::use_item_on()` (private) | ported | look at click point → use_item_on → swing |
+| `bot._placeBlockWithOptions (internal)` | interact | `Bot::place_block()` body | ported | — |
+| `bot._placeEntityWithOptions (internal)` | interact | `Bot::place_entity()` body | ported | — |
+| `event('diggingCompleted')` | interact | `BotEvent::DiggingCompleted(newBlock)` | ported | payload is the new (usually air) block, like upstream |
+| `event('diggingAborted')` | interact | `BotEvent::DiggingAborted{block, reason}` | diverges | adds a `DigAbortReason` (stopped/interrupted/timeout) |
 
 ## Scoreboard / teams / bossbar / title
 

@@ -480,6 +480,26 @@ pub enum BotEvent {
         /// The vehicle we were riding.
         vehicle: Option<azalea::EntityRef>,
     },
+    /// `diggingCompleted` — a [`Bot::dig`] finished; the payload is the new
+    /// (usually air) block at the dug position, like upstream's `newBlock`.
+    DiggingCompleted(Block),
+    /// `diggingAborted` — a [`Bot::dig`] ended without breaking the block.
+    DiggingAborted {
+        /// The block that was being dug.
+        block: Block,
+        /// Why the dig ended.
+        reason: crate::interact::DigAbortReason,
+    },
+    /// `blockPlaced` — the server confirmed a [`Bot::place_block`].
+    BlockPlaced {
+        /// The block previously at the position, if observed.
+        old: Option<Block>,
+        /// The block the server placed.
+        new: Block,
+    },
+    /// `entityPlaced` (undocumented upstream) — the entity a
+    /// [`Bot::place_entity`] spawned.
+    EntityPlaced(azalea::EntityRef),
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -663,6 +683,13 @@ impl BotBuilder {
             .write()
             .entity_mut(client.entity)
             .insert(crate::misc::MiscState::default());
+
+        // dig bookkeeping (lastDigTime / abort generations) — same rationale
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(crate::interact::InteractShared::default());
 
         let (events, _) = broadcast::channel(256);
         let quit_reason = Arc::new(Mutex::new(None));

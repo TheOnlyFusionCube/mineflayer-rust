@@ -32,6 +32,7 @@ pub use chat::{
     ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
+pub use interact::{DigAbortReason, DigFace, ForceLook};
 pub use misc::{
     ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
     TitleKind,
