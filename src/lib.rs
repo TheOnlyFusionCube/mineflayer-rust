@@ -19,9 +19,15 @@ pub mod inventory;
 pub mod misc;
 pub mod movement;
 pub mod pathfinder;
+pub mod scoreboard;
 pub mod state;
 pub mod windows;
 pub mod world;
 
 pub use bot::{Auth, Bot, BotBuilder, BotEvent};
 pub use error::{Error, Result};
+pub use misc::{
+    ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
+    TitleKind,
+};
+pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};

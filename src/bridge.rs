@@ -43,7 +43,11 @@ pub(crate) fn spawn(
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
-                        let _ = events.send(bot_event);
+                        let _ = events.send(bot_event.clone());
+                        // misc domains (scoreboards, sounds, …) decode Packet
+                        // events into facade state + their own BotEvents,
+                        // emitted after the source event itself.
+                        crate::misc::after_event(&client, &bot_event, &events);
                     }
                 }
                 _ = alive.changed() => break,

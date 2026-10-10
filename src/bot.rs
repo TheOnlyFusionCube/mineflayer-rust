@@ -12,15 +12,23 @@ use std::{
 };
 
 use azalea::{
+    Vec3,
     auto_reconnect::AutoReconnectDelay,
-    core::{position::ChunkPos, registry_holder::RegistryHolder},
+    core::{
+        position::{BlockPos, ChunkPos},
+        registry_holder::RegistryHolder,
+    },
     player::PlayerInfo,
-    protocol::packets::game::ClientboundGamePacket,
+    protocol::packets::game::{ClientboundGamePacket, c_sound::SoundSource},
     world::WorldName,
 };
 use tokio::sync::{broadcast, watch};
 
-use crate::{Error, Result, bridge};
+use crate::{
+    Error, Result, bridge,
+    misc::{Instrument, Particle, TitleKind},
+    scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team},
+};
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
@@ -92,6 +100,137 @@ pub enum BotEvent {
     PlayerLeft(PlayerInfo),
     /// `chunkColumnLoad` — a chunk column was received.
     ChunkColumnLoad(ChunkPos),
+    // — misc domains (scoreboards, teams, boss bars, titles, particles,
+    // sounds, health/experience, bed, resource packs) —
+    /// `scoreboardCreated` — a scoreboard objective was added.
+    ScoreboardCreated(ScoreBoard),
+    /// `scoreboardDeleted` — an objective was removed. Payload is the
+    /// removed board (upstream emits `undefined` here — it deletes before
+    /// emitting; see api-parity.md).
+    ScoreboardDeleted(ScoreBoard),
+    /// `scoreboardTitleChanged` — an objective's display name changed.
+    ScoreboardTitleChanged(ScoreBoard),
+    /// `scoreUpdated` — a score was set on an objective.
+    ScoreUpdated {
+        /// The objective the score landed on.
+        scoreboard: ScoreBoard,
+        /// The score entry that was added or updated.
+        item: ScoreItem,
+    },
+    /// `scoreRemoved` — a score was removed from an objective.
+    ScoreRemoved {
+        /// The objective the score was removed from.
+        scoreboard: ScoreBoard,
+        /// The score entry that was removed.
+        item: ScoreItem,
+    },
+    /// `scoreboardPosition` — an objective was bound to a display slot.
+    ScoreboardPosition {
+        /// Where the objective is shown (sidebar, list, team sidebar, …).
+        slot: ScoreboardSlot,
+        /// The objective now shown in that slot.
+        scoreboard: ScoreBoard,
+    },
+    /// `teamCreated` — a team was added (already populated with members).
+    TeamCreated(Team),
+    /// `teamRemoved` — a team was removed. Payload is the removed team
+    /// (upstream emits `undefined` — it deletes before emitting).
+    TeamRemoved(Team),
+    /// `teamUpdated` — team parameters (not members) changed.
+    TeamUpdated(Team),
+    /// `teamMemberAdded` — payload is the updated team, like upstream.
+    TeamMemberAdded(Team),
+    /// `teamMemberRemoved` — payload is the updated team, like upstream.
+    TeamMemberRemoved(Team),
+    /// `bossBarCreated` (undocumented upstream).
+    BossBarCreated(BossBar),
+    /// `bossBarDeleted` — payload is the removed bar.
+    BossBarDeleted(BossBar),
+    /// `bossBarUpdated` — progress/title/style/flags changed.
+    BossBarUpdated(BossBar),
+    /// `title` — fires for both `set_title_text` (`kind == Title`) and
+    /// `set_subtitle_text` (`kind == Subtitle`), like upstream.
+    Title {
+        /// The plain text content.
+        text: String,
+        /// Which packet produced the event (upstream's second arg).
+        kind: TitleKind,
+    },
+    /// `title_times` — title fade-in/stay/fade-out in ticks.
+    TitleTimes {
+        /// Fade-in ticks.
+        fade_in: u32,
+        /// Display ticks.
+        stay: u32,
+        /// Fade-out ticks.
+        fade_out: u32,
+    },
+    /// `title_clear`.
+    TitleClear,
+    /// `particle` — a `level_particles` packet.
+    ParticleSpawned(Particle),
+    /// `soundEffectHeard` — a named sound effect or entity sound.
+    /// `hardcodedSoundEffectHeard` is unreachable on the modern protocol
+    /// (azalea always resolves the registry id to a name); the variant
+    /// exists for parity but is never emitted.
+    SoundHeard {
+        /// The sound identifier, e.g. `minecraft:entity.experience_orb.pickup`.
+        name: String,
+        /// The source position (entity sounds are resolved to the entity's
+        /// current position; `Vec3::ZERO` if it isn't loaded).
+        pos: Vec3,
+        /// Playback volume.
+        volume: f32,
+        /// Playback pitch.
+        pitch: f32,
+    },
+    /// `hardcodedSoundEffectHeard` — see [`BotEvent::SoundHeard`].
+    HardcodedSound {
+        /// The sound's registry id.
+        id: u32,
+        /// The sound category (master, music, hostile, …).
+        category: SoundSource,
+        /// The source position.
+        pos: Vec3,
+        /// Playback volume.
+        volume: f32,
+        /// Playback pitch.
+        pitch: f32,
+    },
+    /// `noteHeard` — a note block was played.
+    NoteHeard {
+        /// The note block's position (upstream passes a `Block`).
+        block: BlockPos,
+        /// The instrument, decoded from the block-event action id.
+        instrument: Instrument,
+        /// The note pitch (0–24), the block-event action parameter.
+        pitch: u8,
+    },
+    /// `resourcePack` — the server pushed a resource pack. azalea's
+    /// `AcceptResourcePacksPlugin` auto-accepts every push (see
+    /// [`Bot::deny_resource_pack`]/api-parity.md for the caveat).
+    ResourcePack {
+        /// The pack's wire UUID.
+        uuid: String,
+        /// The download URL.
+        url: String,
+        /// The expected SHA-1 hash.
+        hash: String,
+        /// Whether the server requires the pack to join.
+        required: bool,
+    },
+    /// `sleep` — the bot's pose became `Sleeping`.
+    Sleep,
+    /// `wake` — the bot's pose left `Sleeping`.
+    Wake,
+    /// `breath` — the air supply changed.
+    Breath,
+    /// `health` — a `set_health` packet arrived.
+    Health,
+    /// `experience` — a `set_experience` packet arrived.
+    Experience,
+    /// `spawnReset` — a bed/respawn-anchor spawn point was invalidated.
+    SpawnReset,
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -267,6 +406,14 @@ impl BotBuilder {
             .write()
             .entity_mut(client.entity)
             .insert(AutoReconnectDelay::new(Duration::MAX));
+
+        // the misc domains keep their state in one component so it exists
+        // before the first packet arrives
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(crate::misc::MiscState::default());
 
         let (events, _) = broadcast::channel(256);
         let quit_reason = Arc::new(Mutex::new(None));

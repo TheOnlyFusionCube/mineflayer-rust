@@ -12,13 +12,26 @@ live = []
 
 [dependencies]
 azalea = "0.16"
+# chat-component types (Style, ChatFormatting, TextColor) used by the
+# scoreboard/team API — not re-exported through azalea::chat
+azalea-chat = "0.16"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 thiserror = "2"
 futures = "0.3"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 
+[dev-dependencies]
+# azalea types (BlockPos, ItemStack, HumanoidArm, …) appear in the public
+# API, so live tests need the crate itself
+azalea = "0.16"
+
 [[test]]
 name = "live"
 path = "tests/live/lifecycle.rs"
+required-features = ["live"]
+
+[[test]]
+name = "live_misc"
+path = "tests/live/misc.rs"
 required-features = ["live"]
