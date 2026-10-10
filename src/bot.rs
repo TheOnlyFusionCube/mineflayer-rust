@@ -450,6 +450,10 @@ pub enum BotEvent {
         entity: azalea::EntityRef,
         /// The effect kind that ended.
         effect: azalea::registry::builtin::MobEffect,
+        /// The effect's tracked parameters (upstream emits the stored
+        /// effect object); `amplifier`/`duration` are `-1` when the effect
+        /// was never seen, mirroring upstream's unknown-effect fallback.
+        data: azalea::entity::MobEffectData,
     },
     /// `itemDrop` — an entity's metadata carried an item stack (fires for
     /// item entities when their stack metadata arrives).

@@ -166,10 +166,10 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.findPlayers(filter)` | entity | `bot.find_players(f) -> Vec<EntityRef>` | ported | `PlayerFilter::{Any,Username,Matches,Predicate}` mirrors string/RegExp/fn/null |
 | `bot.attack(entity, swing)` | entity | `bot.attack(e, swing)` | ported | swing=true routes through azalea's attack-with-swing; false sends bare s_attack |
 | `bot.swingArm(hand, showHand)` | entity | `bot.swing_arm(hand)` | diverges | `showHand` has no wire meaning in this protocol (s_swing always carries hand) |
-| `bot.activateEntity(e)` | entity | `bot.activate_entity(e)` | ported | azalea entity_interact; no await needed (fire-and-forget like upstream) |
+| `bot.activateEntity(e)` | entity | `bot.activate_entity(e)` | ported | azalea entity_interact; no await needed (fire-and-forget like upstream); azalea double-sends `s_interact` (attack+interact arms) vs upstream's one |
 | `bot.activateEntityAt(e, pos)` | entity | `bot.activate_entity_at(e, pos)` | ported | EntityInteractEvent with explicit location |
-| `bot.useOn(target)` | entity | `bot.use_on(e)` | ported | same interact packet as activateEntity, like upstream |
-| `bot.mount(e)` | entity | `bot.mount(e)` | ported | same interact packet as upstream's useEntity(target,0) |
+| `bot.useOn(target)` | entity | `bot.use_on(e)` | ported | same interact packet as activateEntity, like upstream; azalea double-sends `s_interact` vs upstream's one |
+| `bot.mount(e)` | entity | `bot.mount(e)` | ported | same interact packet as upstream's useEntity(target,0); azalea double-sends `s_interact` vs upstream's one |
 | `bot.dismount()` | entity | `bot.dismount()` | diverges | sends shift-press player_input (the real dismount); upstream's `jump:true` literal looks like an upstream bug |
 | `bot.moveVehicle(left, fwd)` | entity | `bot.move_vehicle(left:i8, fwd:i8)` | diverges | sends raw player_input like upstream, but doesn't integrate with azalea's PhysicsState |
 | `bot.getExplosionDamages(e,pos,r,raw)` | entity | `bot.get_explosion_damages(..) -> Option<f32>` | diverges | exposure raycasts loaded chunks (Collider shapes); armor from tracked c_update_attributes → None when unknown, like upstream's null |

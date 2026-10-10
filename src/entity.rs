@@ -18,7 +18,7 @@ use azalea::{
     ecs::{entity::Entity, query::With},
     entity::{
         ActiveEffects, EntityDataItem, EntityDataValue, EntityKindComponent, LookDirection,
-        Physics, Pose, Position,
+        MobEffectData, Physics, Pose, Position,
         metadata::{
             AbstractEntityShiftKeyDown, AttachedToTarget, FallFlying, FireworksItem, SleepingPos,
         },
@@ -70,6 +70,10 @@ pub(crate) struct EntityTracker {
     /// subset of attributes it uses (no armor), so the raw snapshots are
     /// tracked for [`Bot::get_explosion_damages`].
     attributes: HashMap<MinecraftEntityId, HashMap<Attribute, AttributeSnapshot>>,
+    /// Active mob effects per entity (`c_update_mob_effect` payload), so
+    /// `entityEffectEnd` can report the effect's data like upstream's
+    /// `entity.effects[id]` lookup does.
+    effects: HashMap<MinecraftEntityId, HashMap<MobEffect, MobEffectData>>,
     /// `c_set_passengers` passenger lists per vehicle.
     passengers_of: HashMap<MinecraftEntityId, Vec<MinecraftEntityId>>,
     /// Passenger → vehicle link, fed by `c_set_passengers` and
@@ -84,12 +88,12 @@ pub(crate) struct EntityTracker {
     difficulty: Option<Difficulty>,
 }
 
-/// Last-seen metadata snapshot for edge detection.
+/// Last-seen metadata snapshot for edge detection (sleep isn't tracked —
+/// `entitySleep` fires on every packet carrying the flag).
 #[derive(Default)]
 struct EntityMeta {
     shift_key_down: bool,
     fall_flying: bool,
-    sleeping: bool,
 }
 
 /// Feed one azalea [`Event`] into the entity domain, returning the
@@ -146,6 +150,7 @@ impl EntityTracker {
         self.meta.remove(&id);
         self.equipment.remove(&id);
         self.attributes.remove(&id);
+        self.effects.remove(&id);
         // the removed entity may itself be a vehicle or a passenger
         self.vehicle_of.remove(&id);
         for passengers in self.passengers_of.values_mut() {
@@ -185,13 +190,17 @@ impl EntityTracker {
             RemoveEntities(p) => {
                 let mut out = Vec::new();
                 for &id in &p.entity_ids {
+                    // Resolve before `forget` clears our record — EntityGone
+                    // and (if it was our vehicle) Dismounted both carry the
+                    // stale handle, like upstream's dead entity object.
                     let entity = self.resolve(client, id);
                     let own_vehicle_gone = self.forget(self_id, id);
-                    out.push(BotEvent::EntityGone { entity, id });
-                    if let Some(vehicle) = own_vehicle_gone {
-                        out.push(BotEvent::Dismounted {
-                            vehicle: self.resolve(client, vehicle),
-                        });
+                    out.push(BotEvent::EntityGone {
+                        entity: entity.clone(),
+                        id,
+                    });
+                    if own_vehicle_gone.is_some() {
+                        out.push(BotEvent::Dismounted { vehicle: entity });
                     }
                 }
                 out
@@ -287,23 +296,42 @@ impl EntityTracker {
                     .into_iter()
                     .collect()
             }
-            UpdateMobEffect(p) => self
-                .resolve(client, p.entity_id)
-                .map(|entity| BotEvent::EntityEffect {
-                    entity,
-                    effect: p.mob_effect,
-                    data: p.data.clone(),
-                })
-                .into_iter()
-                .collect(),
-            RemoveMobEffect(p) => self
-                .resolve(client, p.entity_id)
-                .map(|entity| BotEvent::EntityEffectEnd {
-                    entity,
-                    effect: p.effect,
-                })
-                .into_iter()
-                .collect(),
+            UpdateMobEffect(p) => {
+                self.effects
+                    .entry(p.entity_id)
+                    .or_default()
+                    .insert(p.mob_effect, p.data.clone());
+                self.resolve(client, p.entity_id)
+                    .map(|entity| BotEvent::EntityEffect {
+                        entity,
+                        effect: p.mob_effect,
+                        data: p.data.clone(),
+                    })
+                    .into_iter()
+                    .collect()
+            }
+            RemoveMobEffect(p) => {
+                // upstream emits the tracked effect object and falls back to
+                // `{id, amplifier: -1, duration: -1}` when the effect was
+                // never seen — the remove packet carries only the kind.
+                let data = self
+                    .effects
+                    .get_mut(&p.entity_id)
+                    .and_then(|effects| effects.remove(&p.effect))
+                    .unwrap_or(MobEffectData {
+                        amplifier: -1,
+                        duration: -1,
+                        ..Default::default()
+                    });
+                self.resolve(client, p.entity_id)
+                    .map(|entity| BotEvent::EntityEffectEnd {
+                        entity,
+                        effect: p.effect,
+                        data,
+                    })
+                    .into_iter()
+                    .collect()
+            }
             TakeItemEntity(p) => vec![BotEvent::PlayerCollect {
                 collector: self.resolve(client, p.player_id),
                 collected: self.resolve(client, MinecraftEntityId::from(p.item_id)),
@@ -364,9 +392,9 @@ impl EntityTracker {
             out.push(BotEvent::ItemDrop(entity.clone()));
         }
 
-        // edge detection on the ECS state the packet just wrote — repeated
-        // packets for an unchanged flag don't re-fire (upstream also keys off
-        // packet contents, so this matches except for redundant updates)
+        // upstream emits entityCrouch/entitySleep on every metadata packet
+        // carrying the flag; only the *release* transitions (uncrouch) and
+        // elytra-start are edge-detected
         let meta = self.meta.entry(id).or_default();
         let shift_down = entity
             .get_component::<AbstractEntityShiftKeyDown>()
@@ -385,12 +413,12 @@ impl EntityTracker {
                 .map(|pos| pos.0.is_some())
                 .unwrap_or(false);
 
-        if shift_down && !meta.shift_key_down {
+        if shift_down {
             out.push(BotEvent::EntityCrouch(entity.clone()));
-        } else if !shift_down && meta.shift_key_down {
+        } else if meta.shift_key_down {
             out.push(BotEvent::EntityUncrouch(entity.clone()));
         }
-        if sleeping && !meta.sleeping {
+        if sleeping {
             out.push(BotEvent::EntitySleep(entity.clone()));
         }
         if fall_flying && !meta.fall_flying {
@@ -404,7 +432,6 @@ impl EntityTracker {
         *meta = EntityMeta {
             shift_key_down: shift_down,
             fall_flying,
-            sleeping,
         };
 
         // firework rockets attached to us feed `usedFirework` +
@@ -823,6 +850,10 @@ impl Bot {
         // azalea sends player_input diffs against its own LastSentInput, so a
         // matching release restores the on-wire state without a second packet
         self.client.write_packet(ServerboundPlayerInput::default());
+        // edge: if azalea already thinks shift is held (trying_to_crouch),
+        // the press packet diffs to nothing — the sneak never reaches the
+        // server; matching upstream's raw write is still the closest analog
+        // (upstream has the same desync when its sneak flag drifts).
     }
 
     /// `bot.moveVehicle(left, forward)` — steer input for the ridden
@@ -1238,7 +1269,7 @@ mod tests {
     }
 
     #[test]
-    fn passengers_diff_detects_mount_and_dismount() {
+    fn forget_cleans_vehicle_and_passenger_maps() {
         let id = |i: i32| MinecraftEntityId(i);
         // mount: self appears in a vehicle's passenger list
         let mut tracker = EntityTracker::default();

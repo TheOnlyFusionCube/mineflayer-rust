@@ -15,8 +15,9 @@ use azalea::{
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver, watch};
 
 use crate::{
-    BotEvent, entity,
+    BotEvent,
     chat::{ChatShared, TabList},
+    entity,
 };
 
 /// Shared state the bridge needs beyond its own bookkeeping — one struct so
