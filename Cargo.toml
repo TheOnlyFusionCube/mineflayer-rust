@@ -45,3 +45,8 @@ required-features = ["live"]
 name = "live_misc"
 path = "tests/live/misc.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live_world"
+path = "tests/live/world.rs"
+required-features = ["live"]

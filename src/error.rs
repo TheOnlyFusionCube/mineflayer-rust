@@ -27,6 +27,10 @@ pub enum Error {
     /// mineflayer's `new Error(message)` rejections.
     #[error("{0}")]
     Operation(String),
+    /// Sign text failed validation (upstream emits the same as an error
+    /// event from `updateSign` before writing).
+    #[error("invalid sign text: {0}")]
+    SignText(String),
 }
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.

@@ -37,3 +37,7 @@ pub use misc::{
     TitleKind,
 };
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
+pub use world::{
+    Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
+    Game, Time, WorldRef,
+};

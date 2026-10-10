@@ -12,16 +12,20 @@ use std::{
 };
 
 use azalea::{
-    Vec3,
+    EntityRef, Vec3,
     auto_reconnect::AutoReconnectDelay,
     core::{
         position::{BlockPos, ChunkPos},
         registry_holder::RegistryHolder,
     },
     player::PlayerInfo,
-    protocol::packets::game::{ClientboundGamePacket, c_sound::SoundSource},
+    protocol::packets::game::{
+        ClientboundGamePacket, c_block_entity_data::ClientboundBlockEntityData,
+        c_sound::SoundSource,
+    },
     world::WorldName,
 };
+use std::sync::RwLock;
 use tokio::sync::{broadcast, watch};
 
 use crate::{
@@ -29,6 +33,7 @@ use crate::{
     chat::{ChatPatternMatch, ChatShared, MessagePosition},
     misc::{Instrument, Particle, TitleKind},
     scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team},
+    world::{Block, WorldState},
 };
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
@@ -54,6 +59,10 @@ pub struct Bot {
     /// Chat-domain state shared with the bridge (pattern registry, tablist
     /// header/footer, `tab_complete` correlation) — see `chat::ChatShared`.
     pub(crate) chat: Arc<Mutex<ChatShared>>,
+    /// Facade-kept world/game state (spawn point, clocks, weather, login
+    /// metadata) maintained by the packet bridge in [`crate::world`] —
+    /// azalea drops most of these packets upstream.
+    pub(crate) world_state: Arc<RwLock<WorldState>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -300,6 +309,60 @@ pub enum BotEvent {
     Experience,
     /// `spawnReset` — a bed/respawn-anchor spawn point was invalidated.
     SpawnReset,
+    /// `chunkColumnUnload` — a chunk column was unloaded by the server.
+    ChunkUnload(ChunkPos),
+    /// `blockUpdate` — a block changed in the world. `old` is `None` when
+    /// the previous state wasn't observed; `new` is what the server
+    /// reported. Azalea applies updates to the world itself on the next
+    /// tick, so `block_at` may briefly still return `old`.
+    ///
+    /// mineflayer's position-filtered `blockUpdate:x,y,z` is spelled by
+    /// matching `new.pos` on this variant.
+    BlockUpdate { old: Option<Block>, new: Block },
+    /// `blockEntityData` — raw block-entity NBT. Azalea doesn't store
+    /// block entities, so the packet is forwarded as received.
+    BlockEntityData(ClientboundBlockEntityData),
+    /// `signOpen` — the server opened a sign editor (usually right after
+    /// a sign was placed); answer with `Bot::update_sign`.
+    SignOpen {
+        block: Option<Block>,
+        is_front_text: bool,
+    },
+    /// `pistonMove` — a piston extended (`is_pulling: false`) or
+    /// retracted. `direction` is the raw protocol facing byte
+    /// (0=down, 1=up, 2=north, 3=south, 4=west, 5=east).
+    PistonMove {
+        block: Block,
+        is_pulling: bool,
+        direction: u8,
+    },
+    /// `chestLidMove` — the open-count of a chest or other lidded
+    /// container changed. `second` is the other half for double chests.
+    ChestLidMove {
+        block: Block,
+        open_count: u8,
+        second: Option<Block>,
+    },
+    /// `blockBreakProgressObserved` — a break-animation stage (0–9).
+    BlockBreakProgress {
+        block: Option<Block>,
+        stage: u8,
+        entity: Option<EntityRef>,
+    },
+    /// `blockBreakProgressEnd` — the break animation was removed.
+    BlockBreakEnd {
+        block: Option<Block>,
+        entity: Option<EntityRef>,
+    },
+    /// `time` — a `set_time` packet updated the world clocks.
+    Time,
+    /// `rain` — `is_raining` flipped.
+    Rain,
+    /// `weatherUpdate` — the rain or thunder level changed.
+    WeatherUpdate,
+    /// `game` — game state changed (login/respawn metadata, gamemode,
+    /// default spawn position).
+    GameStateChanged,
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -488,6 +551,8 @@ impl BotBuilder {
         let quit_reason = Arc::new(Mutex::new(None));
         let chat = Arc::new(Mutex::new(ChatShared::default()));
         let (alive, alive_rx) = watch::channel(());
+        let world_state = Arc::new(RwLock::new(WorldState::default()));
+        let world_alive = alive_rx.clone();
         bridge::spawn(
             client.clone(),
             rx,
@@ -497,6 +562,12 @@ impl BotBuilder {
             alive_rx,
             chat.clone(),
         );
+        crate::world::spawn_packet_bridge(
+            client.clone(),
+            events.clone(),
+            world_state.clone(),
+            world_alive,
+        );
 
         Ok(Bot {
             client,
@@ -504,6 +575,7 @@ impl BotBuilder {
             quit_reason,
             _alive: alive,
             chat,
+            world_state,
         })
     }
 }
@@ -529,6 +601,7 @@ impl Bot {
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
             chat: Arc::new(Mutex::new(ChatShared::default())),
+            world_state: Arc::new(RwLock::new(WorldState::default())),
         }
     }
 

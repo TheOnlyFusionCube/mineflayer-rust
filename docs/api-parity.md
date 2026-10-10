@@ -32,7 +32,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
 | `Vec3 (prismarine)` | module | `azalea::Vec3 (re-export)` | pending | azalea_core::position::Vec3 |
 | `Entity (prismarine-entity)` | module | `azalea::EntityRef / own Entity type` | pending | — |
-| `Block (prismarine-block)` | module | `own Block type over azalea BlockState+pos` | pending | incl. blockEntity, getSignText() |
+| `Block (prismarine-block)` | module | `mineflayer::world::Block { pos, state, world }` | diverges | name/kind/state_id/bounding_box/diggable/property/behavior ported; no blockEntity/getSignText (azalea has no block-entity storage — U11) |
 | `Biome (prismarine-biome)` | module | `azalea::registry Biome` | pending | — |
 | `Item (prismarine-item)` | module | `azalea_inventory::ItemStack wrapper` | pending | — |
 | `Recipe (prismarine-recipe)` | module | `own Recipe type` | pending | — |
@@ -131,31 +131,31 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.blockAt(point)` | world | `bot.block_at(pos) -> Option<Block>` | pending | — |
+| `bot.blockAt(point)` | world | `bot.block_at(pos) -> Option<Block>` | ported | None when the chunk isn't loaded |
 | `bot.waitForChunksToLoad()` | world | `bot.wait_for_chunks_to_load() -> Result<()>` | ported | resolves when the 5×5 chunk area around the bot is loaded; 10s timeout |
-| `bot.blockInSight() (dep)` | world | `deprecated -> block_at_cursor` | pending | — |
-| `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(..) -> Option<Block>` | pending | azalea hit_result() |
-| `bot.entityAtCursor(maxDist)` | world | `bot.entity_at_cursor(..) -> Option<EntityRef>` | pending | — |
-| `bot.blockAtEntityCursor(e, max, m)` | world | `bot.block_at_entity_cursor(..)` | pending | — |
-| `bot.canSeeBlock(block)` | world | `bot.can_see_block(&block) -> bool` | pending | — |
-| `bot.findBlocks(options)` | world | `bot.find_blocks(opts) -> Vec<BlockPos>` | pending | closest-first sort |
-| `bot.findBlock(options)` | world | `bot.find_block(opts) -> Option<Block>` | pending | — |
-| `bot.updateSign(block, text, back)` | world | `bot.update_sign(..)` | pending | azalea lacks block-entity storage; packet bridge |
-| `bot.world` | world | `bot.world() -> WorldRef` | pending | prismarine-world analog over azalea World |
-| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | pending | azalea logs+drops default-spawn-position packet; deferred to U3 |
-| `bot._updateBlockState (internal)` | world | `pub(crate) helpers — internal` | pending | chunk block-state write |
-| `bot._getBlockAtEyeLevel (internal)` | world | `pub(crate) helpers — internal` | pending | ray/eye-height block lookup |
-| `event('blockUpdate')` | world | `BotEvent::BlockUpdate{old,new}` | pending | tier-2 packet bridge (QueuedServerBlockUpdates is internal) |
-| `event('blockUpdate:(x,y,z)')` | world | `bot.world().on_block_update(pos, cb)?` | pending | per-position filter; maybe wontfix -> subscribe+filter |
+| `bot.blockInSight() (dep)` | world | `bot.block_in_sight() -> Option<Block>` | ported | `#[deprecated]`; = block_at_cursor(80) |
+| `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(max_distance, matcher) -> Option<Block>` | ported | own DDA raycast — upstream WorldSync.raycast semantics: matcher accepts on voxel entry, no-matcher clips collision shapes (block.shapes); max default 256 |
+| `bot.entityAtCursor(maxDist)` | world | `bot.entity_at_cursor(max_distance) -> Option<EntityRef>` | diverges | uses azalea's cached crosshair HitResult (pick-plugin range); max_distance only caps the result |
+| `bot.blockAtEntityCursor(e, max, m)` | world | `bot.block_at_entity_cursor(&entity, max_distance, matcher) -> Option<Block>` | diverges | uses eye height, upstream uses entity.height |
+| `bot.canSeeBlock(block)` | world | `bot.can_see_block(&block) -> bool` | ported | eye->center ray, range = distance to corner; matcher = collision-shape clip OR voxel entry into target (upstream blocks.js match) |
+| `bot.findBlocks(options)` | world | `bot.find_blocks(FindBlocksOpts) -> Vec<BlockPos>` | ported | euclid closest-first; defaults max_distance=16, count=1; chunk-layer early exit |
+| `bot.findBlock(options)` | world | `bot.find_block(FindBlocksOpts) -> Option<Block>` | ported | — |
+| `bot.updateSign(block, text, back)` | world | `bot.update_sign(&block, text, back) -> Result<()>` | diverges | write-only: sends s_sign_update (front/back); sign text unreadable (no block-entity storage — U11) |
+| `bot.world` | world | `bot.world() -> Option<WorldRef>` | diverges | WorldRef wraps the client (parking_lot lock type isn't nameable); get_block_state/block_at/raycast/find_blocks/set_block_state |
+| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | ported | c_set_default_spawn_position decoded in packet bridge |
+| `bot._updateBlockState (internal)` | world | `n/a` | wontfix | azalea applies block updates to the world itself |
+| `bot._getBlockAtEyeLevel (internal)` | world | `n/a` | wontfix | internal helper; eye raycasts go through `block_at_cursor` |
+| `event('blockUpdate')` | world | `BotEvent::BlockUpdate { old, new }` | ported | c_block_update + c_section_blocks_update decoded; old=None when chunk unloaded |
+| `event('blockUpdate:(x,y,z)')` | world | `match` on `BotEvent::BlockUpdate`'s `new.pos` | diverges | no per-position emitter; subscribers filter |
 | `event('blockPlaced')` | world | `BotEvent::BlockPlaced{old,new}` | pending | bot's own placements |
-| `event('blockEntityData')` | world | `BotEvent::BlockEntityData{..}` | pending | packet bridge; azalea drops block-entity data |
-| `event('signOpen')` | world | `BotEvent::SignOpen{block}` | pending | c_open_sign_editor packet |
+| `event('blockEntityData')` | world | `BotEvent::BlockEntityData(ClientboundBlockEntityData)` | ported | whole packet forwarded (pos + kind + NBT) |
+| `event('signOpen')` | world | `BotEvent::SignOpen { block, is_front_text }` | ported | c_open_sign_editor decoded |
 | `event('chunkColumnLoad')` | world | `BotEvent::ChunkColumnLoad(ChunkPos)` | ported | azalea Event::ReceiveChunk |
-| `event('chunkColumnUnload')` | world | `BotEvent::ChunkUnload(ChunkPos)` | pending | c_forget_level_chunk packet |
-| `event('pistonMove')` | world | `BotEvent::PistonMove{..}` | pending | c_piston_event via packet bridge |
-| `event('chestLidMove')` | world | `BotEvent::ChestLidMove{..}` | pending | c_block_event via packet bridge |
-| `event('blockBreakProgressObserved')` | world | `BotEvent::BlockBreakProgress{block,stage,entity}` | pending | — |
-| `event('blockBreakProgressEnd')` | world | `BotEvent::BlockBreakEnd{block,entity}` | pending | — |
+| `event('chunkColumnUnload')` | world | `BotEvent::ChunkUnload(ChunkPos)` | ported | c_forget_level_chunk decoded |
+| `event('pistonMove')` | world | `BotEvent::PistonMove { block, is_pulling, direction }` | ported | c_block_event; direction is the raw facing byte like upstream |
+| `event('chestLidMove')` | world | `BotEvent::ChestLidMove { block, open_count, second }` | ported | c_block_event + openCountByPos dedup port |
+| `event('blockBreakProgressObserved')` | world | `BotEvent::BlockBreakProgress { block, stage, entity }` | ported | c_block_destruction stage<=9; entity via entity_by_minecraft_id |
+| `event('blockBreakProgressEnd')` | world | `BotEvent::BlockBreakEnd { block, entity }` | ported | c_block_destruction stage>9 |
 
 ## Entities / players / combat
 
@@ -431,31 +431,31 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.time.doDaylightCycle` | state | `bot.time().do_daylight_cycle()` | pending | — |
-| `bot.time.bigTime` | state | `bot.time().big_time() -> u64` | pending | — |
-| `bot.time.time` | state | `bot.time().time()` | pending | — |
-| `bot.time.timeOfDay` | state | `bot.time().time_of_day()` | pending | — |
-| `bot.time.day` | state | `bot.time().day()` | pending | — |
-| `bot.time.isDay` | state | `bot.time().is_day()` | pending | — |
-| `bot.time.moonPhase` | state | `bot.time().moon_phase()` | pending | — |
-| `bot.time.bigAge` | state | `bot.time().big_age()` | pending | — |
-| `bot.time.age` | state | `bot.time().age()` | pending | — |
-| `bot.isRaining` | state | `bot.is_raining() -> bool` | pending | c_level_event bridge; azalea drops it |
-| `bot.rainState` | state | `bot.rain_state() -> f32` | pending | — |
-| `bot.thunderState` | state | `bot.thunder_state() -> f32` | pending | — |
-| `bot.game.levelType` | state | `bot.game().level_type()` | pending | — |
+| `bot.time.doDaylightCycle` | state | `bot.time()?.do_daylight_cycle` | ported | `bot.time() -> Option<Time>`; None until first c_set_time |
+| `bot.time.bigTime` | state | `bot.time()?.big_time` | ported | u64 — no BigInt/Number split needed |
+| `bot.time.time` | state | `bot.time()?.time` | ported | — |
+| `bot.time.timeOfDay` | state | `bot.time()?.time_of_day` | ported | — |
+| `bot.time.day` | state | `bot.time()?.day` | ported | — |
+| `bot.time.isDay` | state | `bot.time()?.is_day` | ported | — |
+| `bot.time.moonPhase` | state | `bot.time()?.moon_phase` | ported | — |
+| `bot.time.bigAge` | state | `bot.time()?.big_age` | ported | — |
+| `bot.time.age` | state | `bot.time()?.age` | ported | — |
+| `bot.isRaining` | state | `bot.is_raining() -> bool` | ported | c_game_event decoded (weather is a game event, not level event) |
+| `bot.rainState` | state | `bot.rain_state() -> f32` | ported | — |
+| `bot.thunderState` | state | `bot.thunder_state() -> f32` | ported | — |
+| `bot.game.levelType` | state | `bot.game().level_type` | ported | "flat"/"default" from is_flat on login+respawn |
 | `bot.game.dimension` | state | `bot.dimension() -> Option<WorldName>` | ported | top-level `bot.dimension()`; `bot.game()` facade deferred |
-| `bot.game.difficulty` | state | `bot.game().difficulty()` | pending | — |
+| `bot.game.difficulty` | state | `bot.game().difficulty` | ported | c_change_difficulty decoded |
 | `bot.game.gameMode` | state | `bot.game_mode() -> Option<GameMode>` | ported | top-level `bot.game_mode()`; `bot.game()` facade deferred |
-| `bot.game.hardcore` | state | `bot.game().hardcore()` | pending | — |
-| `bot.game.maxPlayers` | state | `bot.game().max_players()` | pending | — |
-| `bot.game.serverBrand` | state | `bot.game().server_brand()` | pending | — |
-| `bot.game.minY` | state | `bot.game().min_y()` | pending | — |
-| `bot.game.height` | state | `bot.game().height()` | pending | — |
-| `event('time')` | state | `BotEvent::Time` | pending | — |
-| `event('rain')` | state | `BotEvent::Rain` | pending | — |
-| `event('weatherUpdate')` | state | `BotEvent::WeatherUpdate` | pending | — |
-| `event('game')` | state | `BotEvent::GameStateChanged` | pending | — |
+| `bot.game.hardcore` | state | `bot.game().hardcore` | ported | from c_login |
+| `bot.game.maxPlayers` | state | `bot.game().max_players` | ported | from c_login |
+| `bot.game.serverBrand` | state | `bot.game().server_brand` | diverges | vanilla sends minecraft:brand in *configuration* phase — unreachable via Event::Packet (game packets only); stays None |
+| `bot.game.minY` | state | `bot.game().min_y` | ported | world.chunks.min_y() |
+| `bot.game.height` | state | `bot.game().height` | ported | world.chunks.height() |
+| `event('time')` | state | `BotEvent::Time` | ported | per c_set_time; clocks also tick forward one tick per Tick like vanilla |
+| `event('rain')` | state | `BotEvent::Rain` | ported | emitted when is_raining flips |
+| `event('weatherUpdate')` | state | `BotEvent::WeatherUpdate` | ported | rain/thunder level changes |
+| `event('game')` | state | `BotEvent::GameStateChanged` | ported | login, respawn, gamemode change, spawn-position update |
 
 ## Health / food / experience / oxygen
 
