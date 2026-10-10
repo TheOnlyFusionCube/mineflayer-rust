@@ -698,24 +698,21 @@ impl Bot {
 
     /// `bot.players` — the tab list, keyed by username.
     pub fn players(&self) -> HashMap<String, Player> {
-        self.client
+        // Snapshot the tab list before resolving uuids: the component guard
+        // holds an ECS read lock and `entity_by_uuid` re-locks it — with a
+        // writer queued in between, parking_lot deadlocks the second read.
+        let infos: Vec<PlayerInfo> = self
+            .client
             .get_component::<azalea::local_player::TabList>()
-            .map(|tab_list| {
-                tab_list
-                    .values()
-                    .map(|info| {
-                        let entity = self.client.entity_by_uuid(info.uuid);
-                        (
-                            info.profile.name.clone(),
-                            Player {
-                                info: info.clone(),
-                                entity,
-                            },
-                        )
-                    })
-                    .collect()
+            .map(|tab_list| tab_list.values().cloned().collect())
+            .unwrap_or_default();
+        infos
+            .into_iter()
+            .map(|info| {
+                let entity = self.client.entity_by_uuid(info.uuid);
+                (info.profile.name.clone(), Player { info, entity })
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// `bot.player` — the [`Player`] for the bot itself; `None` until the tab
