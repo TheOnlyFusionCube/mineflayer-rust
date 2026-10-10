@@ -22,6 +22,11 @@ pub enum Error {
     /// An operation did not complete in time.
     #[error("timed out")]
     Timeout,
+    /// A bot operation failed with an upstream-style message (e.g.
+    /// `already sleeping`, `Fishing cancelled`) — the Rust analog of
+    /// mineflayer's `new Error(message)` rejections.
+    #[error("{0}")]
+    Operation(String),
 }
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.

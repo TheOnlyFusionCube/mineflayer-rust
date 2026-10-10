@@ -19,6 +19,7 @@ pub mod inventory;
 pub mod misc;
 pub mod movement;
 pub mod pathfinder;
+pub mod scoreboard;
 pub mod state;
 pub mod windows;
 pub mod world;
@@ -31,3 +32,8 @@ pub use chat::{
     ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
+pub use misc::{
+    ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
+    TitleKind,
+};
+pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
