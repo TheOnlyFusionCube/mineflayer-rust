@@ -22,3 +22,8 @@ serde = { version = "1", features = ["derive"] }
 name = "live"
 path = "tests/live/lifecycle.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live-chat"
+path = "tests/live/chat.rs"
+required-features = ["live"]
