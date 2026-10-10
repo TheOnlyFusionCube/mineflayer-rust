@@ -25,7 +25,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `supportFeature(feature, version)` | module | `pub fn support_feature(name) -> bool` | diverges | no version arg — answers for the single supported MC version |
 | `mcdata.blocks` | module | `azalea::registry / azalea::block` | pending | re-export azalea registry |
 | `mcdata.items` | module | `azalea::registry / azalea_inventory::item` | pending | re-export azalea registry |
-| `mcdata.materials` | module | `n/a or azalea_block property` | pending | minecraft-data 'materials' have no azalea analog; likely tool-speed data |
+| `mcdata.materials` | module | `own lookup table (dig-speed materials)` | pending | minecraft-data 'materials' have no azalea analog; tool-speed data |
 | `mcdata.recipes` | module | `recipe registry (custom over c_update_recipes)` | pending | tier-2 packet bridge stores recipes |
 | `mcdata.instruments` | module | `enum Instrument` | pending | note-block instruments |
 | `mcdata.biomes` | module | `azalea::registry::data / builtin::Biome` | pending | — |
@@ -49,14 +49,14 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.host` | lifecycle | `BotOptions::host` | pending | default localhost |
 | `options.version` | lifecycle | `n/a` | diverges | azalea tracks latest MC only; no version selection |
 | `options.auth` | lifecycle | `BotOptions::auth (offline\|microsoft)` | pending | — |
-| `options.clientToken` | lifecycle | `n/a` | pending | token plumbing inside Account |
+| `options.clientToken` | lifecycle | `n/a` | wontfix | n/a — generated inside Account; no upstream hook |
 | `options.accessToken` | lifecycle | `Account::with_microsoft_access_token` | pending | — |
 | `options.logErrors` | lifecycle | `BotOptions::log_errors` | pending | — |
 | `options.hideErrors` | lifecycle | `BotOptions::hide_errors` | pending | — |
-| `options.keepAlive` | lifecycle | `n/a (azalea handles keep-alive)` | pending | — |
+| `options.keepAlive` | lifecycle | `n/a` | wontfix | n/a — azalea owns keepalive |
 | `options.checkTimeoutInterval` | lifecycle | `BotOptions::check_timeout_interval` | pending | — |
-| `options.loadInternalPlugins` | lifecycle | `n/a — Rust modules are compile-time` | pending | — |
-| `options.storageBuilder` | lifecycle | `n/a (anvil provider out of scope)` | pending | — |
+| `options.loadInternalPlugins` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
+| `options.storageBuilder` | lifecycle | `n/a` | wontfix | n/a — anvil provider out of scope |
 | `options.client` | lifecycle | `Bot::from_client(client) analog` | pending | wrap existing azalea::Client |
 | `options.brand` | lifecycle | `ClientInformation brand field` | pending | — |
 | `options.respawn` | lifecycle | `BotOptions::auto_respawn` | pending | azalea AutoRespawnPlugin |
@@ -65,7 +65,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.chat (settings passthrough)` | lifecycle | `BotOptions -> ClientInformation` | pending | — |
 | `options.colorsEnabled` | lifecycle | `ClientInformation::chat_colors` | pending | — |
 | `options.viewDistance` | lifecycle | `ClientInformation::view_distance` | pending | — |
-| `options.difficulty` | lifecycle | `ClientInformation (no difficulty field upstream)` | pending | difficulty is server-side; likely wontfix as option |
+| `options.difficulty` | lifecycle | `ClientInformation (no difficulty field upstream)` | pending | stored setting only; server-authoritative |
 | `options.skinParts` | lifecycle | `ClientInformation::model_customization` | pending | — |
 | `options.enableTextFiltering` | lifecycle | `ClientInformation::text_filtering_enabled` | pending | — |
 | `options.enableServerListing` | lifecycle | `ClientInformation::allows_listing` | pending | — |
@@ -84,9 +84,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.quit(reason?)` | lifecycle | `bot.quit(reason)` | pending | graceful disconnect, default 'disconnect.quitting' |
 | `bot.respawn()` | lifecycle | `bot.respawn()` | pending | manual respawn when auto_respawn off |
 | `bot.connect(options)` | lifecycle | `Bot::connect(opts) -> Result<Bot>` | pending | typed-only upstream |
-| `bot.loadPlugin(plugin)` | lifecycle | `n/a — compile-time` | pending | Rust: modules, not runtime plugins; decide wontfix vs fn-injection |
-| `bot.loadPlugins(plugins)` | lifecycle | `n/a — compile-time` | pending | — |
-| `bot.hasPlugin(plugin)` | lifecycle | `n/a — compile-time` | pending | — |
+| `bot.loadPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
+| `bot.loadPlugins(plugins)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
+| `bot.hasPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `bot.supportFeature(name)` | lifecycle | `bot.support_feature(name) -> bool` | diverges | single-version semantics (standing order 11) |
 | `bot.username` | lifecycle | `bot.username() -> &str` | pending | — |
 | `bot.version` | lifecycle | `bot.version() -> &str` | diverges | returns the single supported MC version (azalea mc26.1) |
@@ -94,7 +94,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.majorVersion` | lifecycle | `bot.major_version() -> &str` | pending | '26.1'-style; single-version |
 | `bot.registry` | lifecycle | `bot.registry() -> RegistryHolder` | pending | azalea dynamic registries |
 | `bot._client` | lifecycle | `bot.client() -> &azalea::Client` | pending | unstable upstream; public escape hatch here |
-| `bot._warn(...)` | lifecycle | `n/a` | pending | internal logging; tracing instead |
+| `bot._warn(...)` | lifecycle | `n/a` | wontfix | n/a — tracing/logging, not an API |
+| `bot._getDimensionName() (internal)` | lifecycle | `pub(crate) helpers — internal` | pending | dimension-name lookup |
 | `event('inject_allowed')` | lifecycle | `BotEvent::Init?` | pending | azalea Event::Init analog |
 | `event('login')` | lifecycle | `BotEvent::Login` | pending | — |
 | `event('spawn')` | lifecycle | `BotEvent::Spawn` | pending | — |
@@ -142,6 +143,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.updateSign(block, text, back)` | world | `bot.update_sign(..)` | pending | azalea lacks block-entity storage; packet bridge |
 | `bot.world` | world | `bot.world() -> WorldRef` | pending | prismarine-world analog over azalea World |
 | `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | pending | — |
+| `bot._updateBlockState (internal)` | world | `pub(crate) helpers — internal` | pending | chunk block-state write |
+| `bot._getBlockAtEyeLevel (internal)` | world | `pub(crate) helpers — internal` | pending | ray/eye-height block lookup |
 | `event('blockUpdate')` | world | `BotEvent::BlockUpdate{old,new}` | pending | tier-2 packet bridge (QueuedServerBlockUpdates is internal) |
 | `event('blockUpdate:(x,y,z)')` | world | `bot.world().on_block_update(pos, cb)?` | pending | per-position filter; maybe wontfix -> subscribe+filter |
 | `event('blockPlaced')` | world | `BotEvent::BlockPlaced{old,new}` | pending | bot's own placements |
@@ -337,6 +340,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('windowOpen')` | inventory | `BotEvent::WindowOpen(window)` | pending | MenuOpenedEvent |
 | `event('windowClose')` | inventory | `BotEvent::WindowClose(window)` | pending | — |
 | `event('heldItemChanged')` | inventory | `BotEvent::HeldItemChanged(Option<Item>)` | pending | — |
+| `bot._setSlot (internal)` | inventory | `pub(crate) helpers — internal` | pending | inventory slot state update |
+| `bot._syncWindow (internal)` | inventory | `pub(crate) helpers — internal` | pending | window transaction sync |
+| `bot._ensureHasSentCarriedItem (internal)` | inventory | `pub(crate) helpers — internal` | pending | cursor/carried item sync |
 | `event confirmTransaction (internal)` | inventory | `internal` | pending | window transaction plumbing |
 | `event setSlot:{windowId} (internal)` | inventory | `internal` | pending | — |
 | `event setWindowItems:{windowId} (internal)` | inventory | `internal` | pending | — |
@@ -361,6 +367,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.placeBlock(ref, faceVec)` | interact | `bot.place_block(block, dir).await` | pending | block_interact + prediction gap |
 | `bot.placeEntity(ref, faceVec)` | interact | `bot.place_entity(..).await -> EntityRef` | pending | armor stand/end crystal |
 | `bot.activateBlock(b, dir, cursor)` | interact | `bot.activate_block(b).await` | pending | azalea block_interact |
+| `bot._nextSequence (internal)` | interact | `pub(crate) helpers — internal` | pending | server action-sequence counter (dig/place) |
 | `bot.targetDigBlock (undoc)` | interact | `bot.target_dig_block() -> Option<Block>` | pending | — |
 | `bot.targetDigFace (undoc)` | interact | `bot.target_dig_face()` | pending | — |
 | `bot.lastDigTime (undoc)` | interact | `bot.last_dig_time()` | pending | — |
@@ -494,7 +501,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.settings.chat` | misc | `settings.chat_visibility` | pending | — |
 | `bot.settings.colorsEnabled` | misc | `settings.chat_colors` | pending | — |
 | `bot.settings.viewDistance` | misc | `settings.view_distance` | pending | — |
-| `bot.settings.difficulty` | misc | `settings (no ClientInformation field)` | pending | likely wontfix — not a client-info field upstream either |
+| `bot.settings.difficulty` | misc | `settings.difficulty -> u8` | pending | stored setting; not sent in ClientInformation |
 | `bot.settings.skinParts` | misc | `settings.model_customization` | pending | — |
 | `bot.settings.enableTextFiltering` | misc | `settings.text_filtering_enabled` | pending | — |
 | `bot.settings.enableServerListing` | misc | `settings.allows_listing` | pending | — |
@@ -572,4 +579,4 @@ Tracked for completeness — these are third-party npm packages, not part of the
 | `mineflayer-navigate` | misc | `n/a` | wontfix | external plugin; outside port scope (see PORT-PLAN) |
 | `mineflayer-builder` | misc | `n/a` | wontfix | external plugin; outside port scope (see PORT-PLAN) |
 
-<!-- 456 rows -->
+<!-- 463 rows -->
