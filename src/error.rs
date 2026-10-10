@@ -12,6 +12,10 @@ pub enum Error {
     /// Wraps the error returned by [`azalea::Client::join`].
     #[error("connect failed: {0}")]
     Connect(#[from] azalea::protocol::resolve::ResolveError),
+    /// Microsoft authentication failed (device-code flow or token refresh).
+    /// Wraps [`azalea::auth::AuthError`].
+    #[error("authentication failed: {0}")]
+    Auth(#[from] azalea::auth::AuthError),
     /// The operation requires a connected bot.
     #[error("not connected")]
     NotConnected,

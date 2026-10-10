@@ -13,7 +13,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `createBot(options)` | module | `Bot::builder(opts) -> BotBuilder; Bot::connect(opts) -> Result<Bot>` | pending | entry point |
+| `createBot(options)` | module | `Bot::builder() -> BotBuilder; BotBuilder::connect() -> Result<Bot>` | ported | builder style; connect runs bot on a dedicated thread (azalea LocalSet) |
 | `Location` | module | `struct Location` | pending | legacy helper; azalea BlockPos/Vec3 cover most uses |
 | `Painting` | module | `struct Painting` | pending | entity metadata wrapper |
 | `ScoreBoard (class)` | module | `struct ScoreBoard` | pending | see Scoreboard section |
@@ -43,28 +43,28 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `options.username` | lifecycle | `BotOptions::username` | pending | default 'Player' |
-| `options.port` | lifecycle | `BotOptions::port` | pending | default 25565 |
-| `options.password` | lifecycle | `BotOptions::password -> Account::microsoft` | pending | omit -> offline mode |
-| `options.host` | lifecycle | `BotOptions::host` | pending | default localhost |
+| `options.username` | lifecycle | `BotBuilder::username(impl Into<String>)` | ported | default 'Player' |
+| `options.port` | lifecycle | `BotBuilder::port(u16)` | ported | default 25565 |
+| `options.password` | lifecycle | `n/a` | diverges | Mojang password auth is dead upstream too; use `Auth::Microsoft` |
+| `options.host` | lifecycle | `BotBuilder::host(impl Into<String>)` | ported | default localhost |
 | `options.version` | lifecycle | `n/a` | diverges | azalea tracks latest MC only; no version selection |
-| `options.auth` | lifecycle | `BotOptions::auth (offline\|microsoft)` | pending | — |
+| `options.auth` | lifecycle | `BotBuilder::auth(Auth)` | ported | `Auth::{Offline, Microsoft, Account}` |
 | `options.clientToken` | lifecycle | `n/a` | wontfix | n/a — generated inside Account; no upstream hook |
-| `options.accessToken` | lifecycle | `Account::with_microsoft_access_token` | pending | — |
+| `options.accessToken` | lifecycle | `Auth::Account(Account::with_microsoft_access_token(..))` | ported | prebuilt account passthrough |
 | `options.logErrors` | lifecycle | `BotOptions::log_errors` | pending | — |
 | `options.hideErrors` | lifecycle | `BotOptions::hide_errors` | pending | — |
-| `options.keepAlive` | lifecycle | `n/a` | wontfix | n/a — azalea owns keepalive |
+| `options.keepAlive` | lifecycle | `n/a` | wontfix | n/a — azalea owns keepalive; `Event::KeepAlive` dropped by the bridge |
 | `options.checkTimeoutInterval` | lifecycle | `BotOptions::check_timeout_interval` | pending | — |
 | `options.loadInternalPlugins` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `options.storageBuilder` | lifecycle | `n/a` | wontfix | n/a — anvil provider out of scope |
-| `options.client` | lifecycle | `Bot::from_client(client) analog` | pending | wrap existing azalea::Client |
+| `options.client` | lifecycle | `Bot::new(client)` | ported | doc-hidden escape hatch; no event bridge on prebuilt clients |
 | `options.brand` | lifecycle | `ClientInformation brand field` | pending | — |
-| `options.respawn` | lifecycle | `BotOptions::auto_respawn` | pending | azalea AutoRespawnPlugin |
+| `options.respawn` | lifecycle | `n/a` | diverges | azalea auto-respawns unconditionally; no toggle exposed |
 | `options.plugins` | lifecycle | `compile-time module set` | pending | no runtime plugin loader |
 | `options.physicsEnabled` | lifecycle | `BotOptions::physics_enabled` | pending | — |
 | `options.chat (settings passthrough)` | lifecycle | `BotOptions -> ClientInformation` | pending | — |
 | `options.colorsEnabled` | lifecycle | `ClientInformation::chat_colors` | pending | — |
-| `options.viewDistance` | lifecycle | `ClientInformation::view_distance` | pending | — |
+| `options.viewDistance` | lifecycle | `BotBuilder::view_distance(u8)` | ported | applied on `Event::Init` so login already carries it |
 | `options.difficulty` | lifecycle | `ClientInformation (no difficulty field upstream)` | pending | stored setting only; server-authoritative |
 | `options.skinParts` | lifecycle | `ClientInformation::model_customization` | pending | — |
 | `options.enableTextFiltering` | lifecycle | `ClientInformation::text_filtering_enabled` | pending | — |
@@ -80,36 +80,36 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.end(reason?)` | lifecycle | `bot.end(reason) / Drop` | pending | — |
-| `bot.quit(reason?)` | lifecycle | `bot.quit(reason)` | pending | graceful disconnect, default 'disconnect.quitting' |
-| `bot.respawn()` | lifecycle | `bot.respawn()` | pending | manual respawn when auto_respawn off |
-| `bot.connect(options)` | lifecycle | `Bot::connect(opts) -> Result<Bot>` | pending | typed-only upstream |
+| `bot.end(reason?)` | lifecycle | `bot.end(Option<&str>)` + drop last `Bot` to shut down | ported | End carries reason (default 'socketClosed') |
+| `bot.quit(reason?)` | lifecycle | `bot.quit(Option<&str>)` | ported | graceful disconnect, default 'disconnect.quitting' |
+| `bot.respawn()` | lifecycle | `bot.respawn()` | ported | no-op while alive; s_client_command PerformRespawn |
+| `bot.connect(options)` | lifecycle | `BotBuilder::connect() -> Result<Bot>` | ported | builder form (typed-only upstream anyway) |
 | `bot.loadPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `bot.loadPlugins(plugins)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `bot.hasPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `bot.supportFeature(name)` | lifecycle | `bot.support_feature(name) -> bool` | diverges | single-version semantics (standing order 11) |
-| `bot.username` | lifecycle | `bot.username() -> &str` | pending | — |
-| `bot.version` | lifecycle | `bot.version() -> &str` | diverges | returns the single supported MC version (azalea mc26.1) |
-| `bot.protocolVersion` | lifecycle | `bot.protocol_version() -> i32` | pending | protocol number of the single supported version |
-| `bot.majorVersion` | lifecycle | `bot.major_version() -> &str` | pending | '26.1'-style; single-version |
-| `bot.registry` | lifecycle | `bot.registry() -> RegistryHolder` | pending | azalea dynamic registries |
-| `bot._client` | lifecycle | `bot.client() -> &azalea::Client` | pending | unstable upstream; public escape hatch here |
+| `bot.username` | lifecycle | `bot.username() -> String` | ported | GameProfileComponent name; '' before login |
+| `bot.version` | lifecycle | `bot.version() -> &'static str` | diverges | returns the single supported MC version (azalea mc26.1) |
+| `bot.protocolVersion` | lifecycle | `bot.protocol_version() -> i32` | ported | protocol number of the single supported version (775) |
+| `bot.majorVersion` | lifecycle | `bot.major_version() -> &'static str` | ported | same as `version()` — single-version port |
+| `bot.registry` | lifecycle | `bot.registry() -> RegistryHolder` | ported | azalea dynamic registries snapshot |
+| `bot._client` | lifecycle | `bot.client() -> &azalea::Client` | ported | unstable upstream; public escape hatch here |
 | `bot._warn(...)` | lifecycle | `n/a` | wontfix | n/a — tracing/logging, not an API |
 | `bot._getDimensionName() (internal)` | lifecycle | `pub(crate) helpers — internal` | pending | dimension-name lookup |
-| `event('inject_allowed')` | lifecycle | `BotEvent::Init?` | pending | azalea Event::Init analog |
-| `event('login')` | lifecycle | `BotEvent::Login` | pending | — |
-| `event('spawn')` | lifecycle | `BotEvent::Spawn` | pending | — |
-| `event('respawn')` | lifecycle | `BotEvent::Respawn` | pending | — |
+| `event('inject_allowed')` | lifecycle | `BotEvent::Init` | ported | azalea Event::Init analog |
+| `event('login')` | lifecycle | `BotEvent::Login` | ported | — |
+| `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | first azalea Spawn |
+| `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | synthesized: emitted before every `Spawn` after the first |
 | `event('connect') (undoc)` | lifecycle | `BotEvent::Connected?` | pending | — |
-| `event('kicked')` | lifecycle | `BotEvent::Kicked(String)` | pending | reason + loggedIn flag upstream |
-| `event('end')` | lifecycle | `BotEvent::End(String)` | pending | — |
-| `event('error')` | lifecycle | `BotEvent::Error(String)` | pending | — |
+| `event('kicked')` | lifecycle | `BotEvent::Kicked(String)` | diverges | azalea folds kick into `Disconnect(reason)`; we emit Kicked then End; no loggedIn flag |
+| `event('end')` | lifecycle | `BotEvent::End(String)` | ported | exactly-once; reason = quit arg / kick / 'socketClosed' |
+| `event('error')` | lifecycle | `BotEvent::Error(String)` | ported | currently: connection failures only |
 
 ## Chat / messaging
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.chat(message)` | chat | `bot.chat(&str)` | pending | splits long messages; /-prefixed -> command |
+| `bot.chat(message)` | chat | `bot.chat(&str) -> Result<()>` | ported | /-prefixed -> command; long-message splitting is the chat unit's |
 | `bot.whisper(user, msg)` | chat | `bot.whisper(&str, &str)` | pending | /tell shortcut |
 | `bot.chatAddPattern(...) (dep)` | chat | `deprecated alias` | pending | deprecated upstream; skip or alias |
 | `bot.addChatPattern(name, re, opts)` | chat | `bot.add_chat_pattern(name, Regex, opts) -> usize` | pending | — |
@@ -119,7 +119,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.tabComplete(str, ...)` | chat | `bot.tab_complete(&str, ...) -> Result<Vec<String>>` | pending | c_command_suggestions dropped by azalea; packet bridge |
 | `bot.chatPatterns` | chat | `bot.chat_patterns() -> &[ChatPattern]` | pending | — |
 | `bot.tablist` | chat | `bot.tablist() -> (header, footer)` | pending | c_tab_list dropped by azalea; packet bridge |
-| `event('chat')` | chat | `BotEvent::Chat + pattern match` | pending | (user, msg, translate, json, matches) |
+| `event('chat')` | chat | `BotEvent::Chat(azalea::chat::ChatPacket)` | ported | raw packet payload now; pattern-matched events are the chat unit's |
 | `event('whisper')` | chat | `BotEvent::Whisper{...}` | pending | same shape as chat |
 | `event('actionBar')` | chat | `BotEvent::ActionBar{..}` | pending | packet bridge: c_set_action_bar_text |
 | `event('message')` | chat | `BotEvent::Message{..}` | pending | — |
@@ -132,7 +132,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
 | `bot.blockAt(point)` | world | `bot.block_at(pos) -> Option<Block>` | pending | — |
-| `bot.waitForChunksToLoad()` | world | `bot.wait_for_chunks_to_load().await` | pending | — |
+| `bot.waitForChunksToLoad()` | world | `bot.wait_for_chunks_to_load() -> Result<()>` | ported | resolves when the 5×5 chunk area around the bot is loaded; 10s timeout |
 | `bot.blockInSight() (dep)` | world | `deprecated -> block_at_cursor` | pending | — |
 | `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(..) -> Option<Block>` | pending | azalea hit_result() |
 | `bot.entityAtCursor(maxDist)` | world | `bot.entity_at_cursor(..) -> Option<EntityRef>` | pending | — |
@@ -142,7 +142,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.findBlock(options)` | world | `bot.find_block(opts) -> Option<Block>` | pending | — |
 | `bot.updateSign(block, text, back)` | world | `bot.update_sign(..)` | pending | azalea lacks block-entity storage; packet bridge |
 | `bot.world` | world | `bot.world() -> WorldRef` | pending | prismarine-world analog over azalea World |
-| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | pending | — |
+| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | pending | azalea logs+drops default-spawn-position packet; deferred to U3 |
 | `bot._updateBlockState (internal)` | world | `pub(crate) helpers — internal` | pending | chunk block-state write |
 | `bot._getBlockAtEyeLevel (internal)` | world | `pub(crate) helpers — internal` | pending | ray/eye-height block lookup |
 | `event('blockUpdate')` | world | `BotEvent::BlockUpdate{old,new}` | pending | tier-2 packet bridge (QueuedServerBlockUpdates is internal) |
@@ -150,7 +150,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('blockPlaced')` | world | `BotEvent::BlockPlaced{old,new}` | pending | bot's own placements |
 | `event('blockEntityData')` | world | `BotEvent::BlockEntityData{..}` | pending | packet bridge; azalea drops block-entity data |
 | `event('signOpen')` | world | `BotEvent::SignOpen{block}` | pending | c_open_sign_editor packet |
-| `event('chunkColumnLoad')` | world | `BotEvent::ChunkLoad(ChunkPos)` | pending | azalea Event::ReceiveChunk |
+| `event('chunkColumnLoad')` | world | `BotEvent::ChunkColumnLoad(ChunkPos)` | ported | azalea Event::ReceiveChunk |
 | `event('chunkColumnUnload')` | world | `BotEvent::ChunkUnload(ChunkPos)` | pending | c_forget_level_chunk packet |
 | `event('pistonMove')` | world | `BotEvent::PistonMove{..}` | pending | c_piston_event via packet bridge |
 | `event('chestLidMove')` | world | `BotEvent::ChestLidMove{..}` | pending | c_block_event via packet bridge |
@@ -175,10 +175,10 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.getExplosionDamages(e,pos,r,raw)` | entity | `bot.get_explosion_damages(..) -> Option<f32>` | pending | — |
 | `bot.elytraFly()` | entity | `bot.elytra_fly().await` | pending | — |
 | `bot._playerFromUUID(uuid)` | entity | `pub(crate) helper` | pending | internal upstream |
-| `bot.entity` | entity | `bot.entity() -> EntityRef` | pending | azalea Client::entity() |
+| `bot.entity` | entity | `bot.entity() -> azalea::EntityRef` | ported | azalea Client::entity() |
 | `bot.entities` | entity | `bot.entities() -> map` | pending | EntityUuidIndex/EntityIdIndex |
 | `bot.player` | entity | `bot.player() -> Player` | pending | — |
-| `bot.players` | entity | `bot.players() -> &Map<name,Player>` | pending | azalea tab_list |
+| `bot.players` | entity | `bot.players() -> HashMap<String, PlayerInfo>` | ported | tab list, keyed by username (upstream) not UUID (azalea) |
 | `bot.uuidToUsername (undoc)` | entity | `bot.uuid_to_username()` | pending | — |
 | `bot.vehicle (undoc)` | entity | `bot.vehicle() -> Option<EntityRef>` | pending | — |
 | `bot.fireworkRocketDuration` | entity | `bot.firework_rocket_duration() -> u32` | pending | — |
@@ -227,9 +227,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('entityPlaced') (undoc)` | entity | `BotEvent::EntityPlaced(entity)` | pending | emitted by placeEntity |
 | `event('itemDrop')` | entity | `BotEvent::ItemDrop(entity)` | pending | — |
 | `event('playerCollect')` | entity | `BotEvent::PlayerCollect{collector,collected}` | pending | c_take_item_entity |
-| `event('playerJoined')` | entity | `BotEvent::PlayerJoined(player)` | pending | azalea Event::AddPlayer |
-| `event('playerUpdated')` | entity | `BotEvent::PlayerUpdated(player)` | pending | — |
-| `event('playerLeft')` | entity | `BotEvent::PlayerLeft(player)` | pending | — |
+| `event('playerJoined')` | entity | `BotEvent::PlayerJoined(PlayerInfo)` | ported | azalea Event::AddPlayer |
+| `event('playerUpdated')` | entity | `BotEvent::PlayerUpdated(PlayerInfo)` | ported | azalea Event::UpdatePlayer |
+| `event('playerLeft')` | entity | `BotEvent::PlayerLeft(PlayerInfo)` | ported | azalea Event::RemovePlayer |
 | `event('usedFirework')` | entity | `BotEvent::UsedFirework(entity_id)` | pending | — |
 
 ## Movement / physics / controls
@@ -241,7 +241,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.clearControlStates()` | movement | `bot.clear_control_states()` | pending | — |
 | `bot.look(yaw, pitch, force?)` | movement | `bot.look(yaw, pitch).await` | pending | yaw CCW rad from east |
 | `bot.lookAt(point, force?)` | movement | `bot.look_at(vec3).await` | pending | azalea Client::look_at |
-| `bot.waitForTicks(n)` | movement | `bot.wait_ticks(n).await` | pending | azalea Client::wait_ticks |
+| `bot.waitForTicks(n)` | movement | `bot.wait_for_ticks(n) -> Result<()>` | ported | azalea wait_ticks + upstream's n*50ms+5s timeout |
 | `bot._replyOnNextTick(reply)` | movement | `pub(crate) helper` | pending | internal upstream |
 | `bot.controlState` | movement | `bot.control_states() -> ControlState` | pending | forward/back/left/right/jump/sprint/sneak |
 | `bot.physics` | movement | `bot.physics() -> PhysicsSettings` | pending | editable prismarine-physics knobs -> azalea physics where exposed |
@@ -253,8 +253,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('forcedMove')` | movement | `BotEvent::ForcedMove` | pending | server teleport/spawn |
 | `event('mount')` | movement | `BotEvent::Mounted{vehicle}` | pending | — |
 | `event('dismount')` | movement | `BotEvent::Dismounted{vehicle}` | pending | — |
-| `event('physicsTick')` | movement | `BotEvent::Tick` | pending | azalea Event::Tick |
-| `event('physicTick') (dep)` | movement | `alias of physicsTick` | pending | deprecated; same BotEvent::Tick |
+| `event('physicsTick')` | movement | `BotEvent::Tick` | ported | azalea Event::Tick |
+| `event('physicTick') (dep)` | movement | `alias of physicsTick` | ported | deprecated; same BotEvent::Tick |
 | `event('abilities')` | movement | `BotEvent::Abilities(abilities)` | pending | — |
 
 ## Inventory / containers / windows
@@ -444,9 +444,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.rainState` | state | `bot.rain_state() -> f32` | pending | — |
 | `bot.thunderState` | state | `bot.thunder_state() -> f32` | pending | — |
 | `bot.game.levelType` | state | `bot.game().level_type()` | pending | — |
-| `bot.game.dimension` | state | `bot.game().dimension()` | pending | WorldName |
+| `bot.game.dimension` | state | `bot.dimension() -> Option<WorldName>` | ported | top-level `bot.dimension()`; `bot.game()` facade deferred |
 | `bot.game.difficulty` | state | `bot.game().difficulty()` | pending | — |
-| `bot.game.gameMode` | state | `bot.game().game_mode()` | pending | — |
+| `bot.game.gameMode` | state | `bot.game_mode() -> Option<GameMode>` | ported | top-level `bot.game_mode()`; `bot.game()` facade deferred |
 | `bot.game.hardcore` | state | `bot.game().hardcore()` | pending | — |
 | `bot.game.maxPlayers` | state | `bot.game().max_players()` | pending | — |
 | `bot.game.serverBrand` | state | `bot.game().server_brand()` | pending | — |
@@ -461,16 +461,16 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.health` | state | `bot.health() -> f32` | pending | azalea Client::health |
-| `bot.food` | state | `bot.food() -> u8` | pending | Hunger component |
-| `bot.foodSaturation` | state | `bot.food_saturation() -> f32` | pending | — |
-| `bot.oxygenLevel` | state | `bot.oxygen_level() -> u8` | pending | AirSupply metadata |
-| `bot.isAlive (undoc)` | state | `bot.is_alive() -> bool` | pending | azalea is_alive |
-| `bot.experience.level` | state | `bot.experience().level` | pending | — |
-| `bot.experience.points` | state | `bot.experience().points` | pending | — |
-| `bot.experience.progress` | state | `bot.experience().progress` | pending | — |
+| `bot.health` | state | `bot.health() -> f32` | ported | Health component; 0.0 when gone |
+| `bot.food` | state | `bot.food() -> u32` | ported | Hunger component |
+| `bot.foodSaturation` | state | `bot.food_saturation() -> f32` | ported | Hunger component |
+| `bot.oxygenLevel` | state | `bot.oxygen_level() -> u8` | ported | air ticks (0..=300) -> round(/15) -> 0..=20, like upstream |
+| `bot.isAlive (undoc)` | state | `bot.is_alive() -> bool` | ported | azalea is_alive |
+| `bot.experience.level` | state | `bot.experience() -> Experience { level, .. }` | ported | azalea Experience component |
+| `bot.experience.points` | state | `bot.experience() -> Experience { total, .. }` | ported | named `total` in azalea |
+| `bot.experience.progress` | state | `bot.experience() -> Experience { progress, .. }` | ported | azalea Experience component |
 | `event('health')` | state | `BotEvent::Health` | pending | component diff |
-| `event('death')` | state | `BotEvent::Death` | pending | azalea Event::Death |
+| `event('death')` | state | `BotEvent::Death` | ported | azalea Event::Death (payload packet dropped) |
 | `event('breath')` | state | `BotEvent::Breath` | pending | — |
 | `event('experience')` | state | `BotEvent::Experience` | pending | — |
 | `event('spawnReset')` | state | `BotEvent::SpawnReset` | pending | bed spawn invalidated |
