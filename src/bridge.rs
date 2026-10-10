@@ -11,6 +11,7 @@ use azalea::{ClientInformation, Event};
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver, watch};
 
 use crate::BotEvent;
+use crate::entity;
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
 /// azalea's event channel closes (disconnect/shutdown) or when the last
@@ -22,6 +23,7 @@ pub(crate) fn spawn(
     view_distance: Option<u8>,
     quit_reason: Arc<Mutex<Option<String>>>,
     mut alive: watch::Receiver<()>,
+    entity_tracker: Arc<std::sync::RwLock<entity::EntityTracker>>,
 ) {
     tokio::spawn(async move {
         // Mark the initial watch value as seen so `changed()` below only
@@ -40,9 +42,16 @@ pub(crate) fn spawn(
                             ..Default::default()
                         });
                     }
+                    // Entity-domain decode runs before translate borrows the
+                    // event; its events are emitted right after the raw
+                    // `Packet`/`Spawn` they were derived from.
+                    let derived = entity::observe_event(&entity_tracker, &client, &event);
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
+                        let _ = events.send(bot_event);
+                    }
+                    for bot_event in derived {
                         let _ = events.send(bot_event);
                     }
                 }

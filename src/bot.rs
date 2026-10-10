@@ -42,6 +42,9 @@ pub struct Bot {
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
+    /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
+    /// vehicle links), shared with the bridge task — see `entity::EntityTracker`.
+    pub(crate) entities: Arc<std::sync::RwLock<crate::entity::EntityTracker>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -92,6 +95,126 @@ pub enum BotEvent {
     PlayerLeft(PlayerInfo),
     /// `chunkColumnLoad` — a chunk column was received.
     ChunkColumnLoad(ChunkPos),
+    /// `entitySpawn` — an entity appeared in the world (also emitted for the
+    /// bot itself right after `Spawn`, like upstream).
+    EntitySpawn(azalea::EntityRef),
+    /// `entityGone` — an entity was removed from the world. `entity` is the
+    /// last-seen handle (`None` if the entity was never resolved); `id`
+    /// always carries the protocol id since the handle can no longer report it.
+    EntityGone {
+        /// Last-seen handle for the removed entity, if known.
+        entity: Option<azalea::EntityRef>,
+        /// The removed entity's protocol id.
+        id: azalea::core::entity_id::MinecraftEntityId,
+    },
+    /// `entityMoved` — an entity's position, look, or head rotation changed.
+    EntityMoved(azalea::EntityRef),
+    /// `entityUpdate` — an entity's metadata changed.
+    EntityUpdate(azalea::EntityRef),
+    /// `entityAttributes` — an entity's attributes were updated.
+    EntityAttributes(azalea::EntityRef),
+    /// `entitySwingArm` — an entity swung its (main-hand) arm.
+    EntitySwingArm(azalea::EntityRef),
+    /// `entityHurt` — an entity took damage (hurt animation, entity status,
+    /// or `c_damage_event`; `source` names the responsible entity when the
+    /// server sent one).
+    EntityHurt {
+        /// The entity that was hurt.
+        entity: azalea::EntityRef,
+        /// The entity that caused the damage, if the server identified one.
+        source: Option<azalea::EntityRef>,
+    },
+    /// `entityDead` — an entity died (entity-event status 3).
+    EntityDead(azalea::EntityRef),
+    /// `entityTaming` — tameable entity is being tamed (status 6).
+    EntityTaming(azalea::EntityRef),
+    /// `entityTamed` — entity was tamed (status 7).
+    EntityTamed(azalea::EntityRef),
+    /// `entityShakingOffWater` — entity shook off water (status 8).
+    EntityShakingOffWater(azalea::EntityRef),
+    /// `entityEatingGrass` — entity ate grass (status 10).
+    EntityEatingGrass(azalea::EntityRef),
+    /// `entityHandSwap` — entity swapped hands (status 55); tracked equipment
+    /// is swapped too, like upstream.
+    EntityHandSwap(azalea::EntityRef),
+    /// `entityWake` — entity woke up (animation 2).
+    EntityWake(azalea::EntityRef),
+    /// `entityEat` — upstream maps animation 3 to `entityEat`; see
+    /// api-parity.md for the off-hand-swing caveat.
+    EntityEat(azalea::EntityRef),
+    /// `entityCriticalEffect` — critical hit particles (animation 4).
+    EntityCriticalEffect(azalea::EntityRef),
+    /// `entityMagicCriticalEffect` — magic critical particles (animation 5).
+    EntityMagicCriticalEffect(azalea::EntityRef),
+    /// `entityCrouch` — entity started sneaking (metadata edge).
+    EntityCrouch(azalea::EntityRef),
+    /// `entityUncrouch` — entity stopped sneaking (metadata edge).
+    EntityUncrouch(azalea::EntityRef),
+    /// `entitySleep` — entity went to sleep (metadata edge).
+    EntitySleep(azalea::EntityRef),
+    /// `entityElytraFlew` — entity started elytra flight (metadata edge).
+    EntityElytraFlew(azalea::EntityRef),
+    /// `entityEquip` — entity equipment changed (`c_set_equipment`); read the
+    /// slots back via [`crate::entity::EntityExt`] / `Bot::equipment`.
+    EntityEquip(azalea::EntityRef),
+    /// `entityAttach` — entity was attached to a vehicle/holder
+    /// (`c_set_entity_link`, e.g. leashes).
+    EntityAttach {
+        /// The attached entity.
+        entity: azalea::EntityRef,
+        /// The vehicle/holder entity, if resolvable.
+        vehicle: Option<azalea::EntityRef>,
+    },
+    /// `entityDetach` — entity was detached (`vehicle` is the previous
+    /// holder, like upstream).
+    EntityDetach {
+        /// The detached entity.
+        entity: azalea::EntityRef,
+        /// The vehicle/holder it was detached from, if known.
+        vehicle: Option<azalea::EntityRef>,
+    },
+    /// `entityEffect` — a mob effect was applied (`c_update_mob_effect`).
+    EntityEffect {
+        /// The affected entity.
+        entity: azalea::EntityRef,
+        /// The effect kind.
+        effect: azalea::registry::builtin::MobEffect,
+        /// Amplifier/duration/flags, mirroring upstream's
+        /// `{id, amplifier, duration}` payload.
+        data: azalea::entity::MobEffectData,
+    },
+    /// `entityEffectEnd` — a mob effect was removed (`c_remove_mob_effect`).
+    EntityEffectEnd {
+        /// The affected entity.
+        entity: azalea::EntityRef,
+        /// The effect kind that ended.
+        effect: azalea::registry::builtin::MobEffect,
+    },
+    /// `itemDrop` — an entity's metadata carried an item stack (fires for
+    /// item entities when their stack metadata arrives).
+    ItemDrop(azalea::EntityRef),
+    /// `playerCollect` — an entity collected another (`c_take_item_entity`);
+    /// `collected` is usually an item entity.
+    PlayerCollect {
+        /// The collecting entity (usually a player).
+        collector: Option<azalea::EntityRef>,
+        /// The collected entity.
+        collected: Option<azalea::EntityRef>,
+    },
+    /// `usedFirework` — a firework rocket attached to us was registered
+    /// (also feeds `bot.fireworkRocketDuration`).
+    UsedFirework(azalea::core::entity_id::MinecraftEntityId),
+    /// `mount` — we started riding an entity (`c_set_passengers`).
+    Mounted {
+        /// The vehicle entity, if resolvable.
+        vehicle: Option<azalea::EntityRef>,
+    },
+    /// `dismount` — we stopped riding (`vehicle` is the previous vehicle,
+    /// like upstream; also emitted when the vehicle entity goes away).
+    Dismounted {
+        /// The vehicle we were riding.
+        vehicle: Option<azalea::EntityRef>,
+    },
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -271,6 +394,9 @@ impl BotBuilder {
         let (events, _) = broadcast::channel(256);
         let quit_reason = Arc::new(Mutex::new(None));
         let (alive, alive_rx) = watch::channel(());
+        let entities = Arc::new(std::sync::RwLock::new(
+            crate::entity::EntityTracker::default(),
+        ));
         bridge::spawn(
             client.clone(),
             rx,
@@ -278,6 +404,7 @@ impl BotBuilder {
             view_distance,
             quit_reason.clone(),
             alive_rx,
+            entities.clone(),
         );
 
         Ok(Bot {
@@ -285,6 +412,7 @@ impl BotBuilder {
             events,
             quit_reason,
             _alive: alive,
+            entities,
         })
     }
 }
@@ -309,6 +437,9 @@ impl Bot {
             events,
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
+            entities: Arc::new(std::sync::RwLock::new(
+                crate::entity::EntityTracker::default(),
+            )),
         }
     }
 
@@ -448,6 +579,12 @@ impl Bot {
             }
         }
         true
+    }
+
+    /// Emit a [`BotEvent`] to all subscribers — used by domain impls for
+    /// upstream's `bot.emit('error', ...)` semantics inside sync methods.
+    pub(crate) fn emit_event(&self, event: BotEvent) {
+        let _ = self.events.send(event);
     }
 
     /// Whether we've received the login packet and are in the game state.

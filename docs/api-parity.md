@@ -31,7 +31,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `mcdata.biomes` | module | `azalea::registry::data / builtin::Biome` | pending | — |
 | `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
 | `Vec3 (prismarine)` | module | `azalea::Vec3 (re-export)` | pending | azalea_core::position::Vec3 |
-| `Entity (prismarine-entity)` | module | `azalea::EntityRef / own Entity type` | pending | — |
+| `Entity (prismarine-entity)` | module | `azalea::EntityRef` + `EntityExt` trait | ported | handle + trait carries the extra reads |
 | `Block (prismarine-block)` | module | `own Block type over azalea BlockState+pos` | pending | incl. blockEntity, getSignText() |
 | `Biome (prismarine-biome)` | module | `azalea::registry Biome` | pending | — |
 | `Item (prismarine-item)` | module | `azalea_inventory::ItemStack wrapper` | pending | — |
@@ -161,76 +161,76 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.nearestEntity(match?)` | entity | `bot.nearest_entity(pred) -> Option<EntityRef>` | pending | azalea nearest_entities_by |
-| `bot.findPlayer(filter) (undoc)` | entity | `bot.find_player(f) -> Option<Player>` | pending | — |
-| `bot.findPlayers(filter)` | entity | `bot.find_players(f) -> Vec<Player>` | pending | alias of findPlayer upstream |
-| `bot.attack(entity, swing)` | entity | `bot.attack(e)` | pending | — |
-| `bot.swingArm(hand, showHand)` | entity | `bot.swing_arm(hand)` | pending | — |
-| `bot.activateEntity(e)` | entity | `bot.activate_entity(e).await` | pending | azalea entity_interact |
-| `bot.activateEntityAt(e, pos)` | entity | `bot.activate_entity_at(e, pos).await` | pending | — |
-| `bot.useOn(target)` | entity | `bot.use_on(e)` | pending | saddle/shears |
-| `bot.mount(e)` | entity | `bot.mount(e)` | pending | no azalea facade; packet-level |
-| `bot.dismount()` | entity | `bot.dismount()` | pending | — |
-| `bot.moveVehicle(left, fwd)` | entity | `bot.move_vehicle(..)` | pending | s_move_vehicle |
-| `bot.getExplosionDamages(e,pos,r,raw)` | entity | `bot.get_explosion_damages(..) -> Option<f32>` | pending | — |
-| `bot.elytraFly()` | entity | `bot.elytra_fly().await` | pending | — |
-| `bot._playerFromUUID(uuid)` | entity | `pub(crate) helper` | pending | internal upstream |
+| `bot.nearestEntity(match?)` | entity | `bot.nearest_entity(pred) -> Option<EntityRef>` | ported | skips bot.entity like upstream; nearest_entities_by + post-filter |
+| `bot.findPlayer(filter) (undoc)` | entity | `bot.find_player(f) -> Option<EntityRef>` | diverges | upstream's string-filter quirk (returns array when >1 match) dropped; always Option |
+| `bot.findPlayers(filter)` | entity | `bot.find_players(f) -> Vec<EntityRef>` | ported | `PlayerFilter::{Any,Username,Matches,Predicate}` mirrors string/RegExp/fn/null |
+| `bot.attack(entity, swing)` | entity | `bot.attack(e, swing)` | ported | swing=true routes through azalea's attack-with-swing; false sends bare s_attack |
+| `bot.swingArm(hand, showHand)` | entity | `bot.swing_arm(hand)` | diverges | `showHand` has no wire meaning in this protocol (s_swing always carries hand) |
+| `bot.activateEntity(e)` | entity | `bot.activate_entity(e)` | ported | azalea entity_interact; no await needed (fire-and-forget like upstream) |
+| `bot.activateEntityAt(e, pos)` | entity | `bot.activate_entity_at(e, pos)` | ported | EntityInteractEvent with explicit location |
+| `bot.useOn(target)` | entity | `bot.use_on(e)` | ported | same interact packet as activateEntity, like upstream |
+| `bot.mount(e)` | entity | `bot.mount(e)` | ported | same interact packet as upstream's useEntity(target,0) |
+| `bot.dismount()` | entity | `bot.dismount()` | diverges | sends shift-press player_input (the real dismount); upstream's `jump:true` literal looks like an upstream bug |
+| `bot.moveVehicle(left, fwd)` | entity | `bot.move_vehicle(left:i8, fwd:i8)` | diverges | sends raw player_input like upstream, but doesn't integrate with azalea's PhysicsState |
+| `bot.getExplosionDamages(e,pos,r,raw)` | entity | `bot.get_explosion_damages(..) -> Option<f32>` | diverges | exposure raycasts loaded chunks (Collider shapes); armor from tracked c_update_attributes → None when unknown, like upstream's null |
+| `bot.elytraFly()` | entity | `bot.elytra_fly() -> Result<()>` | diverges | same precondition errors; elytra-equipped check deferred to inventory unit |
+| `bot._playerFromUUID(uuid)` | entity | `bot.player_by_uuid(&str) -> Option<Player>` | ported | internal upstream; exposed for parity |
 | `bot.entity` | entity | `bot.entity() -> azalea::EntityRef` | ported | azalea Client::entity() |
-| `bot.entities` | entity | `bot.entities() -> map` | pending | EntityUuidIndex/EntityIdIndex |
-| `bot.player` | entity | `bot.player() -> Player` | pending | — |
-| `bot.players` | entity | `bot.players() -> HashMap<String, PlayerInfo>` | ported | tab list, keyed by username (upstream) not UUID (azalea) |
-| `bot.uuidToUsername (undoc)` | entity | `bot.uuid_to_username()` | pending | — |
-| `bot.vehicle (undoc)` | entity | `bot.vehicle() -> Option<EntityRef>` | pending | — |
-| `bot.fireworkRocketDuration` | entity | `bot.firework_rocket_duration() -> u32` | pending | — |
-| `Entity.skinData` | entity | `entity skin_data() -> Option<SkinData>` | pending | — |
-| `Entity.vehicle` | entity | `entity.vehicle()` | pending | — |
-| `Entity.position` | entity | `entity.position() -> Vec3` | pending | azalea Position component |
-| `Entity.velocity` | entity | `entity.velocity()` | pending | — |
-| `Entity.yaw / pitch` | entity | `entity.look_direction()` | pending | — |
-| `Entity.onGround` | entity | `entity.on_ground()` | pending | — |
-| `Entity.height` | entity | `entity.dimensions().height` | pending | — |
-| `Entity.eyeHeight` | entity | `entity.dimensions().eye_height` | pending | — |
-| `Player.username` | entity | `player.username()` | pending | — |
-| `Player.displayName` | entity | `player.display_name() -> FormattedText` | pending | — |
-| `Player.gamemode` | entity | `player.game_mode()` | pending | — |
-| `Player.ping` | entity | `player.latency_ms()` | pending | — |
-| `Player.entity` | entity | `player.entity() -> Option<EntityRef>` | pending | — |
-| `Player.uuid` | entity | `player.uuid()` | pending | — |
-| `Player.skinData` | entity | `player.skin_data()` | pending | — |
+| `bot.entities` | entity | `bot.entities() -> HashMap<MinecraftEntityId, EntityRef>` | ported | keyed by protocol entity id like upstream's `{[id]: Entity}` |
+| `bot.player` | entity | `bot.player() -> Option<Player>` | ported | — |
+| `bot.players` | entity | `bot.players() -> HashMap<String, Player>` | ported | tab list, keyed by username (upstream) not UUID (azalea) |
+| `bot.uuidToUsername (undoc)` | entity | `bot.uuid_to_username() -> HashMap<String,String>` | ported | — |
+| `bot.vehicle (undoc)` | entity | `bot.vehicle() -> Option<EntityRef>` | ported | tracked from c_set_passengers/c_set_entity_link |
+| `bot.fireworkRocketDuration` | entity | `bot.firework_rocket_duration() -> u32` | diverges | random jitter term is deterministic (hash of entity id), not per-call rand |
+| `Entity.skinData` | entity | `EntityExt::skin_data() -> Option<SkinData>` | ported | decoded from textures profile property |
+| `Entity.vehicle` | entity | `bot.entity_vehicle(e) -> Option<EntityRef>` | ported | — |
+| `Entity.position` | entity | `entity.position() -> Vec3` | ported | azalea Position component |
+| `Entity.velocity` | entity | `EntityExt::velocity() -> Option<Vec3>` | ported | Physics.velocity; Option because dead entities lack the component |
+| `Entity.yaw / pitch` | entity | `EntityExt::look_direction() -> Option<LookDirection>` | ported | azalea LookDirection component |
+| `Entity.onGround` | entity | `EntityExt::on_ground() -> Option<bool>` | ported | — |
+| `Entity.height` | entity | `entity.dimensions().height` | ported | azalea EntityDimensions |
+| `Entity.eyeHeight` | entity | `entity.dimensions().eye_height` | ported | azalea EntityDimensions |
+| `Player.username` | entity | `player.username() -> &str` | ported | — |
+| `Player.displayName` | entity | `player.display_name() -> Option<&FormattedText>` | diverges | None when unset; upstream falls back to username |
+| `Player.gamemode` | entity | `player.gamemode() -> GameMode` | ported | — |
+| `Player.ping` | entity | `player.ping() -> i32` | ported | PlayerInfo.latency |
+| `Player.entity` | entity | `player.entity -> Option<EntityRef>` | ported | pub field on Player struct |
+| `Player.uuid` | entity | `player.info.uuid` | ported | pub field on azalea PlayerInfo |
+| `Player.skinData` | entity | `player.skin_data() -> Option<SkinData>` | ported | — |
 | `Player.profileKeys` | entity | `player.profile_keys()` | pending | publicKey+signature |
-| `event('entitySpawn')` | entity | `BotEvent::EntitySpawn(entity)` | pending | — |
-| `event('entityGone')` | entity | `BotEvent::EntityGone(entity)` | pending | — |
-| `event('entityMoved')` | entity | `BotEvent::EntityMoved(entity)` | pending | — |
-| `event('entityUpdate')` | entity | `BotEvent::EntityUpdate(entity)` | pending | metadata update |
-| `event('entityAttributes')` | entity | `BotEvent::EntityAttributes(entity)` | pending | — |
-| `event('entitySwingArm')` | entity | `BotEvent::EntitySwingArm(entity)` | pending | azalea SwingArmEvent |
-| `event('entityHurt')` | entity | `BotEvent::EntityHurt{entity,source}` | pending | packet bridge; azalea lacks it |
-| `event('entityDead')` | entity | `BotEvent::EntityDead(entity)` | pending | — |
-| `event('entityTaming')` | entity | `BotEvent::EntityTaming(entity)` | pending | c_entity_event |
-| `event('entityTamed')` | entity | `BotEvent::EntityTamed(entity)` | pending | — |
-| `event('entityShakingOffWater')` | entity | `BotEvent::EntityShakeWater(entity)` | pending | — |
-| `event('entityEatingGrass')` | entity | `BotEvent::EntityEatGrass(entity)` | pending | — |
-| `event('entityHandSwap')` | entity | `BotEvent::EntityHandSwap(entity)` | pending | — |
-| `event('entityWake')` | entity | `BotEvent::EntityWake(entity)` | pending | — |
-| `event('entityEat')` | entity | `BotEvent::EntityEat(entity)` | pending | — |
-| `event('entityCriticalEffect')` | entity | `BotEvent::EntityCritical(entity)` | pending | — |
-| `event('entityMagicCriticalEffect')` | entity | `BotEvent::EntityMagicCritical(entity)` | pending | — |
-| `event('entityCrouch')` | entity | `BotEvent::EntityCrouch(entity)` | pending | metadata pose diff |
-| `event('entityUncrouch')` | entity | `BotEvent::EntityUncrouch(entity)` | pending | — |
-| `event('entityEquip')` | entity | `BotEvent::EntityEquip(entity)` | pending | c_set_equipment dropped by azalea; bridge |
-| `event('entitySleep')` | entity | `BotEvent::EntitySleep(entity)` | pending | — |
-| `event('entityElytraFlew')` | entity | `BotEvent::EntityElytraFlew(entity)` | pending | — |
-| `event('entityAttach')` | entity | `BotEvent::EntityAttach{entity,vehicle}` | pending | c_set_passengers |
-| `event('entityDetach')` | entity | `BotEvent::EntityDetach{entity,vehicle}` | pending | — |
-| `event('entityEffect')` | entity | `BotEvent::EntityEffect{entity,effect}` | pending | c_update_mob_effect |
-| `event('entityEffectEnd')` | entity | `BotEvent::EntityEffectEnd{entity,effect}` | pending | — |
-| `event('entityPlaced') (undoc)` | entity | `BotEvent::EntityPlaced(entity)` | pending | emitted by placeEntity |
-| `event('itemDrop')` | entity | `BotEvent::ItemDrop(entity)` | pending | — |
-| `event('playerCollect')` | entity | `BotEvent::PlayerCollect{collector,collected}` | pending | c_take_item_entity |
+| `event('entitySpawn')` | entity | `BotEvent::EntitySpawn(EntityRef)` | ported | c_add_entity + self on Spawn, like upstream |
+| `event('entityGone')` | entity | `BotEvent::EntityGone{entity,id}` | diverges | entity is Option<EntityRef> — azalea clears the index before our packet event; id always present |
+| `event('entityMoved')` | entity | `BotEvent::EntityMoved(EntityRef)` | ported | pos/rot/teleport/head-rotation packets |
+| `event('entityUpdate')` | entity | `BotEvent::EntityUpdate(EntityRef)` | ported | c_set_entity_data |
+| `event('entityAttributes')` | entity | `BotEvent::EntityAttributes(EntityRef)` | ported | c_update_attributes; raw snapshots tracked (azalea drops armor) |
+| `event('entitySwingArm')` | entity | `BotEvent::EntitySwingArm(EntityRef)` | ported | c_animate action 0 |
+| `event('entityHurt')` | entity | `BotEvent::EntityHurt{entity,source}` | ported | hurt animation + status 2 + c_damage_event; source only from damage_event |
+| `event('entityDead')` | entity | `BotEvent::EntityDead(EntityRef)` | ported | entity-event status 3 |
+| `event('entityTaming')` | entity | `BotEvent::EntityTaming(EntityRef)` | ported | status 6 |
+| `event('entityTamed')` | entity | `BotEvent::EntityTamed(EntityRef)` | ported | status 7 |
+| `event('entityShakingOffWater')` | entity | `BotEvent::EntityShakingOffWater(EntityRef)` | ported | status 8 |
+| `event('entityEatingGrass')` | entity | `BotEvent::EntityEatingGrass(EntityRef)` | ported | status 10 |
+| `event('entityHandSwap')` | entity | `BotEvent::EntityHandSwap(EntityRef)` | ported | status 55; tracked equipment main/off swapped like upstream |
+| `event('entityWake')` | entity | `BotEvent::EntityWake(EntityRef)` | ported | animate 2 |
+| `event('entityEat')` | entity | `BotEvent::EntityEat(EntityRef)` | diverges | animate 3 is the off-hand swing in this protocol; upstream's eat mapping kept for parity |
+| `event('entityCriticalEffect')` | entity | `BotEvent::EntityCriticalEffect(EntityRef)` | ported | animate 4 |
+| `event('entityMagicCriticalEffect')` | entity | `BotEvent::EntityMagicCriticalEffect(EntityRef)` | ported | animate 5 |
+| `event('entityCrouch')` | entity | `BotEvent::EntityCrouch(EntityRef)` | ported | metadata shift-key edge detection |
+| `event('entityUncrouch')` | entity | `BotEvent::EntityUncrouch(EntityRef)` | ported | — |
+| `event('entityEquip')` | entity | `BotEvent::EntityEquip(EntityRef)` | ported | c_set_equipment decoded ourselves (azalea logs-and-drops it) |
+| `event('entitySleep')` | entity | `BotEvent::EntitySleep(EntityRef)` | ported | pose/sleeping-pos metadata edge |
+| `event('entityElytraFlew')` | entity | `BotEvent::EntityElytraFlew(EntityRef)` | ported | fall-flying metadata edge |
+| `event('entityAttach')` | entity | `BotEvent::EntityAttach{entity,vehicle}` | diverges | driven by c_set_entity_link (leashes); upstream also uses attach_entity for riders — passengers tracked separately (Mounted/Dismounted) |
+| `event('entityDetach')` | entity | `BotEvent::EntityDetach{entity,vehicle}` | diverges | see entityAttach |
+| `event('entityEffect')` | entity | `BotEvent::EntityEffect{entity,effect,data}` | ported | c_update_mob_effect |
+| `event('entityEffectEnd')` | entity | `BotEvent::EntityEffectEnd{entity,effect}` | ported | c_remove_mob_effect |
+| `event('entityPlaced') (undoc)` | entity | — | wontfix | emitted by placeEntity (block placement) — owned by the block-place unit |
+| `event('itemDrop')` | entity | `BotEvent::ItemDrop(EntityRef)` | ported | item-stack metadata entry, like upstream |
+| `event('playerCollect')` | entity | `BotEvent::PlayerCollect{collector,collected}` | ported | c_take_item_entity |
 | `event('playerJoined')` | entity | `BotEvent::PlayerJoined(PlayerInfo)` | ported | azalea Event::AddPlayer |
 | `event('playerUpdated')` | entity | `BotEvent::PlayerUpdated(PlayerInfo)` | ported | azalea Event::UpdatePlayer |
 | `event('playerLeft')` | entity | `BotEvent::PlayerLeft(PlayerInfo)` | ported | azalea Event::RemovePlayer |
-| `event('usedFirework')` | entity | `BotEvent::UsedFirework(entity_id)` | pending | — |
+| `event('usedFirework')` | entity | `BotEvent::UsedFirework(MinecraftEntityId)` | diverges | payload is the firework entity id; upstream passes the raw id too |
 
 ## Movement / physics / controls
 
@@ -251,8 +251,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.abilities` | movement | `bot.abilities() -> Abilities` | pending | PlayerAbilities component |
 | `event('move')` | movement | `BotEvent::Move{old_pos}` | pending | — |
 | `event('forcedMove')` | movement | `BotEvent::ForcedMove` | pending | server teleport/spawn |
-| `event('mount')` | movement | `BotEvent::Mounted{vehicle}` | pending | — |
-| `event('dismount')` | movement | `BotEvent::Dismounted{vehicle}` | pending | — |
+| `event('mount')` | movement | `BotEvent::Mounted{vehicle}` | ported | c_set_passengers diff (entity unit) |
+| `event('dismount')` | movement | `BotEvent::Dismounted{vehicle}` | ported | c_set_passengers diff + vehicle-gone (entity unit) |
 | `event('physicsTick')` | movement | `BotEvent::Tick` | ported | azalea Event::Tick |
 | `event('physicTick') (dep)` | movement | `alias of physicsTick` | ported | deprecated; same BotEvent::Tick |
 | `event('abilities')` | movement | `BotEvent::Abilities(abilities)` | pending | — |

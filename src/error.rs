@@ -22,6 +22,10 @@ pub enum Error {
     /// An operation did not complete in time.
     #[error("timed out")]
     Timeout,
+    /// An entity-domain operation failed a precondition (upstream throws a
+    /// plain `Error` with the same message).
+    #[error("{0}")]
+    Entity(String),
 }
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.
