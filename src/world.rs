@@ -80,9 +80,9 @@ impl WorldRef {
             .map(|state| Block::new(&self.client, pos, state))
     }
 
-    /// `world.raycast` — walks the block grid along the segment and returns
-    /// the first block whose outline shape is hit and that matches
-    /// `matcher` (`None` matches everything non-empty).
+    /// `world.raycast` — walks the block grid along the segment. With a
+    /// `matcher` the first voxel it accepts wins; with `None` the first
+    /// block whose collision shape is intersected wins.
     pub fn raycast(
         &self,
         from: Vec3,
@@ -90,11 +90,13 @@ impl WorldRef {
         range: f64,
         matcher: Option<&BlockMatcher>,
     ) -> Option<Block> {
+        let pred: Option<Box<dyn Fn(BlockPos, BlockState) -> bool + '_>> = matcher.map(|m| {
+            Box::new(move |pos: BlockPos, state: BlockState| {
+                m.matches(&Block::new(&self.client, pos, state))
+            }) as _
+        });
         with_world(&self.client, |w| {
-            let pred = |pos: BlockPos, state: BlockState| {
-                matcher.is_none_or(|m| m.matches(&Block::new(&self.client, pos, state)))
-            };
-            raycast_blocks(w, from, direction, range, Some(&pred))
+            raycast_blocks(w, from, direction, range, pred.as_deref())
                 .map(|(pos, state)| Block::new(&self.client, pos, state))
         })
         .flatten()
@@ -566,7 +568,11 @@ fn find_matching(
 }
 
 /// `world.raycast` core — Amanatides & Woo DDA via azalea's
-/// `traverse_blocks`, intersecting each candidate block's outline shape.
+/// `traverse_blocks`, faithful to upstream `WorldSync.raycast`: with a
+/// `matcher` the first voxel it accepts wins outright (empty or partial
+/// shapes the ray only grazes are reachable); with `None` the first
+/// block whose *collision* shape is clipped wins (upstream's
+/// `iter.intersect(block.shapes)`).
 fn raycast_blocks(
     world: &World,
     from: Vec3,
@@ -585,16 +591,29 @@ fn raycast_blocks(
         (),
         |_, pos| {
             let state = world.chunks.get_block_state(pos)?;
-            if matcher.is_some_and(|m| !m(pos, state)) {
-                return None;
+            match matcher {
+                Some(m) => m(pos, state).then_some(Some((pos, state))),
+                None => state
+                    .collision_shape()
+                    .clip(from, to, pos)
+                    .map(|_| Some((pos, state))),
             }
-            state
-                .outline_shape()
-                .clip(from, to, pos)
-                .map(|_| Some((pos, state)))
         },
         |_| None,
     )
+}
+
+/// `canSeeBlock`'s matcher (upstream `match` in blocks.js): the ray
+/// clipping the block's *collision* shape counts, and so does merely
+/// entering the target's voxel — flat/empty shapes are still "seen".
+fn can_see_accepts(
+    target: BlockPos,
+    from: Vec3,
+    to: Vec3,
+    pos: BlockPos,
+    state: BlockState,
+) -> bool {
+    pos == target || state.collision_shape().clip(from, to, pos).is_some()
 }
 
 /// mineflayer sign text validation (`< 4` lines → error; `> 45` chars per
@@ -714,22 +733,26 @@ impl Bot {
         )
     }
 
-    /// `bot.canSeeBlock(block)` — ray from the eyes to the block's center
-    /// must hit that block without obstruction.
+    /// `bot.canSeeBlock(block)` — ray from the eyes to the block's
+    /// center; the first block upstream's matcher accepts must be the
+    /// target (see [`can_see_accepts`]).
     pub fn can_see_block(&self, block: &Block) -> bool {
         let (Some(eye), Some(world)) = (self.eye_pos(), self.world()) else {
             return false;
         };
-        let target = block.pos.center();
-        let dir = target - eye;
+        let target = block.pos;
+        let dir = target.center() - eye;
         let len = dir.length();
         if len == 0. {
             return true;
         }
         let range = eye.distance_to(block.position());
+        let to = eye + dir * (range / len);
+        let matcher =
+            BlockMatcher::from(move |b: &Block| can_see_accepts(target, eye, to, b.pos, b.state));
         world
-            .raycast(eye, dir * (1. / len), range, None)
-            .is_some_and(|hit| hit.pos == block.pos)
+            .raycast(eye, dir * (1. / len), range, Some(&matcher))
+            .is_some_and(|hit| hit.pos == target)
     }
 
     /// `bot.updateSign(block, text, back)` — writes the sign via
@@ -816,18 +839,26 @@ impl Bot {
     }
 }
 
-/// The 'left'-cardinal position for a chest — upstream's `block2`, the
-/// other half of a double chest (or whatever block happens to be there
-/// for a single chest).
-fn left_half_pos(block: &Block) -> Option<BlockPos> {
-    let offset = match block.property("facing")? {
+/// Upstream's `block2` position: populated only for a 'right' chest
+/// half — the left-cardinal neighbour that completes a double chest
+/// (`FACING_MAP`). 'single' chests carry no `block2` ('left' halves are
+/// swallowed by the caller before this runs).
+fn chest_other_half_pos(
+    pos: BlockPos,
+    type_prop: Option<&str>,
+    facing: Option<&str>,
+) -> Option<BlockPos> {
+    if type_prop != Some("right") {
+        return None;
+    }
+    let offset = match facing? {
         "north" => BlockPos { x: 1, y: 0, z: 0 },  // east
         "south" => BlockPos { x: -1, y: 0, z: 0 }, // west
         "west" => BlockPos { x: 0, y: 0, z: -1 },  // north
         "east" => BlockPos { x: 0, y: 0, z: 1 },   // south
         _ => return None,
     };
-    Some(block.pos + offset)
+    Some(pos + offset)
 }
 
 /// Chest-lid dedup state (mineflayer's `openCountByPos`).
@@ -1019,7 +1050,8 @@ fn block_event(
                     if block.property("type") == Some("left") {
                         return vec![];
                     }
-                    left_half_pos(&block).and_then(|pos| block_at(client, pos))
+                    chest_other_half_pos(p.pos, block.property("type"), block.property("facing"))
+                        .and_then(|pos| block_at(client, pos))
                 }
                 _ => None,
             };
@@ -1185,6 +1217,132 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    fn short_grass() -> BlockState {
+        BlockState::from(BlockKind::ShortGrass)
+    }
+
+    #[test]
+    fn raycast_no_matcher_clips_collision_shapes() {
+        // Short grass has an outline but *no* collision shape — the
+        // no-matcher ray (upstream `iter.intersect(block.shapes)`)
+        // passes through it to the stone behind.
+        let (world, _partial) = test_world();
+        world
+            .chunks
+            .set_block_state(BlockPos { x: 0, y: 0, z: 2 }, short_grass());
+        world
+            .chunks
+            .set_block_state(BlockPos { x: 0, y: 0, z: 3 }, stone());
+        let from = Vec3 {
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let dir = Vec3 {
+            x: 0.,
+            y: 0.,
+            z: 1.,
+        };
+        assert_eq!(
+            raycast_blocks(&world, from, dir, 10., None).map(|(pos, _)| pos),
+            Some(BlockPos { x: 0, y: 0, z: 3 })
+        );
+    }
+
+    #[test]
+    fn raycast_matcher_accepts_voxel_entry() {
+        // Upstream `WorldSync.raycast`: with a matcher the first voxel
+        // it accepts wins — no shape clip — so matchers reach
+        // empty/partial shapes and intervening blocks never clip.
+        let (world, _partial) = test_world();
+        let target = BlockPos { x: 0, y: 0, z: 3 };
+        world
+            .chunks
+            .set_block_state(BlockPos { x: 0, y: 0, z: 2 }, stone());
+        world.chunks.set_block_state(target, short_grass());
+        let from = Vec3 {
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        };
+        let dir = Vec3 {
+            x: 0.,
+            y: 0.,
+            z: 1.,
+        };
+        // no matcher: the stone's collision shape wins.
+        assert_eq!(
+            raycast_blocks(&world, from, dir, 10., None).map(|(pos, _)| pos),
+            Some(BlockPos { x: 0, y: 0, z: 2 })
+        );
+        // a matcher sails past the stone and accepts the grass on entry.
+        assert_eq!(
+            raycast_blocks(&world, from, dir, 10., Some(&|pos, _| pos == target))
+                .map(|(pos, _)| pos),
+            Some(target)
+        );
+    }
+
+    #[test]
+    fn can_see_block_partial_outline() {
+        // The eye→voxel-centre ray never clips an empty-collision block
+        // (short grass), yet `can_see_accepts` accepts it on voxel
+        // entry — the case the outline-clip version false-negatived on.
+        let (world, _partial) = test_world();
+        let target = BlockPos { x: 0, y: 0, z: 3 };
+        world.chunks.set_block_state(target, short_grass());
+        let from = Vec3 {
+            x: 0.5,
+            y: 2.5,
+            z: 0.5,
+        };
+        let to = Vec3 {
+            x: 0.5,
+            y: 0.5,
+            z: 3.5,
+        };
+        let range = from.distance_to(to);
+        let dir = (to - from) * (1. / range);
+        let matcher = |pos, state| can_see_accepts(target, from, to, pos, state);
+        // nothing clips (grass has no collision shape), but the target's
+        // voxel is entered → accepted.
+        assert!(raycast_blocks(&world, from, dir, range, None).is_none());
+        assert_eq!(
+            raycast_blocks(&world, from, dir, range, Some(&matcher)).map(|(pos, _)| pos),
+            Some(target)
+        );
+        // an intervening block whose collision clips is accepted first
+        // → the target is *not* seen through it.
+        world
+            .chunks
+            .set_block_state(BlockPos { x: 0, y: 1, z: 2 }, stone());
+        assert_eq!(
+            raycast_blocks(&world, from, dir, range, Some(&matcher)).map(|(pos, _)| pos),
+            Some(BlockPos { x: 0, y: 1, z: 2 })
+        );
+    }
+
+    #[test]
+    fn chest_other_half_only_for_right() {
+        let pos = BlockPos { x: 0, y: 64, z: 0 };
+        // 'single' chests carry no `block2`.
+        assert_eq!(
+            chest_other_half_pos(pos, Some("single"), Some("north")),
+            None
+        );
+        // 'left' halves carry none either (the event is swallowed).
+        assert_eq!(chest_other_half_pos(pos, Some("left"), Some("north")), None);
+        // 'right' halves point at the left-cardinal neighbour —
+        // north-facing → east (upstream FACING_MAP).
+        assert_eq!(
+            chest_other_half_pos(pos, Some("right"), Some("north")),
+            Some(BlockPos { x: 1, y: 64, z: 0 })
+        );
+        // missing properties → no second.
+        assert_eq!(chest_other_half_pos(pos, None, Some("north")), None);
+        assert_eq!(chest_other_half_pos(pos, Some("right"), None), None);
     }
 
     #[test]

@@ -134,10 +134,10 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.blockAt(point)` | world | `bot.block_at(pos) -> Option<Block>` | ported | None when the chunk isn't loaded |
 | `bot.waitForChunksToLoad()` | world | `bot.wait_for_chunks_to_load() -> Result<()>` | ported | resolves when the 5×5 chunk area around the bot is loaded; 10s timeout |
 | `bot.blockInSight() (dep)` | world | `bot.block_in_sight() -> Option<Block>` | ported | `#[deprecated]`; = block_at_cursor(80) |
-| `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(max_distance, matcher) -> Option<Block>` | ported | own DDA raycast over outline shapes (azalea's cached hit_result can't do arbitrary ranges); max default 256 = DEFAULT_CURSOR_DISTANCE |
+| `bot.blockAtCursor(maxDist, matcher)` | world | `bot.block_at_cursor(max_distance, matcher) -> Option<Block>` | ported | own DDA raycast — upstream WorldSync.raycast semantics: matcher accepts on voxel entry, no-matcher clips collision shapes (block.shapes); max default 256 |
 | `bot.entityAtCursor(maxDist)` | world | `bot.entity_at_cursor(max_distance) -> Option<EntityRef>` | diverges | uses azalea's cached crosshair HitResult (pick-plugin range); max_distance only caps the result |
 | `bot.blockAtEntityCursor(e, max, m)` | world | `bot.block_at_entity_cursor(&entity, max_distance, matcher) -> Option<Block>` | diverges | uses eye height, upstream uses entity.height |
-| `bot.canSeeBlock(block)` | world | `bot.can_see_block(&block) -> bool` | ported | eye->center ray, range = distance to corner, hit.pos must equal block.pos |
+| `bot.canSeeBlock(block)` | world | `bot.can_see_block(&block) -> bool` | ported | eye->center ray, range = distance to corner; matcher = collision-shape clip OR voxel entry into target (upstream blocks.js match) |
 | `bot.findBlocks(options)` | world | `bot.find_blocks(FindBlocksOpts) -> Vec<BlockPos>` | ported | euclid closest-first; defaults max_distance=16, count=1; chunk-layer early exit |
 | `bot.findBlock(options)` | world | `bot.find_block(FindBlocksOpts) -> Option<Block>` | ported | — |
 | `bot.updateSign(block, text, back)` | world | `bot.update_sign(&block, text, back) -> Result<()>` | diverges | write-only: sends s_sign_update (front/back); sign text unreadable (no block-entity storage — U11) |
