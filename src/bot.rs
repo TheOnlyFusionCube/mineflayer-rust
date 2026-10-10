@@ -18,9 +18,12 @@ use azalea::{
     protocol::packets::game::ClientboundGamePacket,
     world::WorldName,
 };
+use std::sync::RwLock;
 use tokio::sync::{broadcast, watch};
 
+use crate::world::{Block, WorldState};
 use crate::{Error, Result, bridge};
+use azalea::{EntityRef, protocol::packets::game::c_block_entity_data::ClientboundBlockEntityData};
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
@@ -42,6 +45,10 @@ pub struct Bot {
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
+    /// Facade-kept world/game state (spawn point, clocks, weather, login
+    /// metadata) maintained by the packet bridge in [`crate::world`] —
+    /// azalea drops most of these packets upstream.
+    pub(crate) world_state: Arc<RwLock<WorldState>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -92,6 +99,60 @@ pub enum BotEvent {
     PlayerLeft(PlayerInfo),
     /// `chunkColumnLoad` — a chunk column was received.
     ChunkColumnLoad(ChunkPos),
+    /// `chunkColumnUnload` — a chunk column was unloaded by the server.
+    ChunkUnload(ChunkPos),
+    /// `blockUpdate` — a block changed in the world. `old` is `None` when
+    /// the previous state wasn't observed; `new` is what the server
+    /// reported. Azalea applies updates to the world itself on the next
+    /// tick, so `block_at` may briefly still return `old`.
+    ///
+    /// mineflayer's position-filtered `blockUpdate:x,y,z` is spelled by
+    /// matching `new.pos` on this variant.
+    BlockUpdate { old: Option<Block>, new: Block },
+    /// `blockEntityData` — raw block-entity NBT. Azalea doesn't store
+    /// block entities, so the packet is forwarded as received.
+    BlockEntityData(ClientboundBlockEntityData),
+    /// `signOpen` — the server opened a sign editor (usually right after
+    /// a sign was placed); answer with `Bot::update_sign`.
+    SignOpen {
+        block: Option<Block>,
+        is_front_text: bool,
+    },
+    /// `pistonMove` — a piston extended (`is_pulling: false`) or
+    /// retracted. `direction` is the raw protocol facing byte
+    /// (0=down, 1=up, 2=north, 3=south, 4=west, 5=east).
+    PistonMove {
+        block: Block,
+        is_pulling: bool,
+        direction: u8,
+    },
+    /// `chestLidMove` — the open-count of a chest or other lidded
+    /// container changed. `second` is the other half for double chests.
+    ChestLidMove {
+        block: Block,
+        open_count: u8,
+        second: Option<Block>,
+    },
+    /// `blockBreakProgressObserved` — a break-animation stage (0–9).
+    BlockBreakProgress {
+        block: Option<Block>,
+        stage: u8,
+        entity: Option<EntityRef>,
+    },
+    /// `blockBreakProgressEnd` — the break animation was removed.
+    BlockBreakEnd {
+        block: Option<Block>,
+        entity: Option<EntityRef>,
+    },
+    /// `time` — a `set_time` packet updated the world clocks.
+    Time,
+    /// `rain` — `is_raining` flipped.
+    Rain,
+    /// `weatherUpdate` — the rain or thunder level changed.
+    WeatherUpdate,
+    /// `game` — game state changed (login/respawn metadata, gamemode,
+    /// default spawn position).
+    GameStateChanged,
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -271,6 +332,8 @@ impl BotBuilder {
         let (events, _) = broadcast::channel(256);
         let quit_reason = Arc::new(Mutex::new(None));
         let (alive, alive_rx) = watch::channel(());
+        let world_state = Arc::new(RwLock::new(WorldState::default()));
+        let world_alive = alive_rx.clone();
         bridge::spawn(
             client.clone(),
             rx,
@@ -279,12 +342,19 @@ impl BotBuilder {
             quit_reason.clone(),
             alive_rx,
         );
+        crate::world::spawn_packet_bridge(
+            client.clone(),
+            events.clone(),
+            world_state.clone(),
+            world_alive,
+        );
 
         Ok(Bot {
             client,
             events,
             quit_reason,
             _alive: alive,
+            world_state,
         })
     }
 }
@@ -309,6 +379,7 @@ impl Bot {
             events,
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
+            world_state: Arc::new(RwLock::new(WorldState::default())),
         }
     }
 

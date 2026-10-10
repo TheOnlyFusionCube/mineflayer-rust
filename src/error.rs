@@ -22,6 +22,10 @@ pub enum Error {
     /// An operation did not complete in time.
     #[error("timed out")]
     Timeout,
+    /// Sign text failed validation (upstream emits the same as an error
+    /// event from `updateSign` before writing).
+    #[error("invalid sign text: {0}")]
+    SignText(String),
 }
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.

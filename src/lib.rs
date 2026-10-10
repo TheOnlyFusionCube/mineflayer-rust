@@ -25,3 +25,7 @@ pub mod world;
 
 pub use bot::{Auth, Bot, BotBuilder, BotEvent};
 pub use error::{Error, Result};
+pub use world::{
+    Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
+    Game, Time, WorldRef,
+};
