@@ -236,26 +236,26 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.setControlState(c, state)` | movement | `bot.set_control_state(Control, bool)` | pending | — |
-| `bot.getControlState(c)` | movement | `bot.control_state(Control) -> bool` | pending | — |
-| `bot.clearControlStates()` | movement | `bot.clear_control_states()` | pending | — |
-| `bot.look(yaw, pitch, force?)` | movement | `bot.look(yaw, pitch).await` | pending | yaw CCW rad from east |
-| `bot.lookAt(point, force?)` | movement | `bot.look_at(vec3).await` | pending | azalea Client::look_at |
+| `bot.setControlState(c, state)` | movement | `bot.set_control_state(Control, bool)` | ported | writes PhysicsState/Jumping components directly (Client::walk/sprint would clobber other inputs); silent no-op pre-spawn. Divergence: opposing keys collapse (fwd+back -> none, releasing one doesn't resume) since WalkDirection can't hold contradictory pairs |
+| `bot.getControlState(c)` | movement | `bot.control_state(Control) -> bool` | ported | reads azalea components — reflects pathfinder movement too |
+| `bot.clearControlStates()` | movement | `bot.clear_control_states()` | ported | — |
+| `bot.look(yaw, pitch, force?)` | movement | `bot.look(yaw, pitch, force).await` | ported | radians, upstream convention; resolves after the tick carrying the rotation (upstream eases at yaw/pitchSpeed, azalea snaps); force skips the wait |
+| `bot.lookAt(point, force?)` | movement | `bot.look_at(vec3, force).await` | ported | eye-height + upstream atan2 trig -> look() |
 | `bot.waitForTicks(n)` | movement | `bot.wait_for_ticks(n) -> Result<()>` | ported | azalea wait_ticks + upstream's n*50ms+5s timeout |
-| `bot._replyOnNextTick(reply)` | movement | `pub(crate) helper` | pending | internal upstream |
-| `bot.controlState` | movement | `bot.control_states() -> ControlState` | pending | forward/back/left/right/jump/sprint/sneak |
-| `bot.physics` | movement | `bot.physics() -> PhysicsSettings` | pending | editable prismarine-physics knobs -> azalea physics where exposed |
-| `bot.physicsEnabled` | movement | `bot.physics_enabled() -> bool` | pending | — |
-| `bot.jumpQueued (undoc)` | movement | `bot.jump_queued() -> bool` | pending | — |
-| `bot.jumpTicks (undoc)` | movement | `bot.jump_ticks() -> u32` | pending | — |
-| `bot.abilities` | movement | `bot.abilities() -> Abilities` | pending | PlayerAbilities component |
-| `event('move')` | movement | `BotEvent::Move{old_pos}` | pending | — |
-| `event('forcedMove')` | movement | `BotEvent::ForcedMove` | pending | server teleport/spawn |
-| `event('mount')` | movement | `BotEvent::Mounted{vehicle}` | pending | — |
-| `event('dismount')` | movement | `BotEvent::Dismounted{vehicle}` | pending | — |
+| `bot._replyOnNextTick(reply)` | movement | — | wontfix | internal upstream plumbing; azalea handles teleport acks itself, no reply queue needed |
+| `bot.controlState` | movement | `bot.control_states() -> ControlState` | ported | snapshot struct (not a live get/set proxy); mutate via set_control_state |
+| `bot.physics` | movement | `bot.physics() -> PhysicsSettings` | diverges | read-only struct of vanilla constants; upstream's knobs are mutable, azalea physics has no mutation seam |
+| `bot.physicsEnabled` | movement | `bot.physics_enabled() -> bool` | diverges | always true; azalea physics runs unconditionally |
+| `bot.jumpQueued (undoc)` | movement | `bot.jump_queued() -> bool` | diverges | reads held Jumping input; upstream's flag is a queued one-shot cleared per tick |
+| `bot.jumpTicks (undoc)` | movement | — | wontfix | autojump cooldown; azalea intentionally implements no autojump |
+| `bot.abilities` | movement | `bot.abilities() -> PlayerAbilities` | ported | PlayerAbilities component, default before first packet |
+| `event('move')` | movement | `BotEvent::Move{old_pos}` | ported | per-tick Position/LookDirection diff in bridge = upstream's per-sent-packet signal |
+| `event('forcedMove')` | movement | `BotEvent::ForcedMove` | ported | on ClientboundPlayerPosition packet (teleport/spawn) |
+| `event('mount')` | movement | `BotEvent::Mounted{vehicle}` | ported | SetPassengers decode; vehicle is the entity id (azalea tracks no vehicle component) |
+| `event('dismount')` | movement | `BotEvent::Dismounted{vehicle}` | ported | SetPassengers decode |
 | `event('physicsTick')` | movement | `BotEvent::Tick` | ported | azalea Event::Tick |
 | `event('physicTick') (dep)` | movement | `alias of physicsTick` | ported | deprecated; same BotEvent::Tick |
-| `event('abilities')` | movement | `BotEvent::Abilities(abilities)` | pending | — |
+| `event('abilities')` | movement | `BotEvent::Abilities(abilities)` | ported | on ClientboundPlayerAbilities packet |
 
 ## Inventory / containers / windows
 

@@ -92,6 +92,31 @@ pub enum BotEvent {
     PlayerLeft(PlayerInfo),
     /// `chunkColumnLoad` — a chunk column was received.
     ChunkColumnLoad(ChunkPos),
+    /// `move` — the bot's position or look direction changed this tick
+    /// (upstream fires on every sent movement packet; the per-tick
+    /// component diff is the azalea equivalent). Carries the previous
+    /// position, like upstream's `oldPos` argument.
+    Move {
+        /// The bot's position before this move.
+        old_pos: azalea::Vec3,
+    },
+    /// `forcedMove` — the server placed us (teleport, spawn).
+    ForcedMove,
+    /// `mount` — we started riding `vehicle` (decoded from the
+    /// `ClientboundSetPassengers` packet; azalea tracks no vehicle
+    /// component).
+    Mounted {
+        /// The mounted vehicle's entity id (`bot.entities[vehicle]` upstream).
+        vehicle: i32,
+    },
+    /// `dismount` — we stopped riding `vehicle`.
+    Dismounted {
+        /// The vehicle entity id we left (upstream's `dismount` argument).
+        vehicle: i32,
+    },
+    /// `abilities` — the server sent new player abilities; the payload is
+    /// what the `PlayerAbilities` component now holds.
+    Abilities(azalea::entity::PlayerAbilities),
 }
 
 /// `createBot(options)` analog. Defaults match upstream:

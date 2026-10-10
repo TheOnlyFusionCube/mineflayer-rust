@@ -40,9 +40,16 @@ pub(crate) fn spawn(
                             ..Default::default()
                         });
                     }
+                    // Movement events azalea doesn't lift into `Event`s
+                    // (move diff, forcedMove, mount/dismount, abilities).
+                    let movement_events =
+                        crate::movement::bridge_events(&client, &mut state.movement, &event);
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
+                        let _ = events.send(bot_event);
+                    }
+                    for bot_event in movement_events {
                         let _ = events.send(bot_event);
                     }
                 }
@@ -65,6 +72,8 @@ struct BridgeState {
     /// Whether `End` has been emitted — dedupes disconnect signals so `end`
     /// fires exactly once, like upstream.
     ended: bool,
+    /// Movement tracking for `move`/`mount`/`dismount` (U5).
+    movement: crate::movement::MovementTracker,
 }
 
 /// Translate one azalea event into zero or more `BotEvent`s, in emission
