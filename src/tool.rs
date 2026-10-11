@@ -1,11 +1,11 @@
 //! The mineflayer-tool plugin surface: `bot.tool()` — pick the right
 //! hotbar item for a block or a fight.
 //!
-//! Block selection wraps azalea's auto-tool ([`Client::best_tool_in_hotbar_for_block`]),
+//! Block selection wraps azalea's auto-tool (`Client::best_tool_in_hotbar_for_block`),
 //! the same scoring `mine_with_auto_tool` uses — item dig speed per block
 //! state, including physics/effect modifiers, with the empty hand as a
 //! candidate. Entity selection has no azalea analog: ours equips the
-//! hotbar item with the highest melee [`attack_damage`] (vanilla's base
+//! hotbar item with the highest melee `attack_damage` (vanilla's base
 //! damage before enchant/cooldown factors) — upstream's weapon pick does
 //! the same from mcdata; entity-specific scoring exists on neither side
 //! (see api-parity for the `equipForEntity` note).
