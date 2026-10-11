@@ -33,11 +33,15 @@
 //! the container packets azalea doesn't lift into `Event`s (open/close/
 //! set-content/set-slot/held-slot/cooldown) into
 //! [`BotEvent::WindowOpen`], [`BotEvent::WindowClose`],
-//! [`BotEvent::WindowUpdateSlot`] and [`BotEvent::HeldItemChanged`], keeps
-//! `WindowTracker` current, and patches the two azalea gaps that matter
-//! for parity: `container_set_content`'s `carried_item` (azalea ignores
-//! it, so the cursor would desync) and `c_set_player_inventory` (azalea
-//! drops the packet entirely).
+//! [`BotEvent::WindowUpdateSlot`], [`BotEvent::SetWindowItems`] and
+//! [`BotEvent::HeldItemChanged`], keeps `WindowTracker` current, and
+//! patches the two azalea gaps that matter for parity:
+//! `container_set_content`'s `carried_item` (azalea ignores it, so the
+//! cursor would desync) and `c_set_player_inventory` (azalea drops the
+//! packet entirely). Upstream's `setSlot:{id}` is `WindowUpdateSlot`'s
+//! `window_id` field; `confirmTransaction{id}` has no wire on mc26 —
+//! the transaction packet was removed in 1.17 and click rejects arrive
+//! as corrective `set_slot`/`set_content` resyncs instead.
 
 use std::{
     collections::HashMap,
@@ -760,6 +764,9 @@ pub(crate) fn observe_event(
                 t.slots.remove(&current.id);
             }
             t.last_closed = None;
+            // an announced-but-unfilled window is displaced the same way —
+            // upstream's currentWindow replacement drops it
+            t.pending = None;
             let early_items = t
                 .early_items
                 .take_if(|(id, _)| *id == p.container_id)
@@ -930,21 +937,19 @@ pub(crate) fn observe_event(
 /// `container_set_content` — full slot refresh for one window. Completes
 /// a pending window into `current` + `windowOpen` (upstream's
 /// `setWindowItems` gate), then emits one `WindowUpdateSlot` per reported
-/// slot, like upstream calling `updateSlot` for each.
+/// slot, like upstream calling `updateSlot` for each. Resolved packets
+/// (window 0, a pending window's first fill, or the open container) get
+/// the `carried_item` patch and end in `SetWindowItems` — upstream's
+/// `setWindowItems:{id}`. Buffered (`early_items`) and `last_closed`
+/// remaps return before upstream's emit, so they produce no
+/// `SetWindowItems` — a remap still buffers the packet for a same-id
+/// reopen and runs the held-item check, like upstream's `windowItems`
+/// ordering.
 fn set_content_events(
     tracker: &Arc<Mutex<WindowTracker>>,
     client: &azalea::Client,
     p: &azalea::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
 ) -> Vec<BotEvent> {
-    // azalea ignores `carried_item` on this packet — patch the cursor so
-    // click packets carry the right stack.
-    {
-        let mut ecs = client.ecs.write();
-        if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
-            inv.carried = p.carried_item.clone();
-        }
-    }
-
     let mut t = tracker.lock().unwrap();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client
@@ -964,9 +969,12 @@ fn set_content_events(
                 new: Item::of(stack.clone(), i as i16),
             });
         }
-        // upstream calls updateHeldItem() after every window_items
+        // upstream applies carriedItem, then updateHeldItem(), then
+        // emits `setWindowItems:{id}` — resolved packets only
+        patch_carried(client, &p.carried_item);
         t.held_sig_changed(client);
         out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        out.push(BotEvent::SetWindowItems { window_id: 0 });
         return out;
     }
 
@@ -988,14 +996,21 @@ fn set_content_events(
                 new: Item::of(stack.clone(), i as i16),
             });
         }
+        patch_carried(client, &p.carried_item);
         t.held_sig_changed(client);
         out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        // upstream emits `setWindowItems:{id}` here; the once-listener
+        // it registered in prepareWindow then fires `windowOpen`
+        out.push(BotEvent::SetWindowItems {
+            window_id: p.container_id,
+        });
         out.push(BotEvent::WindowOpen(window));
         return out;
     }
 
     if t.current.as_ref().is_some_and(|c| c.id == p.container_id) {
-        // resync of the open window
+        // resync of the open window — upstream's resolved-window path
+        // also runs updateHeldItem() before `setWindowItems:{id}`
         for (i, stack) in p.items.iter().enumerate() {
             let old = snapshot_set(&mut t, p.container_id, i, stack.clone());
             out.push(BotEvent::WindowUpdateSlot {
@@ -1005,6 +1020,12 @@ fn set_content_events(
                 new: Item::of(stack.clone(), i as i16),
             });
         }
+        patch_carried(client, &p.carried_item);
+        t.held_sig_changed(client);
+        out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        out.push(BotEvent::SetWindowItems {
+            window_id: p.container_id,
+        });
         return out;
     }
 
@@ -1016,6 +1037,9 @@ fn set_content_events(
         // player region still describes the player inventory — remap
         // into window 0 like upstream (the length check keeps an early
         // sync for a *different* same-id window from being misrouted).
+        // Upstream buffers `windowItems = packet` before remapping, so a
+        // same-id reopen consumes these contents.
+        t.early_items = Some((p.container_id, p.items.clone()));
         for (i, stack) in p.items.iter().enumerate().skip(player_start) {
             let inv_slot = i - player_start + 9;
             {
@@ -1034,6 +1058,10 @@ fn set_content_events(
                 new: Item::of(stack.clone(), inv_slot as i16),
             });
         }
+        // each remapped write goes through upstream's `_setSlot`, which
+        // runs updateHeldItem() — once per packet here
+        t.held_sig_changed(client);
+        out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
         return out;
     }
 
@@ -1043,10 +1071,23 @@ fn set_content_events(
     out
 }
 
+/// Write `container_set_content`'s `carried_item` into the ECS — azalea
+/// ignores the field, so without this the cursor stack desyncs and click
+/// packets carry the wrong item. Upstream applies it only on resolved
+/// packets (window 0 or `currentWindow`, which includes pending windows);
+/// early-buffered and `lastClosedWindow`-remapped packets return first.
+fn patch_carried(client: &azalea::Client, stack: &ItemStack) {
+    let mut ecs = client.ecs.write();
+    if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
+        inv.carried = stack.clone();
+    }
+}
+
 /// `container_set_slot` — single-slot write. `container_id` -1 is the
 /// cursor (applied by azalea, no event upstream), -2 and 0 hit the player
-/// window, anything else is the open container (or a trailing sync under
-/// `last_closed`).
+/// window, anything else resolves the open *or pending* container (or a
+/// trailing sync under `last_closed`) — upstream's `currentWindow` is set
+/// at `open_window`, before its first `window_items` arrives.
 fn set_slot_events(
     tracker: &Arc<Mutex<WindowTracker>>,
     client: &azalea::Client,
@@ -1093,7 +1134,13 @@ fn set_slot_events(
             out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
         }
         id => {
-            if t.current.as_ref().is_some_and(|c| c.id == id) {
+            // `pending` resolves too — upstream's `currentWindow` exists
+            // from `open_window`, so a set_slot that lands before the
+            // first fill still emits `setSlot:{id}` (and its snapshot
+            // entry becomes the fill's `old`).
+            if t.current.as_ref().is_some_and(|c| c.id == id)
+                || t.pending.as_ref().is_some_and(|w| w.id == id)
+            {
                 let old = snapshot_set(&mut t, id, p.slot as usize, p.item_stack.clone());
                 out.push(BotEvent::WindowUpdateSlot {
                     window_id: id,
@@ -1101,6 +1148,8 @@ fn set_slot_events(
                     old,
                     new: Item::of(p.item_stack.clone(), p.slot as i16),
                 });
+                t.held_sig_changed(client);
+                out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
             } else if let Some((closed_id, player_start, _)) = t.last_closed
                 && id == closed_id
                 && (p.slot as usize) >= player_start
@@ -1125,6 +1174,10 @@ fn set_slot_events(
                     old,
                     new: Item::of(p.item_stack.clone(), inv_slot as i16),
                 });
+                // upstream's `_setSlot` runs updateHeldItem() here too —
+                // a remapped hotbar write can change the held stack
+                t.held_sig_changed(client);
+                out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
             }
         }
     }
@@ -1179,5 +1232,338 @@ mod tests {
         };
         assert!(menu_for_id(&closed, 0).is_some());
         assert!(menu_for_id(&closed, 5).is_none());
+    }
+
+    // — packet→event decode: the per-window-id events upstream's
+    // inventory.js emits (`setSlot:{id}`, `setWindowItems:{id}`) —
+
+    use azalea::protocol::packets::game::{
+        c_container_set_content::ClientboundContainerSetContent,
+        c_container_set_slot::ClientboundContainerSetSlot, c_open_screen::ClientboundOpenScreen,
+    };
+
+    fn packet_event(p: ClientboundGamePacket) -> Event {
+        Event::Packet(Arc::new(p))
+    }
+
+    fn tracker() -> Arc<Mutex<WindowTracker>> {
+        let (events, _rx) = broadcast::channel(8);
+        Arc::new(Mutex::new(WindowTracker::new(events)))
+    }
+
+    fn client() -> azalea::Client {
+        crate::test_util::live_entity_client(Inventory::default())
+    }
+
+    fn open_screen(id: i32) -> Event {
+        packet_event(ClientboundGamePacket::OpenScreen(ClientboundOpenScreen {
+            container_id: id,
+            menu_type: MenuKind::Generic9x3,
+            title: azalea::FormattedText::from("chest"),
+        }))
+    }
+
+    fn set_content(id: i32, items: Vec<ItemStack>) -> Event {
+        packet_event(ClientboundGamePacket::ContainerSetContent(
+            ClientboundContainerSetContent {
+                container_id: id,
+                state_id: 0,
+                items,
+                carried_item: ItemStack::Empty,
+            },
+        ))
+    }
+
+    fn set_slot(id: i32, slot: u16, stack: ItemStack) -> Event {
+        packet_event(ClientboundGamePacket::ContainerSetSlot(
+            ClientboundContainerSetSlot {
+                container_id: id,
+                state_id: 0,
+                slot,
+                item_stack: stack,
+            },
+        ))
+    }
+
+    /// Upstream `setSlot:{windowId}` — every resolved `set_slot` write
+    /// reports `(window_id, slot, old, new)`.
+    #[test]
+    fn set_slot_reports_per_window_slot_update() {
+        let t = tracker();
+        let client = client();
+        observe_event(&t, &client, &open_screen(3));
+        observe_event(&t, &client, &set_content(3, vec![ItemStack::Empty; 63]));
+        let out = observe_event(
+            &t,
+            &client,
+            &set_slot(3, 2, ItemStack::new(ItemKind::Stone, 5)),
+        );
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: 3,
+                slot: 2,
+                old: None,
+                new: Some(item),
+            } if item.kind() == ItemKind::Stone && item.count() == 5
+        )));
+        // set_player_inventory and id-0/-2 writes report under window 0
+        let out = observe_event(
+            &t,
+            &client,
+            &set_slot(0, 40, ItemStack::new(ItemKind::Dirt, 1)),
+        );
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: 0,
+                slot: 40,
+                ..
+            }
+        )));
+    }
+
+    /// Upstream `setWindowItems:{windowId}` — fires once per resolved
+    /// `container_set_content`, after the per-slot updates and
+    /// `heldItemChanged`, before `windowOpen` on first fill.
+    #[test]
+    fn set_content_emits_set_window_items_with_upstream_ordering() {
+        let t = tracker();
+        let client = client();
+        assert!(observe_event(&t, &client, &open_screen(3)).is_empty());
+        let items: Vec<ItemStack> = (0..63)
+            .map(|i| {
+                if i == 0 {
+                    ItemStack::new(ItemKind::Stone, 1)
+                } else {
+                    ItemStack::Empty
+                }
+            })
+            .collect();
+        let out = observe_event(&t, &client, &set_content(3, items));
+        let pos =
+            |pred: &dyn Fn(&BotEvent) -> bool| out.iter().position(pred).unwrap_or(usize::MAX);
+        let last_slot = out
+            .iter()
+            .rposition(|e| matches!(e, BotEvent::WindowUpdateSlot { window_id: 3, .. }))
+            .unwrap();
+        let held = pos(&|e| matches!(e, BotEvent::HeldItemChanged(_)));
+        let items_set = pos(&|e| matches!(e, BotEvent::SetWindowItems { window_id: 3 }));
+        let opened = pos(&|e| matches!(e, BotEvent::WindowOpen(w) if w.id() == 3));
+        assert!(last_slot < held && held < items_set && items_set < opened);
+
+        // a resync of the still-open window emits it again (upstream's
+        // resolved-window path runs updateHeldItem + setWindowItems too)
+        let out = observe_event(&t, &client, &set_content(3, vec![ItemStack::Empty; 63]));
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, BotEvent::HeldItemChanged(_)))
+        );
+        assert!(matches!(
+            out.last(),
+            Some(BotEvent::SetWindowItems { window_id: 3 })
+        ));
+
+        // window 0 resolves too (upstream `bot.inventory`)
+        let out = observe_event(&t, &client, &set_content(0, vec![ItemStack::Empty; 46]));
+        assert!(matches!(
+            out.last(),
+            Some(BotEvent::SetWindowItems { window_id: 0 })
+        ));
+    }
+
+    /// Slot data ahead of `open_screen` is buffered (`early_items`,
+    /// upstream's `windowItems`); the consuming `open_screen` emits
+    /// `windowOpen` without `setWindowItems` — upstream's prepareWindow
+    /// sync branch emits only `updateSlot` per item.
+    #[test]
+    fn buffered_items_open_without_set_window_items() {
+        let t = tracker();
+        let client = client();
+        assert!(observe_event(&t, &client, &set_content(7, vec![ItemStack::Empty; 63])).is_empty());
+        let out = observe_event(&t, &client, &open_screen(7));
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, BotEvent::SetWindowItems { .. }))
+        );
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, BotEvent::WindowUpdateSlot { window_id: 7, .. }))
+        );
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowOpen(w) if w.id() == 7
+        )));
+    }
+
+    /// A `set_slot` between `open_screen` and the first `set_content` —
+    /// upstream's `currentWindow` exists already, so `setSlot:{id}`
+    /// fires. The write is also in the slot snapshot, so the fill's
+    /// `WindowUpdateSlot` reports it as `old` rather than `None`.
+    #[test]
+    fn set_slot_to_pending_window_reports_update() {
+        let t = tracker();
+        let client = client();
+        assert!(observe_event(&t, &client, &open_screen(3)).is_empty());
+        let out = observe_event(
+            &t,
+            &client,
+            &set_slot(3, 2, ItemStack::new(ItemKind::Stone, 1)),
+        );
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: 3,
+                slot: 2,
+                old: None,
+                new: Some(item),
+            } if item.kind() == ItemKind::Stone
+        )));
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, BotEvent::HeldItemChanged(_)))
+        );
+
+        // the first fill's slot-2 update reports the pending write as old
+        let mut items = vec![ItemStack::Empty; 63];
+        items[2] = ItemStack::new(ItemKind::Dirt, 4);
+        let out = observe_event(&t, &client, &set_content(3, items));
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: 3,
+                slot: 2,
+                old: Some(old),
+                new: Some(new),
+            } if old.kind() == ItemKind::Stone && new.kind() == ItemKind::Dirt
+        )));
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, BotEvent::SetWindowItems { window_id: 3 }))
+        );
+    }
+
+    /// `carried_item` applies only on resolved packets — upstream sets
+    /// `selectedItem` after the unresolved-path early return, so a stale
+    /// trailing sync must not overwrite the cursor.
+    #[test]
+    fn carried_item_applies_only_on_resolved_set_content() {
+        let t = tracker();
+        let client = client();
+        let carried =
+            |client: &azalea::Client| client.get_component::<Inventory>().unwrap().carried.clone();
+
+        // buffered packet for an unseen id — carried untouched
+        let stone = ItemStack::new(ItemKind::Stone, 1);
+        observe_event(
+            &t,
+            &client,
+            &packet_event(ClientboundGamePacket::ContainerSetContent(
+                ClientboundContainerSetContent {
+                    container_id: 7,
+                    state_id: 0,
+                    items: vec![ItemStack::Empty; 63],
+                    carried_item: stone.clone(),
+                },
+            )),
+        );
+        assert!(carried(&client).is_empty());
+
+        // a resolved packet applies it
+        observe_event(
+            &t,
+            &client,
+            &packet_event(ClientboundGamePacket::ContainerSetContent(
+                ClientboundContainerSetContent {
+                    container_id: 0,
+                    state_id: 0,
+                    items: vec![ItemStack::Empty; 46],
+                    carried_item: stone.clone(),
+                },
+            )),
+        );
+        assert_eq!(carried(&client), stone);
+    }
+
+    /// Upstream buffers `windowItems` before the `lastClosedWindow`
+    /// remap, so a same-id reopen consumes the trailing sync as its
+    /// contents.
+    #[test]
+    fn trailing_content_buffers_for_same_id_reopen() {
+        let t = tracker();
+        let client = client();
+        observe_event(&t, &client, &open_screen(9));
+        let out = observe_event(&t, &client, &set_content(9, vec![ItemStack::Empty; 63]));
+        let window = out
+            .iter()
+            .find_map(|e| match e {
+                BotEvent::WindowOpen(w) => Some(w.clone()),
+                _ => None,
+            })
+            .unwrap();
+        window.close();
+
+        let mut items = vec![ItemStack::Empty; 63];
+        items[0] = ItemStack::new(ItemKind::Stone, 7);
+        observe_event(&t, &client, &set_content(9, items));
+
+        // reopening under the same id consumes the buffered contents
+        let out = observe_event(&t, &client, &open_screen(9));
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowOpen(w) if w.id() == 9
+        )));
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: 9,
+                slot: 0,
+                new: Some(item),
+                ..
+            } if item.kind() == ItemKind::Stone && item.count() == 7
+        )));
+    }
+
+    /// A trailing bulk sync under a client-closed id remaps its player
+    /// region into window 0 (upstream `lastClosedWindow`) and never
+    /// emits `setWindowItems` — upstream returns before the emit.
+    #[test]
+    fn trailing_content_remaps_to_inventory_without_set_window_items() {
+        let t = tracker();
+        let client = client();
+        observe_event(&t, &client, &open_screen(9));
+        let out = observe_event(&t, &client, &set_content(9, vec![ItemStack::Empty; 63]));
+        let window = out
+            .iter()
+            .find_map(|e| match e {
+                BotEvent::WindowOpen(w) => Some(w.clone()),
+                _ => None,
+            })
+            .unwrap();
+        window.close();
+        assert_eq!(t.lock().unwrap().last_closed, Some((9, 27, 63)));
+
+        let mut items = vec![ItemStack::Empty; 63];
+        items[27] = ItemStack::new(ItemKind::Stone, 2);
+        let out = observe_event(&t, &client, &set_content(9, items));
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, BotEvent::SetWindowItems { .. }))
+        );
+        // player-region slot 27 → inventory window slot 9
+        assert!(out.iter().any(|e| matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: 0,
+                slot: 9,
+                new: Some(item),
+                ..
+            } if item.kind() == ItemKind::Stone
+        )));
+        // nothing under the closed id
+        assert!(
+            !out.iter()
+                .any(|e| matches!(e, BotEvent::WindowUpdateSlot { window_id: 9, .. }))
+        );
     }
 }

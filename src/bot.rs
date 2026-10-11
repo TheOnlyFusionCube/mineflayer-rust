@@ -643,6 +643,21 @@ pub enum BotEvent {
     /// (explicit `stop`, target died/despawned). No payload, like
     /// upstream.
     StoppedAttacking,
+    /// `setWindowItems:{windowId}` — a `container_set_content` packet's
+    /// full slot list was applied to a resolved window (0 = player
+    /// inventory or the open container). Emits after that window's
+    /// per-slot [`BotEvent::WindowUpdateSlot`]s and
+    /// [`BotEvent::HeldItemChanged`], and before [`BotEvent::WindowOpen`]
+    /// on a window's first fill — the upstream ordering that
+    /// `syncWindow`/`prepareWindow` gate on. Not emitted for slot data
+    /// buffered ahead of `open_screen` or remapped to a closed window's
+    /// player region (upstream returns before emitting on both paths).
+    /// mc26 has no `transaction` wire — a click the server rejects comes
+    /// back as one of these corrective resyncs.
+    SetWindowItems {
+        /// Protocol window id (0 = the player inventory).
+        window_id: i32,
+    },
 }
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
