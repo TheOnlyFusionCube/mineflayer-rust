@@ -42,6 +42,8 @@ pub use world::{
     Game, Time, WorldRef,
 };
 
+pub use interact::{DigAbortReason, DigFace, ForceLook};
+
 #[cfg(test)]
 pub(crate) mod test_util {
     /// A `Client` whose own entity is already despawned — the state packets

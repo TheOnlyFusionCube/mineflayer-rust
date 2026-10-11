@@ -55,3 +55,8 @@ required-features = ["live"]
 name = "live-entity"
 path = "tests/live/entity.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live_interact"
+path = "tests/live/interact.rs"
+required-features = ["live"]
