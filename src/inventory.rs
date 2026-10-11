@@ -14,12 +14,14 @@ use azalea::{
     core::{direction::Direction, game_type::GameMode},
     entity::LookDirection,
     inventory::{
-        DataComponentPatch,
+        DataComponentPatch, ItemStack,
         operations::{
-            ClickOperation, CloneClick, PickupClick, QuickMoveClick, SwapClick, ThrowClick,
+            ClickOperation, ClickType, CloneClick, PickupClick, QuickMoveClick, SwapClick,
+            ThrowClick,
         },
     },
     protocol::packets::game::{
+        s_container_click::{HashedStack, ServerboundContainerClick},
         s_player_action::{self, ServerboundPlayerAction},
         s_use_item::ServerboundUseItem,
     },
@@ -391,6 +393,51 @@ impl Bot {
         // upstream awaits the slot's own updateSlot event
         wait_for_slot_update(&mut rx, window_id, slot).await;
         Ok(())
+    }
+
+    /// `bot._syncWindow(window)` — force the server to resend the
+    /// authoritative window contents. 1.17.1+ servers only answer a
+    /// click when their record of the client is stale, so upstream
+    /// sends a deliberately impossible `window_click` (stateId `-1`,
+    /// slot `-999`, `mouseButton 2`, `mode 5` — the end of a drag that
+    /// never started); the rejection comes back as a full
+    /// `container_set_content`, which heals any unconfirmed click
+    /// predictions before `closeWindow` bakes them into the inventory
+    /// view. Waits for that resync — 5 s cap like the other window
+    /// waits so a dropped reply can't hang a craft. Upstream gates on
+    /// `stateIdUsed`; mc26 always uses it.
+    #[doc(hidden)]
+    pub async fn sync_window(&self, window: &Window) {
+        let mut rx = self.events();
+        let window_id = window.id();
+        let registries = self.registry();
+        let carried = window
+            .selected_item()
+            .map(|i| i.stack)
+            .unwrap_or(ItemStack::Empty);
+        self.client.write_packet(ServerboundContainerClick {
+            container_id: window_id,
+            // upstream's stateId -1 — u32::MAX is the same VarInt on the
+            // wire and just as impossible for the server to have seen
+            state_id: u32::MAX,
+            slot_num: -999,
+            button_num: 2, // QuickCraft: left-drag end
+            click_type: ClickType::QuickCraft,
+            changed_slots: Default::default(),
+            carried_item: HashedStack::from_item_stack(&carried, &registries),
+        });
+        let wait = async {
+            loop {
+                match rx.recv().await {
+                    Ok(BotEvent::SetWindowItems { window_id: id }) if id == window_id => return,
+                    Ok(BotEvent::End(_)) => return,
+                    Ok(_) => continue,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(5), wait).await;
     }
 
     /// `bot.closeWindow(window)` — send `container_close`, sync the
