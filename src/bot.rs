@@ -882,7 +882,13 @@ impl BotBuilder {
     /// [`BotEvent::End`] with `"keepAliveError"` like upstream. The watchdog
     /// arms on the first keepalive received, matching upstream's per-
     /// keepalive `setTimeout` re-arm.
-    pub fn check_timeout_interval(mut self, interval: Duration) -> Self {
+    pub fn check_timeout_interval(mut self, mut interval: Duration) -> Self {
+        // upstream's `options.checkTimeoutInterval || 30*1000`: a falsy
+        // value means the default, so ZERO selects it rather than an
+        // instant timeout
+        if interval.is_zero() {
+            interval = Duration::from_secs(30);
+        }
         self.check_timeout_interval = interval;
         self
     }
