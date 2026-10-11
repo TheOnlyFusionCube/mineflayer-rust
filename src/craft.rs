@@ -820,9 +820,15 @@ impl Bot {
             Ok(())
         }
         .await;
-        // upstream closes the table window whether the craft
-        // succeeded or errored
+        // upstream closes the table window whether the craft succeeded
+        // or errored — but on success it first forces a slot resync
+        // (`_syncWindow`): the last put-away click is unconfirmed, and
+        // closing on a wrong model bakes phantom items into the
+        // persisted inventory view
         if let Some(window) = window_table {
+            if result.is_ok() {
+                self.sync_window(&window).await;
+            }
             self.close_window(&window).await;
         }
         result

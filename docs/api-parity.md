@@ -64,7 +64,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.physicsEnabled` | lifecycle | `n/a` | wontfix | azalea's PhysicsPlugin is baked into `Client::join`'s default plugins — no disable seam; `bot.physics_enabled()` reports always-true |
 | `options.chat (settings passthrough)` | lifecycle | `BotBuilder::chat(ChatVisibility)` | ported | `'enabled'`/`'commandsOnly'`/`'disabled'` → `ChatVisibility::Full`/`System`/`Hidden`; merged into the `ClientInformation` sent on Init |
 | `options.colorsEnabled` | lifecycle | `BotBuilder::colors_enabled(bool)` | ported | → `ClientInformation::chat_colors` on Init |
-| `options.viewDistance` | lifecycle | `BotBuilder::view_distance(u8)` | ported | applied on `Event::Init` so login already carries it |
+| `options.viewDistance` | lifecycle | `BotBuilder::view_distance(impl Into<ViewDistance>)` | ported | applied on `Event::Init` so login already carries it; `ViewDistance` covers upstream's `'far'`/`'normal'`/`'short'`/`'tiny'` presets (12/10/8/6) plus raw counts |
 | `options.difficulty` | lifecycle | `BotBuilder::difficulty(u8)` | ported | stored client-side (`MiscState.difficulty`, default 2) → `bot.settings().difficulty`; never sent, server-authoritative — same as upstream |
 | `options.skinParts` | lifecycle | `BotBuilder::skin_parts(ModelCustomization)` | ported | → `ClientInformation::model_customization` on Init |
 | `options.enableTextFiltering` | lifecycle | `BotBuilder::enable_text_filtering(bool)` | ported | → `ClientInformation::text_filtering_enabled` on Init |
@@ -313,6 +313,8 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Furnace class` | inventory | `struct Furnace` (Deref → Window) | ported | — |
 | `Furnace.fuel` | inventory | `furnace.fuel() -> f32` | ported | `fuelSeconds()`/`progressSeconds()` too; 0 until the data slots arrive like upstream's null guards |
 | `Furnace.progress` | inventory | `furnace.progress() -> f32` | ported | — |
+| `Furnace.totalFuel` | inventory | `furnace.total_fuel() -> Option<i32>` | ported | raw server-reported burn ticks; `total_fuel_seconds()` too; `None` until the data slot arrives like upstream's `null` |
+| `Furnace.totalProgress` | inventory | `furnace.total_progress() -> Option<i32>` | ported | raw smelt ticks; `total_progress_seconds()` too |
 | `Furnace.takeInput()` | inventory | `furnace.take_input().await -> Item` | ported | — |
 | `Furnace.takeFuel()` | inventory | `furnace.take_fuel().await` | ported | — |
 | `Furnace.takeOutput()` | inventory | `furnace.take_output().await` | ported | — |
@@ -343,7 +345,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('windowClose')` | inventory | `BotEvent::WindowClose(Window)` | ported | client + server closes, once each |
 | `event('heldItemChanged')` | inventory | `BotEvent::HeldItemChanged(Option<Item>)` | ported | emitted wherever upstream's `updateHeldItem()` runs — set_held_slot, every resolved `set_slot`/`window_items` incl. pending windows and `lastClosedWindow` remaps, setQuickBarSlot |
 | `bot._setSlot (internal)` | inventory | `windows::observe_event` | ported | folded into the bridge-side tracker (slot snapshots, old/new events, azalea-gap patches) |
-| `bot._syncWindow (internal)` | inventory | `azalea ContainerHandleRef::click` | ported | azalea tracks state_id internally |
+| `bot._syncWindow (internal)` | inventory | `bot.sync_window(&window).await` | ported | raw `ServerboundContainerClick` carrying an impossible `state_id` (`u32::MAX` — wire-identical to upstream's `-1`), slot `-999`, QuickCraft end-drag button 2; awaits the server's corrective `SetWindowItems` (5 s cap) before returning; azalea's `ContainerHandleRef::click` can't express it (always sends the real `state_id`) |
 | `bot._ensureHasSentCarriedItem (internal)` | inventory | `azalea container_click packet` | ported | click packets carry the cursor stack |
 | `event confirmTransaction (internal)` | inventory | — | diverges | no `transaction` wire on mc26 — the packet was removed in 1.17 (upstream's own handler is dead code on `transactionPacketExists`-false versions); click rejects surface as corrective `container_set_slot`/`set_content` resyncs → `WindowUpdateSlot`/`SetWindowItems` |
 | `event setSlot:{windowId} (internal)` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | fires on every upstream `_setSlot` path (resolved `set_slot` incl. announced-but-unfilled windows, `set_player_inventory`→0, `lastClosedWindow` remap→0) with a superset payload (adds the slot index) |
@@ -355,7 +357,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 |---|---|---|---|---|
 | `bot.recipesFor(type,meta,min,table)` | craft | `bot.recipes_for(kind, metadata, min, table) -> Vec<Recipe>` | diverges | filter semantics ported (result/metadata/minResultCount/table + inventory-delta simulation), but the recipe source is the server's recipe book (`c_recipe_book_add/remove`), not a static data table — only unlocked recipes are listed |
 | `bot.recipesAll(type,meta,table)` | craft | `bot.recipes_all(kind, metadata, table) -> Vec<Recipe>` | diverges | same book-scoped source as `recipes_for`; ignores inventory, respects the table requirement |
-| `bot.craft(recipe, count?, table?)` | craft | `bot.craft(&recipe, count, table).await` | ported | same book-free click engine as upstream craft.js: pick stack → right-click one per cell → putMaterialsAway → take slot 0 → clear grid; no `s_place_recipe`; `count` None → 1; table recipes error without a table `Block`; table window via `open_block` |
+| `bot.craft(recipe, count?, table?)` | craft | `bot.craft(&recipe, count, table).await` | ported | same book-free click engine as upstream craft.js: pick stack → right-click one per cell → putMaterialsAway → take slot 0 → clear grid; no `s_place_recipe`; `count` None → 1; table recipes error without a table `Block`; table window via `open_block`; success path runs `bot.sync_window` before close — upstream's `_syncWindow` force-resync so unconfirmed put-away predictions can't bake into the inventory view |
 | `Recipe class` | craft | `struct Recipe` | diverges | `result`/`inShape`/`outShape`/`ingredients`/`delta`/`requiresTable` ported; ingredient cells generalize upstream's `RecipeItem` to `Ingredient{any_of}` alternative sets (vanilla `#tag` ingredients), resolved via azalea's static item tags; `out_shape` not populated by the book source |
 
 ## Block interaction (dig / place / activate)
@@ -384,16 +386,17 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
 | `bot.scoreboards` | misc | `bot.scoreboards() -> HashMap<String,ScoreBoard>` | ported | cloned snapshot; reset each login |
-| `bot.scoreboard` | misc | `bot.scoreboard(ScoreboardSlot) -> Option<ScoreBoard>` | diverges | slot-enum accessor instead of a slot-keyed map |
+| `bot.scoreboard` | misc | `bot.scoreboard(ScoreboardSlot) -> Option<ScoreBoard>` | diverges | slot-enum accessor instead of a slot-keyed map; bindings store objective names (upstream stores the board objects), and removing an objective clears every slot bound to it — upstream clears only the first, leaving stale bindings there |
 | `bot.teams` | misc | `bot.teams() -> HashMap<String,Team>` | ported | cloned snapshot |
 | `bot.teamMap` | misc | `bot.team_map() -> HashMap<String,Team>` | ported | cloned snapshot |
 | `bot.bossBars (undoc)` | misc | `bot.boss_bars() -> Vec<BossBar>` | ported | — |
 | `ScoreBoard.name` | misc | `scoreboard.name` (field) | ported | — |
 | `ScoreBoard.title` | misc | `scoreboard.title` (field) | ported | `FormattedText`, not pre-rendered |
 | `ScoreBoard.itemsMap` | misc | `scoreboard.items_map() -> &HashMap` | ported | — |
-| `ScoreBoard.items` | misc | `scoreboard.items() -> Vec<&ScoreItem>` | ported | name-sorted like upstream |
+| `ScoreBoard.items` | misc | `scoreboard.items() -> Vec<&ScoreItem>` | ported | descending score like upstream |
+| `ScoreItem fields` | misc | `item.{name,value,display}` | diverges | `value` is `i32` — the wire is a signed VarInt (azalea decodes `u32`; un-wrapped at the boundary so negative scores don't wrap to ~4.29e9); the `displayName` getter is `item.display_name(&bot.team_map())` — team-styled via `Team::member_display_name`, plain name off a team |
 | `ScoreBoard.setTitle(t)` | misc | `scoreboard.set_title(FormattedText)` | ported | client-side only, like upstream |
-| `ScoreBoard.add(name,value)` | misc | `scoreboard.add(name, value)` | ported | — |
+| `ScoreBoard.add(name,value)` | misc | `scoreboard.add(name, value: i32)` | ported | signed score, matching the wire |
 | `ScoreBoard.remove(name)` | misc | `scoreboard.remove(&str)` | ported | — |
 | `Team fields` | misc | `team.{name,display_name,friendly_fire,see_friendly_invisibles,nametag_visibility,collision_rule,color,prefix,suffix,members}` | ported | color is `ChatFormatting` (Reset = none) |
 | `Team.memberMap` | misc | `n/a` | wontfix | upstream `membersMap` (typed `memberMap` in index.d.ts) maps name→`''` — internal bookkeeping only; the key set is ported as `team.members` |
@@ -402,11 +405,11 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Team.displayName(member)` | misc | `team.member_display_name(member) -> FormattedText` | ported | prefix + colored member + suffix |
 | `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog}` | ported | `entity_uuid` is the bar uuid string; `flags` folded into the three bools |
 | `event('scoreboardCreated')` | misc | `BotEvent::ScoreboardCreated(sb)` | ported | — |
-| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | ported | carries the removed board — upstream emits before deleting, same object |
+| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | diverges | skipped for objectives the client never saw — upstream emits unconditionally (payload may be `undefined`); same tradeoff as `teamRemoved` |
 | `event('scoreboardTitleChanged')` | misc | `BotEvent::ScoreboardTitleChanged(sb)` | ported | — |
 | `event('scoreUpdated')` | misc | `BotEvent::ScoreUpdated{scoreboard,item}` | ported | — |
 | `event('scoreRemoved')` | misc | `BotEvent::ScoreRemoved{scoreboard,item}` | diverges | no scan-all-boards fallback when the named objective is absent, and nothing emitted when the owner is missing (upstream emits `undefined` item) |
-| `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,scoreboard}` | ported | — |
+| `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,scoreboard,previous_board}` | ported | carries the replaced objective like upstream's `previousBoard` arg (`None` for empty/dangling slots); like upstream, unknown objectives neither emit nor bind the slot |
 | `event('teamCreated')` | misc | `BotEvent::TeamCreated(team)` | ported | — |
 | `event('teamRemoved')` | misc | `BotEvent::TeamRemoved(team)` | diverges | carries the removed team; upstream emits `undefined` |
 | `event('teamUpdated')` | misc | `BotEvent::TeamUpdated(team)` | ported | — |
@@ -484,7 +487,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 |---|---|---|---|---|
 | `bot.sleep(bedBlock)` | misc | `bot.sleep(BlockPos).await` | diverges | same flow minus upstream's client-side night/monster/occupancy checks (server-enforced) |
 | `bot.wake()` | misc | `bot.wake()` | diverges | sync send of `s_player_command` StopSleeping (upstream's await only wraps packet write) |
-| `bot.isABed(bedBlock)` | misc | `bot.is_a_bed(BlockState) -> bool` | ported | takes a block *state* like upstream's block.type check |
+| `bot.isABed(bedBlock)` | misc | `bot.is_a_bed(BlockState) -> bool` | diverges | takes a block *state* like upstream's block.type check; accepts any `*_bed` name — broader than upstream's 16-color whitelist + legacy `'bed'` (identical for vanilla, looser for modded/prefixed names) |
 | `bot.isSleeping` | misc | `bot.is_sleeping() -> bool` | ported | `Pose::Sleeping` |
 | `bot.parseBedMetadata (undoc)` | misc | `n/a` | diverges | upstream internal helper; azalea's `Pose` covers it |
 | `event('sleep')` | misc | `BotEvent::Sleep` | ported | Pose diff per tick |
@@ -500,10 +503,10 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | ported | merge via `Settings { field, ..bot.settings() }`; rejects view_distance == 0 |
+| `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | ported | merge via `Settings { field, ..bot.settings() }`; rejects `view_distance` 0; `ViewDistance` presets cover upstream's string aliases |
 | `bot.settings.chat` | misc | `bot.settings().chat_visibility` | ported | `ChatVisibility` enum |
 | `bot.settings.colorsEnabled` | misc | `bot.settings().chat_colors` | ported | — |
-| `bot.settings.viewDistance` | misc | `bot.settings().view_distance` | diverges | chunks; azalea default is 8, upstream default `'far'` is 12 |
+| `bot.settings.viewDistance` | misc | `bot.settings().view_distance: ViewDistance` | diverges | `Far`/`Normal`/`Short`/`Tiny` presets + `Chunks(u8)` cover upstream's `number\|'far'\|'normal'\|'short'\|'tiny'` type (string parse via `FromStr`); read-back reports `Chunks` (upstream keeps the string you set); azalea default is 8, upstream default `'far'` is 12 |
 | `bot.settings.difficulty` | misc | `bot.settings().difficulty` | ported | client-side store, default 2 |
 | `bot.settings.skinParts` | misc | `bot.settings().model_customization` | ported | `ModelCustomization` flag struct |
 | `bot.settings.enableTextFiltering` | misc | `bot.settings().text_filtering_enabled` | ported | — |
@@ -523,12 +526,12 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | ported | waits for `container_set_slot` echo; rejects after 5s like upstream |
+| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | diverges | waits for the `container_set_slot` echo but errors `Server rejected` on the first non-matching echo — upstream ignores interleaved non-matching updates and keeps waiting the full 5 s for the requested item (and on ack-less versions skips the echo for a stats round-trip) |
 | `bot.creative.clearSlot(slot)` | inventory | `bot.creative().clear_slot(slot).await` | ported | — |
-| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | ported | — |
+| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | diverges | clears serially and aborts on the first error; upstream `Promise.all`s every slot clear — concurrent, and sibling clears still run when one fails |
 | `bot.creative.flyTo(dest)` | inventory | `bot.creative().fly_to(Vec3).await` | ported | straight-line 0.5-block steps per 50ms |
-| `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | ported | sets `PlayerAbilities.flying` + s_player_abilities |
-| `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | ported | — |
+| `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | diverges | sets `PlayerAbilities.flying` and sends `s_player_abilities` (what the vanilla client does on double-jump); upstream only zeroes `bot.physics.gravity` locally — no packet |
+| `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | diverges | same packet-vs-local difference as `start_flying` |
 
 ## Plugin ecosystem (in port scope — U7/U12)
 
@@ -560,20 +563,20 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('goal_updated')` | pathfinder | `BotEvent::GoalUpdated{goal, dynamic}` | ported | emitted synchronously by `set_goal`, payload like upstream's `(goal, dynamic)` |
 | `event('path_stop')` | pathfinder | `BotEvent::PathStop{goal}` | ported | `stop()`, a follow goal going invalid, or azalea clearing the goal without reaching (world change, internal stop); `goal` carries the abandoned facade goal (`Some`) — upstream emits no payload |
 | `event('path_reset')` | pathfinder | `BotEvent::PathReset{reason}` | diverges | only `goal_updated`/`movements_updated` reasons are observable; azalea's internal repaths (stuck, block change, chunk load, dig error, …) surface as `path_update` and can't be told apart |
-| `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(target).await -> Result<Collected>` | ported | `CollectTarget` accepts Block/BlockPos/BlockKind/kind-list/predicate + `.count()/.max_distance()/.point()`; find→goto→dig loop re-searches per iteration + bounded drop vacuum; emits `CollectBlockFound`/`Collected`/`CollectDone` (upstream emits none); partial hauls resolve `Ok` — compare `collected.blocks.len()` to the asked count |
+| `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(target).await -> Result<Collected>` | ported | `CollectTarget` accepts Block/BlockPos/BlockKind/kind-list/predicate + `.count()/.max_distance()/.point()`; find→goto→dig loop re-searches per iteration + bounded drop vacuum; emits `CollectBlockFound`/`Collected`/`CollectDone` (`CollectDone` is the `collectBlock_finished` equivalent — upstream emits it on its own emitter); partial hauls resolve `Ok` — compare `collected.blocks.len()` to the asked count |
 | `pvp.attack(target) / .stop()` | pathfinder | `bot.pvp().attack(&entity)` / `.stop()` / `.target()` | ported | dynamic `Goal::Follow` + per-tick driver: looks at target, swings in 3.0 range when attack cooldown is ready; retarget on a second `attack()`; ends on stop/target death/despawn |
 | `event('stoppedAttacking')` | pathfinder | `BotEvent::StoppedAttacking` | ported | emitted exactly once per attack run — by `stop()` or by the driver when the target dies/despawns; never on retarget |
 | `tool.equipForBlock etc.` | pathfinder | `bot.tool().equip_for_block(&block)` / `.best_tool_for(&block)` / `.equip_for_entity(&entity)` | diverges | wraps azalea's `best_tool_in_hotbar_for_block` — hotbar-only (upstream scans the full inventory); `best_tool_for` returns `None` when the bare hand wins; `equip_for_entity` is a generic max-`attack_damage` hotbar pick — no entity-aware weapon scoring exists on either side |
 | `autoEat.*` | pathfinder | `bot.auto_eat()` | ported | `AutoEat` facade over the U12 driver pattern: `enable_auto()`/`disable_auto()` toggle a per-tick monitor (`bot.food() < min_hunger || bot.health() < min_health` → one `eat()`), `eat(opts)`/`cancel_eat()`/`is_eating()`/`enabled()`/`opts()`/`set_opts()` mirror `EatUtil`; food data comes from azalea's `Food` default component (`AutoEat::food_data` covers `foodsByName`); upstream's per-plugin event emitter becomes `BotEvent::EatStart`/`EatFinish`/`EatFail` — note the brief's "`eatSuccess`" is upstream `eatFinish` (fires after `eatFail` too, from `finally`). Upstream's `eat` leaks `_eating` on an equip-failure throw; ours releases `is_eating` on every path |
 | `autoEat.opts` fields | pathfinder | `AutoEatOpts` | ported | all of `IEatUtilOpts`: `priority` (`foodPoints`/`saturation`/`effectiveQuality`/`saturationRatio` → `FoodPriority`), `min_hunger` 15, `min_health` 14, `banned_food` (upstream's 5 defaults), `return_to_last_item`, `offhand`, `eating_timeout` 3 s, `strict_errors` |
-| `autoEat.eat(opts)` | pathfinder | `bot.auto_eat().eat(EatOpts)` | ported | `EatOpts` = `{food: Option<FoodSelection(Item|ItemKind|name)>, offhand, equip_old_item, priority}`; auto-pick and explicit `ItemKind`/name selection scan the player region plus offhand slot 45 (upstream `getAllItems` — armor can't hold food anyway); mid-eat failures match upstream's listener: `Item switched early to: <name>!` on a held-stack type change (an emptied slot resolves), `Eating timed out with a time of <ms> milliseconds!`, `Eating cancelled due to calling bot.consume() again`; explicit selections bypass `banned_food` like upstream's `normalizeFoodChoice`; numeric-id selection has no azalea analog — `ItemKind` covers it |
+| `autoEat.eat(opts)` | pathfinder | `bot.auto_eat().eat(EatOpts)` | diverges | `EatOpts` = `{food: Option<FoodSelection(Item|ItemKind|name)>, offhand, equip_old_item, priority}`; auto-pick and explicit `ItemKind`/name selection scan the player region plus offhand slot 45 (upstream `getAllItems` — armor can't hold food anyway); mid-eat failure messages match upstream's: `Item switched early to: <name>!` on a held-stack type change (an emptied slot resolves), `Eating timed out with a time of <ms> milliseconds!`, `Eating cancelled due to calling bot.consume() again` — but the held-stack check runs once after the consume wait resolves, not via a live `updateSlot` listener like upstream's `itemListener`, so a slot swapped-then-restored mid-eat resolves `Ok` where upstream rejects; explicit selections bypass `banned_food` like upstream's `normalizeFoodChoice`; numeric-id selection has no azalea analog — `ItemKind` covers it |
 | `autoEat.findBestChoices(items, priority)` | pathfinder | `.find_best_choices(&items, priority) -> Vec<Item>` | ported | arbitrary item list → edible, non-`banned_food` entries sorted by the priority descending, ties keeping the input order (upstream's stable sort); `eat()`'s fallback is `[0]` of this over `getAllItems` |
 | `autoEat.enableAuto()/disableAuto()` | pathfinder | `.enable_auto()` / `.disable_auto()` | ported | spawns/retires the tick driver (selects on `bot.shutdown`, tolerates `Lagged`, exits on `Closed`/shutdown); an in-flight eat finishes normally on disable |
 | `autoEat.cancelEat()` | pathfinder | `.cancel_eat()` | ported | fails the waiting eat with `Eating manually canceled!` and deactivates the item; no-op when idle or before the eat's wait begins — upstream's `_rejectionBinding` exists only during `buildEatingListener`, so an equip-window cancel is a no-op there too |
 | `autoEat.isEating` / `.enabled` | pathfinder | `.is_eating()` / `.enabled()` | ported | |
 | `autoEat.foods / foodsArray / foodsByName` | pathfinder | `AutoEat::food_data(kind) -> Option<FoodData>` | diverges | per-kind lookup instead of registry tables — same source data (vanilla `food` component: `nutrition`, `saturation`, `can_always_eat`); enumerate by mapping over `ItemKind` if a list is needed |
 | `autoEat.setOpts` | pathfinder | `.set_opts(AutoEatOpts)` | ported | whole-struct replace; read `opts()`, edit fields, write back for the upstream partial-merge form |
-| `autoEat` events `eatStart`/`eatFinish`/`eatFail` | pathfinder | `BotEvent::EatStart{food, offhand}` / `EatFinish{food, offhand}` / `EatFail(String)` | diverges | emitted on the shared `BotEvent` stream (upstream fires them on the `bot.autoEat` emitter); `EatFail` carries the error message, not the `Error` object, and — mirroring upstream's emit-after-throw — fires only when `strict_errors` is off (unreachable under the default `true`); `EatFinish` fires on failure too, upstream's `finally` |
+| `autoEat` events `eatStart`/`eatFinish`/`eatFail` | pathfinder | `BotEvent::EatStart{food, offhand, equip_old_item}` / `EatFinish{food, offhand, equip_old_item}` / `EatFail(String)` | diverges | emitted on the shared `BotEvent` stream (upstream fires them on the `bot.autoEat` emitter); `EatFail` carries the error message, not the `Error` object, and — mirroring upstream's emit-after-throw — fires only when `strict_errors` is off (unreachable under the default `true`); `EatFinish` fires on failure too, upstream's `finally` |
 
 ## External plugin ecosystem (out of scope)
 

@@ -27,9 +27,24 @@ use crate::{Bot, BotEvent, misc::MiscState};
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScoreItem {
     pub name: String,
-    pub value: u32,
+    /// The signed score — objectives legitimately go negative (the wire
+    /// is a signed VarInt; azalea decodes it as `u32` and we un-wrap).
+    pub value: i32,
     /// `scoreboard_score.display` — a custom name shown instead of `name`.
     pub display: Option<FormattedText>,
+}
+
+impl ScoreItem {
+    /// The `displayName` getter upstream puts on every `itemsMap` entry:
+    /// the team-styled name ([`Team::member_display_name`]) when `name` is
+    /// on a team, else the plain name. Upstream reads `bot.teamMap` live —
+    /// pass [`Bot::team_map`] (or any retained member→team map).
+    pub fn display_name(&self, team_map: &HashMap<String, Team>) -> FormattedText {
+        match team_map.get(&self.name) {
+            Some(team) => team.member_display_name(&self.name),
+            None => FormattedText::from(self.name.clone()),
+        }
+    }
 }
 
 /// A scoreboard objective — the upstream `ScoreBoard` class.
@@ -59,7 +74,7 @@ impl ScoreBoard {
         self.title = title;
     }
     /// `ScoreBoard.add` — client-side view mutation.
-    pub fn add(&mut self, name: String, value: u32) {
+    pub fn add(&mut self, name: String, value: i32) {
         self.items_map.insert(
             name.clone(),
             ScoreItem {
@@ -348,7 +363,9 @@ pub(crate) fn handle(
             };
             let item = ScoreItem {
                 name: p.owner.clone(),
-                value: p.score,
+                // the wire field is a signed VarInt azalea reads as u32 —
+                // `as i32` un-wraps it, so -1 arrives as -1 not 0xFFFFFFFF
+                value: p.score as i32,
                 display: p.display.clone(),
             };
             scoreboard.items_map.insert(p.owner.clone(), item.clone());
@@ -381,15 +398,24 @@ pub(crate) fn handle(
         }
         ClientboundGamePacket::SetDisplayObjective(p) => {
             let slot = ScoreboardSlot::from(p.slot);
+            // upstream binds a slot only when the objective is already
+            // known — a display packet for a never-created objective
+            // leaves the slot empty there (no retroactive resolution)
+            let Some(scoreboard) = state.scoreboards.get(&p.objective_name) else {
+                return Some(vec![]);
+            };
+            let previous_board = state
+                .display_slots
+                .get(&slot)
+                .and_then(|name| state.scoreboards.get(name))
+                .cloned();
+            let scoreboard = scoreboard.clone();
             state.display_slots.insert(slot, p.objective_name.clone());
-            match state.scoreboards.get(&p.objective_name) {
-                Some(scoreboard) => vec![BotEvent::ScoreboardPosition {
-                    slot,
-                    scoreboard: scoreboard.clone(),
-                }],
-                // upstream only emits when the objective is known
-                None => vec![],
-            }
+            vec![BotEvent::ScoreboardPosition {
+                slot,
+                scoreboard,
+                previous_board,
+            }]
         }
         ClientboundGamePacket::SetPlayerTeam(p) => match &p.method {
             c_set_player_team::Method::Add((params, players)) => {
@@ -606,7 +632,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(&events[..], [BotEvent::ScoreboardPosition { slot: ScoreboardSlot::Sidebar, scoreboard }] if scoreboard.name == "obj")
+            matches!(&events[..], [BotEvent::ScoreboardPosition { slot: ScoreboardSlot::Sidebar, scoreboard, .. }] if scoreboard.name == "obj")
         );
 
         // remove objective clears its display slots too
@@ -623,6 +649,95 @@ mod tests {
         assert!(matches!(&events[..], [BotEvent::ScoreboardDeleted(sb)] if sb.name == "obj"));
         assert!(s.scoreboards.is_empty());
         assert!(s.display_slots.is_empty());
+    }
+
+    #[test]
+    fn display_slot_previous_board_and_unknown_bind() {
+        let mut s = MiscState::default();
+        let objective = |name: &str| {
+            ClientboundGamePacket::SetObjective(
+                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                    objective_name: name.into(),
+                    method: Method::Add {
+                        display_name: name.into(),
+                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                    },
+                },
+            )
+        };
+        let display = |name: &str| {
+            ClientboundGamePacket::SetDisplayObjective(
+                azalea::protocol::packets::game::c_set_display_objective::ClientboundSetDisplayObjective {
+                    slot: DisplaySlot::Sidebar,
+                    objective_name: name.into(),
+                },
+            )
+        };
+
+        // a display packet for an unknown objective neither binds nor emits
+        let events = handle(&mut s, &display("ghost")).unwrap();
+        assert!(events.is_empty());
+        assert!(s.display_slots.is_empty());
+
+        handle(&mut s, &objective("first"));
+        let events = handle(&mut s, &display("first")).unwrap();
+        assert!(matches!(
+            &events[..],
+            [BotEvent::ScoreboardPosition {
+                previous_board: None,
+                ..
+            }]
+        ));
+
+        // rebinding the slot reports the objective it replaced
+        handle(&mut s, &objective("second"));
+        let events = handle(&mut s, &display("second")).unwrap();
+        assert!(
+            matches!(&events[..], [BotEvent::ScoreboardPosition { previous_board: Some(prev), scoreboard, .. }] if prev.name == "first" && scoreboard.name == "second")
+        );
+    }
+
+    #[test]
+    fn negative_scores_unwrap_and_sort_last() {
+        let mut s = MiscState::default();
+        handle(
+            &mut s,
+            &ClientboundGamePacket::SetObjective(
+                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                    objective_name: "obj".into(),
+                    method: Method::Add {
+                        display_name: "x".into(),
+                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                    },
+                },
+            ),
+        );
+        let set_score = |owner: &str, score: u32| {
+            ClientboundGamePacket::SetScore(
+                azalea::protocol::packets::game::c_set_score::ClientboundSetScore {
+                    owner: owner.into(),
+                    objective_name: "obj".into(),
+                    score,
+                    display: None,
+                    number_format: None,
+                },
+            )
+        };
+        // a wire -1 decodes through azalea's u32 as 0xFFFFFFFF
+        let events = handle(&mut s, &set_score("neg", u32::MAX)).unwrap();
+        assert!(
+            matches!(&events[..], [BotEvent::ScoreUpdated { item, .. }] if item.value == -1),
+            "wire -1 must surface as -1, not wrapped u32::MAX"
+        );
+        handle(&mut s, &set_score("pos", 5));
+        handle(&mut s, &set_score("zero", 0));
+        // descending signed order: 5, 0, -1 — the wrapped score must
+        // not sort above the positives
+        let items = s.scoreboards["obj"].items();
+        let order: Vec<(&str, i32)> = items.iter().map(|i| (i.name.as_str(), i.value)).collect();
+        assert_eq!(order, [("pos", 5), ("zero", 0), ("neg", -1)]);
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub use entity::{Painting, Player, ProfileKeys};
 pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
 pub use misc::{
     ChatVisibility, Creative, HumanoidArm, Instrument, ModelCustomization, Particle,
-    ParticleStatus, Settings, TitleKind,
+    ParticleStatus, Settings, TitleKind, ViewDistance,
 };
 pub use pathfinder::{Goal, Movements, Pathfinder};
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};

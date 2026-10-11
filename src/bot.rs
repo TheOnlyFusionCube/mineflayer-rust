@@ -35,7 +35,10 @@ use tokio::sync::{broadcast, watch};
 use crate::{
     Error, Result, bridge,
     chat::{ChatPatternMatch, ChatShared, MessagePosition},
-    misc::{ChatVisibility, Instrument, ModelCustomization, Particle, ParticleStatus, TitleKind},
+    misc::{
+        ChatVisibility, Instrument, ModelCustomization, Particle, ParticleStatus, TitleKind,
+        ViewDistance,
+    },
     scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team},
     world::{Block, WorldState},
 };
@@ -227,6 +230,9 @@ pub enum BotEvent {
         slot: ScoreboardSlot,
         /// The objective now shown in that slot.
         scoreboard: ScoreBoard,
+        /// The objective this slot showed before (`None` for an empty or
+        /// dangling slot) — upstream's `previousBoard` argument.
+        previous_board: Option<ScoreBoard>,
     },
     /// `teamCreated` — a team was added (already populated with members).
     TeamCreated(Team),
@@ -676,6 +682,10 @@ pub enum BotEvent {
         food: crate::windows::Item,
         /// Whether the offhand is doing the eating.
         offhand: bool,
+        /// Whether the previously held item is re-equipped after the eat
+        /// (upstream's sanitized `equipOldItem` — resolved from
+        /// `EatOpts.equip_old_item` or `opts.returnToLastItem`).
+        equip_old_item: bool,
     },
     /// mineflayer-auto-eat `eatFail` — the eat failed; `0` is the
     /// upstream `Error`'s message.
@@ -688,6 +698,9 @@ pub enum BotEvent {
         food: crate::windows::Item,
         /// Whether the offhand was doing the eating.
         offhand: bool,
+        /// Whether the previously held item was re-equipped (upstream's
+        /// sanitized `equipOldItem`).
+        equip_old_item: bool,
     },
     /// `connect` — the connection is live. Upstream fires on raw socket
     /// connect (pre-login); azalea surfaces no socket-level event, so this
@@ -840,9 +853,11 @@ impl BotBuilder {
         self.auth = Some(auth);
         self
     }
-    /// `options.viewDistance`, in chunks.
-    pub fn view_distance(mut self, view_distance: u8) -> Self {
-        self.view_distance = Some(view_distance);
+    /// `options.viewDistance` — a chunk count or an upstream preset
+    /// ([`ViewDistance::Far`]/[`ViewDistance::Normal`]/
+    /// [`ViewDistance::Short`]/[`ViewDistance::Tiny`] → 12/10/8/6).
+    pub fn view_distance(mut self, view_distance: impl Into<ViewDistance>) -> Self {
+        self.view_distance = Some(view_distance.into().chunks());
         self
     }
 
@@ -1324,6 +1339,8 @@ mod tests {
         assert_eq!(b.port, 25566);
         assert_eq!(b.username, "x");
         assert_eq!(b.view_distance, Some(4));
+        // upstream's named presets resolve to their chunk counts
+        assert_eq!(b.view_distance(ViewDistance::Far).view_distance, Some(12));
     }
 
     #[test]

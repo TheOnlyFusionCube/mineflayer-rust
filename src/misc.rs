@@ -438,15 +438,86 @@ pub use azalea::protocol::common::client_information::{
     ChatVisibility, ModelCustomization, ParticleStatus,
 };
 
+/// Upstream's `viewDistance` value — a chunk count or one of the named
+/// presets (`'far'`/`'normal'`/`'short'`/`'tiny'` → 12/10/8/6 chunks,
+/// settings.js's `viewDistanceToBits`). `u8` converts to
+/// [`ViewDistance::Chunks`]; the alias names parse via [`str::parse`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewDistance {
+    /// `'far'` — 12 chunks.
+    Far,
+    /// `'normal'` — 10 chunks.
+    Normal,
+    /// `'short'` — 8 chunks.
+    Short,
+    /// `'tiny'` — 6 chunks.
+    Tiny,
+    /// A raw chunk count (upstream accepts any positive number).
+    Chunks(u8),
+}
+
+impl ViewDistance {
+    /// The chunk count the client-information packet carries.
+    pub fn chunks(self) -> u8 {
+        match self {
+            Self::Far => 12,
+            Self::Normal => 10,
+            Self::Short => 8,
+            Self::Tiny => 6,
+            Self::Chunks(n) => n,
+        }
+    }
+}
+
+impl From<u8> for ViewDistance {
+    fn from(chunks: u8) -> Self {
+        Self::Chunks(chunks)
+    }
+}
+
+impl From<ViewDistance> for u8 {
+    fn from(v: ViewDistance) -> u8 {
+        v.chunks()
+    }
+}
+
+/// Compares against the resolved chunk count, so
+/// `settings.view_distance == 8` still reads naturally.
+impl PartialEq<u8> for ViewDistance {
+    fn eq(&self, other: &u8) -> bool {
+        self.chunks() == *other
+    }
+}
+
+/// Parses upstream's string form (`"far"`, `"normal"`, `"short"`,
+/// `"tiny"`) plus bare chunk counts.
+impl std::str::FromStr for ViewDistance {
+    type Err = Error;
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "far" => Self::Far,
+            "normal" => Self::Normal,
+            "short" => Self::Short,
+            "tiny" => Self::Tiny,
+            _ => Self::Chunks(
+                s.parse::<u8>()
+                    .map_err(|_| Error::Operation(format!("invalid view distance setting: {s}")))?,
+            ),
+        })
+    }
+}
+
 /// `bot.settings` — mirrors `ClientInformation` plus the client-side-only
 /// `difficulty` upstream also stores.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     /// `bot.settings.locale` (sent as `language`; default `en_us`).
     pub locale: String,
-    /// `bot.settings.viewDistance` in chunks. Upstream's `far`/`normal`/
-    /// `short`/`tiny` map to 12/10/8/6.
-    pub view_distance: u8,
+    /// `bot.settings.viewDistance` — [`ViewDistance::Far`]/[`ViewDistance::Normal`]/
+    /// [`ViewDistance::Short`]/[`ViewDistance::Tiny`] for upstream's string
+    /// presets (12/10/8/6 chunks), or [`ViewDistance::Chunks`] for a raw
+    /// count.
+    pub view_distance: ViewDistance,
     /// `bot.settings.chat` — `Full`/`System`/`Hidden` (upstream's
     /// `enabled`/`commandsOnly`/`disabled`).
     pub chat_visibility: ChatVisibility,
@@ -481,7 +552,7 @@ impl From<ClientInformation> for Settings {
     fn from(info: ClientInformation) -> Self {
         Self {
             locale: info.language,
-            view_distance: info.view_distance,
+            view_distance: info.view_distance.into(),
             chat_visibility: info.chat_visibility,
             chat_colors: info.chat_colors,
             model_customization: info.model_customization,
@@ -498,7 +569,7 @@ impl From<&Settings> for ClientInformation {
     fn from(s: &Settings) -> Self {
         Self {
             language: s.locale.clone(),
-            view_distance: s.view_distance,
+            view_distance: s.view_distance.chunks(),
             chat_visibility: s.chat_visibility,
             chat_colors: s.chat_colors,
             model_customization: s.model_customization,
@@ -546,7 +617,7 @@ impl Bot {
 
     /// `bot.setSettings(options)` — sends `ClientInformation` and stores the
     /// settings. Merge like upstream with struct update syntax:
-    /// `bot.set_settings(Settings { view_distance: 4, ..bot.settings() })`.
+    /// `bot.set_settings(Settings { view_distance: 4.into(), ..bot.settings() })`.
     pub fn set_settings(&self, settings: Settings) -> Result<()> {
         // upstream asserts on an invalid view distance
         if settings.view_distance == 0 {
@@ -1234,13 +1305,26 @@ mod tests {
     #[test]
     fn settings_map_to_client_information() {
         let settings = Settings {
-            view_distance: 5,
+            view_distance: 5.into(),
             chat_visibility: ChatVisibility::System,
             main_hand: azalea::entity::HumanoidArm::Left,
             ..Default::default()
         };
         let info = ClientInformation::from(&settings);
         assert_eq!(info.view_distance, 5);
+
+        // upstream's named presets: far/normal/short/tiny → 12/10/8/6
+        for (alias, chunks) in [("far", 12), ("normal", 10), ("short", 8), ("tiny", 6)] {
+            let parsed: ViewDistance = alias.parse().unwrap();
+            assert_eq!(parsed.chunks(), chunks);
+            let info = ClientInformation::from(&Settings {
+                view_distance: parsed,
+                ..Default::default()
+            });
+            assert_eq!(info.view_distance, chunks);
+        }
+        assert_eq!("12".parse::<ViewDistance>().unwrap().chunks(), 12);
+        assert!("far-ish".parse::<ViewDistance>().is_err());
         assert_eq!(info.chat_visibility, ChatVisibility::System);
         assert_eq!(info.main_hand, azalea::entity::HumanoidArm::Left);
         assert_eq!(info.language, "en_us");
