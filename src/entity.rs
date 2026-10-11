@@ -15,7 +15,10 @@ use std::{
 use azalea::{
     EntityRef, Event, FormattedText, Vec3,
     core::{difficulty::Difficulty, entity_id::MinecraftEntityId},
-    ecs::{entity::Entity, query::With},
+    ecs::{
+        entity::Entity,
+        query::{QueryFilter, With},
+    },
     entity::{
         ActiveEffects, EntityDataItem, EntityDataValue, EntityKindComponent, LookDirection,
         MobEffectData, Physics, Pose, Position,
@@ -41,6 +44,7 @@ use azalea::{
         s_swing::ServerboundSwing,
     },
     registry::builtin::{Attribute, EntityKind, MobEffect},
+    world::WorldName,
 };
 use regex::Regex;
 
@@ -676,11 +680,47 @@ impl Bot {
             .unwrap_or_default()
     }
 
+    /// Entities in our world, sorted nearest-first — the listing
+    /// `nearest_entities_by` produces, but under **one** ECS lock with the
+    /// `EntityRef`s built only after it drops. Azalea's
+    /// `nearest_entity_ids_by` binds its `WorldName` component guard
+    /// across the `Position` lookup — a nested `ecs.read()` that
+    /// permanently deadlocks whenever the ECS runner queues a write
+    /// between the two reads (parking_lot blocks a second shared lock
+    /// behind a parked writer, and the first guard belongs to the same
+    /// thread).
+    fn entities_sorted_by_distance<F: QueryFilter>(&self) -> Vec<EntityRef> {
+        let client = &self.client;
+        let entities = {
+            let mut ecs = client.ecs.write();
+            let Ok(me) = ecs.get_entity(client.entity) else {
+                return Vec::new();
+            };
+            let Some(world_name) = me.get::<WorldName>().cloned() else {
+                return Vec::new();
+            };
+            let Some(position) = me.get::<Position>().map(|p| **p) else {
+                return Vec::new();
+            };
+            let mut query = ecs.query_filtered::<(Entity, &WorldName, &Position), F>();
+            let mut entities: Vec<(Entity, Vec3)> = query
+                .iter(&ecs)
+                .filter(|(_, e_world_name, _)| *e_world_name == &world_name)
+                .map(|(e, _, pos)| (e, **pos))
+                .collect();
+            entities.sort_by_cached_key(|(_, pos)| pos.distance_squared_to(position).to_bits());
+            entities
+        };
+        entities
+            .into_iter()
+            .map(|(e, _)| client.entity_ref_for(e))
+            .collect()
+    }
+
     /// `bot.entities` — every entity in view, keyed by protocol entity id
     /// (like upstream's `{[id]: Entity}`), including the bot itself.
     pub fn entities(&self) -> HashMap<MinecraftEntityId, EntityRef> {
-        self.client
-            .nearest_entities_by::<(), With<Position>>(|_: ()| true)
+        self.entities_sorted_by_distance::<With<Position>>()
             .iter()
             .filter_map(|e| {
                 e.get_component::<MinecraftEntityId>()
@@ -693,8 +733,7 @@ impl Bot {
     /// satisfies `matcher`.
     pub fn nearest_entity(&self, mut matcher: impl FnMut(&EntityRef) -> bool) -> Option<EntityRef> {
         let own = self.client.entity;
-        self.client
-            .nearest_entities_by::<(), With<Position>>(|_: ()| true)
+        self.entities_sorted_by_distance::<With<Position>>()
             .into_iter()
             .find(|e| e.id() != own && matcher(e))
     }
@@ -702,8 +741,7 @@ impl Bot {
     /// `bot.findPlayer`/`bot.findPlayers` — player entities matching
     /// `filter` (upstream returns entities, not tab-list entries).
     pub fn find_players(&self, filter: PlayerFilter) -> Vec<EntityRef> {
-        self.client
-            .nearest_entities_by::<(), With<azalea::entity::metadata::Player>>(|_: ()| true)
+        self.entities_sorted_by_distance::<With<azalea::entity::metadata::Player>>()
             .into_iter()
             .filter(|e| match &filter {
                 PlayerFilter::Predicate(f) => f(e),
