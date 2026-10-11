@@ -217,12 +217,13 @@ async fn pathfinder() {
         );
     });
     // goto can resolve off the same tick that emits goal_reached — give
-    // the bridge one tick to land it before asserting
+    // the bridge one tick to land it before asserting; the payload must
+    // be the goal we actually set
     wait_in_buf(
         &events,
         Duration::from_secs(3),
-        |e| matches!(e, BotEvent::GoalReached),
-        "goal_reached",
+        |e| matches!(e, BotEvent::GoalReached { goal: Goal::Block(p) } if *p == target),
+        "goal_reached for our target",
     )
     .await;
 
@@ -233,23 +234,23 @@ async fn pathfinder() {
         .filter(|e| {
             matches!(
                 e,
-                BotEvent::GoalUpdated
+                BotEvent::GoalUpdated { .. }
                     | BotEvent::PathUpdate { .. }
-                    | BotEvent::GoalReached
-                    | BotEvent::PathStop
+                    | BotEvent::GoalReached { .. }
+                    | BotEvent::PathStop { .. }
                     | BotEvent::PathReset { .. }
             )
         })
         .collect();
-    let goal_updated = pf_events
-        .iter()
-        .position(|e| matches!(e, BotEvent::GoalUpdated));
+    let goal_updated = pf_events.iter().position(|e| {
+        matches!(e, BotEvent::GoalUpdated { goal: Goal::Block(p), dynamic: false } if *p == target)
+    });
     let path_update = pf_events
         .iter()
         .position(|e| matches!(e, BotEvent::PathUpdate { path, .. } if !path.is_empty()));
     let goal_reached = pf_events
         .iter()
-        .position(|e| matches!(e, BotEvent::GoalReached));
+        .position(|e| matches!(e, BotEvent::GoalReached { .. }));
     assert!(
         goal_updated.is_some() && path_update.is_some() && goal_reached.is_some(),
         "expected goal_updated, path_update and goal_reached; got {pf_events:?} (of {} total)",
@@ -302,15 +303,23 @@ async fn pathfinder() {
     wait_in_buf(
         &events,
         Duration::from_secs(5),
-        |e| matches!(e, BotEvent::PathStop),
-        "path_stop",
+        |e| {
+            matches!(
+                e,
+                BotEvent::PathStop {
+                    goal: Some(Goal::XZ { .. })
+                }
+            )
+        },
+        "path_stop carrying the XZ goal",
     )
     .await;
     assert!(!pf.is_moving());
     assert!(!pf.have_goal());
     let seen = events.lock().unwrap().clone();
     assert!(
-        seen.iter().any(|e| matches!(e, BotEvent::GoalUpdated)),
+        seen.iter()
+            .any(|e| matches!(e, BotEvent::GoalUpdated { .. })),
         "stop should follow a goal_updated; got {seen:?}"
     );
 
@@ -334,7 +343,7 @@ async fn pathfinder() {
     wait_in_buf(
         &events2,
         Duration::from_secs(3),
-        |e| matches!(e, BotEvent::GoalReached),
+        |e| matches!(e, BotEvent::GoalReached { goal: Goal::Block(p) } if *p == here),
         "satisfied goal_reached",
     )
     .await;

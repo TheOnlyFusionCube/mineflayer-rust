@@ -101,7 +101,9 @@ pub enum Goal {
     /// `goals.GoalFollow(entity, range)` — a watcher task re-issues a
     /// radius goal whenever the entity's block position changes
     /// (`diverges`: re-paths on whole-block moves rather than upstream's
-    /// continuous moving goal).
+    /// continuous moving goal). Like upstream, `dynamic` is the
+    /// `set_goal` flag, not a property of the goal — `dynamic = false`
+    /// follows until the first in-range tick, `true` follows forever.
     Follow {
         /// The entity to follow.
         entity: EntityRef,
@@ -372,9 +374,11 @@ pub(crate) struct PathfinderFacade {
     /// The last `set_goal` argument. `None` once the goal is reached or
     /// abandoned (cleared by the bridge diff, `stop`, or a watcher exit).
     pub goal: Option<Goal>,
-    /// Bumped every `set_goal` — lets the bridge tell "goal was replaced"
-    /// from "goal was abandoned" when it would otherwise clobber a new
-    /// goal with a stale clear.
+    /// Bumped every `set_goal` and every `set_movements` re-issue — lets
+    /// the bridge tell "goal was replaced" from "goal was abandoned" when
+    /// it would otherwise clobber a new goal with a stale clear, and lets
+    /// watchers tell "my issue is still current" from "a newer goal or
+    /// movements config superseded it".
     pub goal_gen: u64,
     /// The `setGoal` `dynamic` argument — suppresses `goal_reached` and
     /// re-paths whenever the goal stops holding (upstream semantics).
@@ -460,8 +464,8 @@ impl Pathfinder<'_> {
                 biased;
                 r = rx.recv() => {
                     match r {
-                        Ok(BotEvent::GoalReached) => return Ok(()),
-                        Ok(BotEvent::PathStop) => {
+                        Ok(BotEvent::GoalReached { .. }) => return Ok(()),
+                        Ok(BotEvent::PathStop { .. }) => {
                             return Err(Error::Operation("path stopped".to_string()));
                         }
                         Ok(BotEvent::End(_)) => return Err(Error::NotConnected),
@@ -495,38 +499,41 @@ impl Pathfinder<'_> {
     /// (`goal_updated`) when a path was underway, like upstream.
     ///
     /// `dynamic` mirrors upstream: the goal keeps re-pathing whenever it
-    /// stops holding instead of completing (implicit for
-    /// [`Goal::Follow`], which is dynamic by construction).
+    /// stops holding instead of completing. It is purely the `setGoal`
+    /// flag — upstream's `GoalFollow` is *not* implicitly dynamic, so a
+    /// `Goal::Follow` with `dynamic = false` ends at the first in-range
+    /// tick, and `dynamic = true` follows until stopped or despawned.
     pub fn set_goal(&self, goal: Goal, dynamic: bool) -> Result<()> {
         let client = self.client().clone();
-        self.bot.emit_event(BotEvent::GoalUpdated);
+        let movements = self.movements();
+        sync_constraints(&client, &movements);
+        // Already satisfied — azalea would drop the goto without ever
+        // storing the goal, so mirror upstream's monitor: `goal_updated`
+        // then `goal_reached`, and stop the in-flight path (upstream's
+        // resetPath also cleared it).
+        let satisfied = !dynamic && goal.is_end(&client, client.position());
+        if satisfied {
+            stop_pathfinding_patched(&client, false);
+        }
+        facade_mut(&client, |f| {
+            cancel_watcher(f);
+            f.goal = (!satisfied).then(|| goal.clone());
+            f.dynamic = dynamic;
+            f.goal_gen += 1;
+        });
+        self.bot.emit_event(BotEvent::GoalUpdated {
+            goal: goal.clone(),
+            dynamic,
+        });
         if client.is_executing_path() {
             self.bot.emit_event(BotEvent::PathReset {
                 reason: "goal_updated",
             });
         }
-        let movements = self.movements();
-        sync_constraints(&client, &movements);
-        // Already satisfied — azalea would drop the goto without ever
-        // storing the goal, so mirror upstream's monitor: emit
-        // goal_reached now, and just stop the in-flight path (upstream's
-        // resetPath also cleared it).
-        if !dynamic && goal.is_end(&client, client.position()) {
-            client.stop_pathfinding();
-            facade_mut(&client, |f| {
-                cancel_watcher(f);
-                f.goal = None;
-                f.goal_gen += 1;
-            });
-            self.bot.emit_event(BotEvent::GoalReached);
+        if satisfied {
+            self.bot.emit_event(BotEvent::GoalReached { goal });
             return Ok(());
         }
-        facade_mut(&client, |f| {
-            cancel_watcher(f);
-            f.goal = Some(goal.clone());
-            f.dynamic = dynamic;
-            f.goal_gen += 1;
-        });
         let result = self.issue(goal, dynamic, movements);
         if result.is_err() {
             facade_mut(&client, |f| f.goal = None);
@@ -539,6 +546,12 @@ impl Pathfinder<'_> {
     /// bookkeeping.
     fn issue(&self, goal: Goal, dynamic: bool, movements: Movements) -> Result<()> {
         let client = self.client().clone();
+        // Watchers re-check `goal_gen` against this before every
+        // re-issue — a `set_goal` since their spawn bumps it, so they
+        // can never write a stale `GotoEvent` over a replacement goal
+        // (azalea's `goto_listener` keeps the last event, and a stale
+        // goal would later emit a spurious `path_stop`).
+        let issue_gen = facade(&client, |f| f.goal_gen).unwrap_or_default();
         match goal {
             Goal::Follow { entity, range } => {
                 let cancel = Arc::new(AtomicBool::new(false));
@@ -555,6 +568,7 @@ impl Pathfinder<'_> {
                     movements,
                     cancel,
                     self.bot.clone(),
+                    issue_gen,
                 );
             }
             _ => {
@@ -571,7 +585,7 @@ impl Pathfinder<'_> {
                         cancel_watcher(f);
                         f.watcher_cancel = Some(cancel.clone());
                     });
-                    dynamic_watcher(client.clone(), azalea_goal, movements, cancel);
+                    dynamic_watcher(client.clone(), azalea_goal, movements, cancel, issue_gen);
                 }
             }
         }
@@ -579,7 +593,7 @@ impl Pathfinder<'_> {
     }
 
     /// `bot.pathfinder.stop()` — stop navigating now (upstream clears the
-    /// path immediately, so this is `force_stop_pathfinding`, not the
+    /// path immediately, so this is the `force` stop, not the
     /// mid-move-friendly `stop_pathfinding`). Emits `path_stop` here like
     /// upstream's `stop()`; azalea's goal clear then arrives with the
     /// facade goal already `None`, so the bridge doesn't re-report it.
@@ -589,22 +603,14 @@ impl Pathfinder<'_> {
         // idle stop emits nothing
         let active = !client.is_goto_target_reached()
             || facade(client, |f| f.goal.is_some()).unwrap_or(false);
-        client.force_stop_pathfinding();
-        facade_mut(client, |f| {
+        stop_pathfinding_patched(client, true);
+        let stopped = facade_mut(client, |f| {
             cancel_watcher(f);
-            f.goal = None;
-        });
-        // `handle_stop_pathfinding_event` drops an in-flight ComputePath
-        // without resetting `is_calculating` — azalea 0.16 never clears
-        // the flag in that case, which would hang
-        // `is_goto_target_reached`/the `goto` future forever. Write the
-        // same values azalea's handler would.
-        let _ = client.try_query_self::<&mut pathfinder::Pathfinder, _>(|mut p| {
-            p.goal = None;
-            p.is_calculating = false;
-        });
+            f.goal.take()
+        })
+        .flatten();
         if active {
-            self.bot.emit_event(BotEvent::PathStop);
+            self.bot.emit_event(BotEvent::PathStop { goal: stopped });
         }
     }
 
@@ -647,6 +653,10 @@ impl Pathfinder<'_> {
         let was_executing = client.is_executing_path();
         let goal_and_dynamic = facade_mut(&client, |f| {
             f.movements = movements.clone();
+            // re-issuing is a new goal generation — watchers still
+            // holding the previous generation stop instead of
+            // overwriting the fresh goto with the old movements
+            f.goal_gen += 1;
             f.goal.clone().zip(Some(f.dynamic))
         })
         .flatten();
@@ -669,11 +679,38 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
     }
 }
 
+/// Stop azalea's pathfinder (`force` = halt mid-move) and patch the
+/// component state its 0.16 stop handler drops:
+/// `handle_stop_pathfinding_event` removes `ComputePath` without
+/// resetting `is_calculating`, and with a calculation in flight but no
+/// `ExecutingPath` its `(&mut Pathfinder, &mut ExecutingPath)` query
+/// fails outright so `goal` isn't even cleared — either leaves
+/// `is_goto_target_reached`/`is_thinking` (and the `goto` future on
+/// them) stuck until the next goto.
+///
+/// Workaround for azalea 0.16 (no upstream issue filed); drop the
+/// component write once a released azalea clears `is_calculating` (and
+/// handles the no-`ExecutingPath` case) in
+/// `handle_stop_pathfinding_event` — verify against azalea's
+/// `src/pathfinder/mod.rs`.
+fn stop_pathfinding_patched(client: &azalea::Client, force: bool) {
+    if force {
+        client.force_stop_pathfinding();
+    } else {
+        client.stop_pathfinding();
+    }
+    let _ = client.try_query_self::<&mut pathfinder::Pathfinder, _>(|mut p| {
+        p.goal = None;
+        p.is_calculating = false;
+    });
+}
+
 /// The [`Goal::Follow`] driver: every tick, re-issue a radius goal on the
 /// entity's new block position (azalea merges it into the running path).
-/// Ends silently when the facade goal is gone — a non-dynamic follow ends
-/// once the bridge reports `goal_reached`, and `stop()`/`set_goal` cancel
-/// through the flag. The entity leaving the world mirrors upstream's
+/// Ends silently when the facade goal is gone or its generation moved on
+/// — a non-dynamic follow ends once the bridge reports `goal_reached`,
+/// and `stop()`/`set_goal`/`set_movements` retire it through the cancel
+/// flag and `goal_gen`. The entity leaving the world mirrors upstream's
 /// `isValid()` failure: the driver clears the facade goal, stops
 /// pathfinding, and reports `path_stop` itself (the ECS goal may never
 /// have been installed, so the diff can't see it).
@@ -684,15 +721,18 @@ fn follow_driver(
     movements: Movements,
     cancel: Arc<AtomicBool>,
     bot: Bot,
+    issue_gen: u64,
 ) {
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
         let mut last_target: Option<BlockPos> = None;
         let mut despawned = false;
         while ticks.recv().await.is_ok() && !cancel.load(atomic::Ordering::Relaxed) {
-            if facade(&client, |f| f.goal.is_some()) != Some(true) {
+            if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
                 // reached (non-dynamic), stopped, or replaced — whoever
-                // cleared it already reported the outcome
+                // cleared or superseded it already reported the outcome;
+                // a goal_gen check alone isn't enough: `goal.is_some()` on
+                // the *new* goal would still be true
                 return;
             }
             let Some(pos) = entity.get_component::<Position>().map(|p| **p) else {
@@ -712,22 +752,38 @@ fn follow_driver(
         if cancel.load(atomic::Ordering::Relaxed) || !despawned {
             return;
         }
-        // the entity despawned — the follow goal is no longer valid
-        facade_mut(&client, |f| f.goal = None);
-        client.stop_pathfinding();
-        bot.emit_event(BotEvent::PathStop);
+        // the entity despawned — the follow goal is no longer valid.
+        // Report `path_stop` only if the goal is still ours: a
+        // reach/stop/replace that beat us to the facade already owns the
+        // outcome (emitting again would double `path_stop`).
+        let stopped = facade_mut(&client, |f| {
+            if f.goal_gen == issue_gen {
+                f.goal.take()
+            } else {
+                None
+            }
+        })
+        .flatten();
+        let Some(goal) = stopped else {
+            return;
+        };
+        stop_pathfinding_patched(&client, false);
+        bot.emit_event(BotEvent::PathStop { goal: Some(goal) });
     });
 }
 
 /// The `dynamic`-goal watcher: once azalea clears a reached goal, keep
 /// re-issuing it whenever the goal's success check stops holding —
 /// upstream's "dynamic goals never complete" semantics, which azalea's
-/// goal-clears-on-success can't express on its own.
+/// goal-clears-on-success can't express on its own. `goal_gen` gates the
+/// re-issue so a watcher can't write a stale `GotoEvent` over a goal
+/// `set_goal`/`set_movements` installed after it spawned.
 fn dynamic_watcher(
     client: azalea::Client,
     goal: Arc<dyn AzaleaGoal>,
     movements: Movements,
     cancel: Arc<AtomicBool>,
+    issue_gen: u64,
 ) {
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
@@ -740,7 +796,7 @@ fn dynamic_watcher(
             if goal.success(player_pos_to_block_pos(client.position())) {
                 continue;
             }
-            if facade(&client, |f| f.goal.is_some()) != Some(true) {
+            if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
                 break;
             }
             client.start_goto_with_opts(SharedGoal(goal.clone()), movements.to_opts());
@@ -809,16 +865,38 @@ pub(crate) fn bridge_events(
         && let Some(cur_goal) = now.facade_goal.as_ref()
     {
         let satisfied = now.pos.is_some_and(|pos| cur_goal.is_end(client, pos));
+        // Both branches take the facade goal only when its generation is
+        // unchanged since the snapshot — a `set_goal` that landed in
+        // between already announced the old goal's death via
+        // `goal_updated`/`path_reset` and owns the new one.
         if satisfied && !now.dynamic {
-            facade_mut(client, |f| f.goal = None);
-            out.push(BotEvent::GoalReached);
+            let reached = facade_mut(client, |f| {
+                if f.goal_gen == now.facade_gen {
+                    f.goal.take()
+                } else {
+                    None
+                }
+            })
+            .flatten();
+            if let Some(goal) = reached {
+                out.push(BotEvent::GoalReached { goal });
+            }
         } else if !satisfied && now.facade_gen == prev.facade_gen {
             // the same goal was abandoned without reaching (world change,
-            // azalea-internal stop). A gen bump means the cleared goal
+            // azalea-internal stop). A goal_gen bump means the cleared goal
             // belonged to an older set_goal — its death was already
             // announced by that call's path_reset, so say nothing.
-            facade_mut(client, |f| f.goal = None);
-            out.push(BotEvent::PathStop);
+            let stopped = facade_mut(client, |f| {
+                if f.goal_gen == now.facade_gen {
+                    f.goal.take()
+                } else {
+                    None
+                }
+            })
+            .flatten();
+            if let Some(goal) = stopped {
+                out.push(BotEvent::PathStop { goal: Some(goal) });
+            }
         }
         // satisfied && dynamic: the watcher owns the goal — it stays in
         // the facade and re-paths when it stops holding (no goal_reached,

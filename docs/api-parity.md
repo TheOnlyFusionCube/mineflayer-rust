@@ -548,14 +548,14 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `GoalXZ` | pathfinder | `Goal::XZ{x, z}` | ported | `XZGoal` |
 | `GoalY` | pathfinder | `Goal::Y{y}` | ported | `YGoal` |
 | `GoalInvert` | pathfinder | `Goal::Invert(Box<Goal>)` | diverges | custom goal: negated success + negated heuristic — same semantics (and same A* pathology) as azalea's deprecated `InverseGoal` |
-| `GoalFollow` | pathfinder | `Goal::Follow{entity, range}` | diverges | watcher task re-issues `RadiusGoal` when the entity's block position changes and reports `path_stop` on despawn; no continuous moving goal like upstream |
+| `GoalFollow` | pathfinder | `Goal::Follow{entity, range}` | diverges | watcher task re-issues `RadiusGoal` when the entity's block position changes and reports `path_stop` on despawn; no continuous moving goal like upstream. `dynamic` is still the `setGoal` flag — upstream's GoalFollow isn't implicitly dynamic, so `dynamic=false` ends at the first in-range tick |
 | `GoalCompositeAny` | pathfinder | `Goal::Any(Vec<Goal>)` | ported | boxed `OrGoals` — any-success, min heuristic |
 | `GoalCompositeAll` | pathfinder | `Goal::All(Vec<Goal>)` | ported | boxed `AndGoals` — all-success, max heuristic |
 | `setGoal(g, dynamic=true)` | pathfinder | `pf.set_goal(goal, true)` | diverges | watcher re-issues the goal each tick it stops holding instead of upstream's always-re-evaluating goal; `goal_reached` is still suppressed while the goal holds |
-| `event('goal_reached')` | pathfinder | `BotEvent::GoalReached` | ported | emitted when azalea clears the goal while its success check holds; suppressed for `dynamic` goals like upstream |
-| `event('path_update')` | pathfinder | `BotEvent::PathUpdate{path, is_partial}` | ported | per-tick diff of `Pathfinder`/`ExecutingPath` (azalea's `PathFoundEvent` never reaches `Event`); also fires on failed calcs, matching upstream's per-result `path_update` |
-| `event('goal_updated')` | pathfinder | `BotEvent::GoalUpdated` | ported | emitted synchronously by `set_goal` |
-| `event('path_stop')` | pathfinder | `BotEvent::PathStop` | ported | `stop()`, a follow goal going invalid, or azalea clearing the goal without reaching (world change, internal stop) |
+| `event('goal_reached')` | pathfinder | `BotEvent::GoalReached{goal}` | ported | emitted when azalea clears the goal while its success check holds; suppressed for `dynamic` goals like upstream; `goal` payload matches upstream's `(goal)` |
+| `event('path_update')` | pathfinder | `BotEvent::PathUpdate{path, is_partial}` | ported | per-tick diff of `Pathfinder`/`ExecutingPath` (azalea's `PathFoundEvent` never reaches `Event`); fires when a path installs or a calculation finishes (failures included); a teardown without a calc finish emits no terminal update — `goal_reached`/`path_stop` carry that signal instead |
+| `event('goal_updated')` | pathfinder | `BotEvent::GoalUpdated{goal, dynamic}` | ported | emitted synchronously by `set_goal`, payload like upstream's `(goal, dynamic)` |
+| `event('path_stop')` | pathfinder | `BotEvent::PathStop{goal}` | ported | `stop()`, a follow goal going invalid, or azalea clearing the goal without reaching (world change, internal stop); `goal` carries the abandoned facade goal (`Some`) — upstream emits no payload |
 | `event('path_reset')` | pathfinder | `BotEvent::PathReset{reason}` | diverges | only `goal_updated`/`movements_updated` reasons are observable; azalea's internal repaths (stuck, block change, chunk load, dig error, …) surface as `path_update` and can't be told apart |
 | `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(b).await` | pending | U12; find+goto+dig loop |
 | `pvp.attack(target) / .stop()` | pathfinder | `bot.pvp().attack(e) / stop()` | pending | U12 |
