@@ -696,6 +696,21 @@ pub enum BotEvent {
     /// Once per connection — later `Login`s (world switches) don't refire
     /// it.
     Connected,
+    /// mineflayer-pvp `startedAttacking` — `pvp().attack()` engaged a
+    /// target. Fires on every successful `attack` call including
+    /// retargets; upstream emits `stoppedAttacking` + `startedAttacking`
+    /// on a retarget — ours keeps the one run alive and fires only this
+    /// (see the `StoppedAttacking` row in api-parity.md).
+    StartedAttacking,
+    /// mineflayer-pvp `attackedTarget` — the pvp driver swung at the
+    /// target this tick. No payload, like upstream.
+    AttackedTarget,
+    /// mineflayer-collectblock `collectBlock_finished` — a `collect`
+    /// call concluded, successfully or not (upstream emits it from a
+    /// `finally`). [`BotEvent::CollectDone`] stays the additive
+    /// per-run success report; a cancelled collect emits this without
+    /// it.
+    CollectBlockFinished,
 }
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
