@@ -92,10 +92,41 @@ const TRADE_INPUT_2: u16 = 1;
 const TRADE_RESULT: u16 = 2;
 
 /// `edit_book` wire limits the vanilla server disconnects over
-/// (`EditBookPacket` guards) — enforced at our boundary so a bad call
-/// errors instead of kicking the bot.
+/// (`EditBookPacket`/`WritableBookContent` guards) — enforced at our
+/// boundary so a bad call errors instead of kicking the bot.
 const BOOK_MAX_PAGES: usize = 100;
 const BOOK_MAX_TITLE_CHARS: usize = 32;
+/// Per-page cap — `WritableBookContent.PAGE_EDIT_LENGTH`, counted in
+/// UTF-16 units like the Java `String.length()` the wire decode checks.
+const BOOK_MAX_PAGE_UTF16: usize = 1024;
+
+/// The `edit_book` boundary guards, split out so they're testable
+/// without a connection (upstream's book.js asserts only the slot
+/// range; the rest mirror the wire limits the server kicks over).
+fn check_book_input(slot: i32, pages: &[String], title: Option<&str>) -> Result<()> {
+    if !(0..=44).contains(&slot) {
+        return Err(Error::Operation("slot out of inventory range".into()));
+    }
+    if pages.len() > BOOK_MAX_PAGES {
+        return Err(Error::Operation(format!(
+            "book has too many pages ({BOOK_MAX_PAGES} max)"
+        )));
+    }
+    if pages
+        .iter()
+        .any(|p| p.encode_utf16().count() > BOOK_MAX_PAGE_UTF16)
+    {
+        return Err(Error::Operation(format!(
+            "book page too long ({BOOK_MAX_PAGE_UTF16} chars max)"
+        )));
+    }
+    if title.is_some_and(|t| t.chars().count() > BOOK_MAX_TITLE_CHARS) {
+        return Err(Error::Operation(format!(
+            "book title too long ({BOOK_MAX_TITLE_CHARS} chars max)"
+        )));
+    }
+    Ok(())
+}
 
 const WINDOW_WAIT: Duration = Duration::from_secs(5);
 /// Upstream's `onceWithCleanup` timeout for the `edit_book` ack.
@@ -1257,19 +1288,7 @@ impl Bot {
         _author: Option<&str>,
         title: Option<&str>,
     ) -> Result<()> {
-        if !(0..=44).contains(&slot) {
-            return Err(Error::Operation("slot out of inventory range".into()));
-        }
-        if pages.len() > BOOK_MAX_PAGES {
-            return Err(Error::Operation(format!(
-                "book has too many pages ({BOOK_MAX_PAGES} max)"
-            )));
-        }
-        if title.is_some_and(|t| t.chars().count() > BOOK_MAX_TITLE_CHARS) {
-            return Err(Error::Operation(format!(
-                "book title too long ({BOOK_MAX_TITLE_CHARS} chars max)"
-            )));
-        }
+        check_book_input(slot, &pages, title)?;
         let inventory = self.inventory();
         let book = inventory
             .slot(slot)
@@ -1627,9 +1646,18 @@ mod tests {
 
     #[test]
     fn enchant_options_decode_clues() {
-        let holder = azalea::core::registry_holder::RegistryHolder::default();
-        // level costs 1/2/3, seed 42, clue 0 = first registered
-        // enchantment at level 4, clues 1/2 = -1
+        // a holder with one enchantment entry — clue id 0 then resolves
+        // like a real server's registry_data would
+        let mut holder = azalea::core::registry_holder::RegistryHolder::default();
+        holder.append(
+            azalea::Identifier::new("minecraft:enchantment"),
+            vec![(
+                azalea::Identifier::new("minecraft:sharpness"),
+                Some(azalea::protocol::simdnbt::owned::NbtCompound::new()),
+            )],
+        );
+        // level costs 1/2/3, seed 42, clue 0 = sharpness at level 4,
+        // clues 1/2 = -1
         let data = HashMap::from([
             (0u16, 1i16),
             (1, 2),
@@ -1644,24 +1672,48 @@ mod tests {
         assert_eq!(opts[0].level, 1);
         assert_eq!(opts[1].level, 2);
         assert_eq!(opts[2].level, 3);
-        // clue 0 resolves to some enchantment at level 4 through the
-        // (empty default) holder only if the server sent the registry —
-        // with a default holder nothing resolves, and -1 never does
+        assert_eq!(
+            opts[0].expected,
+            Some(ExpectedEnchant {
+                enchant: data::EnchantmentKey::Sharpness,
+                level: 4,
+            })
+        );
+        // -1 clues never resolve
         assert!(opts[1].expected.is_none());
         assert!(opts[2].expected.is_none());
-        let _ = &opts[0];
+        // and an id past the registry's end can't resolve either
+        let mut data = data;
+        data.insert(ENCHANT_CLUE, 99);
+        assert!(enchantment_options(&data, &holder)[0].expected.is_none());
     }
 
     #[test]
-    fn book_input_validation() {
-        // the guards are checked before any packet work — call them the
-        // same way a user does via write/sign through edit_book's checks
-        // (the pure part): slot range, page cap, title cap
-        assert!((0..=44).contains(&0) && (0..=44).contains(&44) && !(0..=44).contains(&45));
+    fn book_input_guards() {
+        // every edit_book boundary check is exercised through the same
+        // function write_book/sign_book call
+        let page = || vec!["page".to_string()];
+        // slot range (upstream's `assert.ok(slot >= 0 && slot <= 44)`)
+        assert!(check_book_input(0, &page(), None).is_ok());
+        assert!(check_book_input(44, &page(), None).is_ok());
+        assert!(check_book_input(-1, &page(), None).is_err());
+        assert!(check_book_input(45, &page(), None).is_err());
+        // page count / per-page length / title length — the wire caps
+        // the server disconnects over
+        assert!(check_book_input(9, &vec![String::new(); 100], None).is_ok());
+        assert!(check_book_input(9, &vec![String::new(); 101], None).is_err());
+        assert!(check_book_input(9, &["x".repeat(1024)], None).is_ok());
+        assert!(check_book_input(9, &["x".repeat(1025)], None).is_err());
+        assert!(check_book_input(9, &page(), Some(&"t".repeat(32))).is_ok());
+        assert!(check_book_input(9, &page(), Some(&"t".repeat(33))).is_err());
+    }
+
+    #[test]
+    fn writable_book_default_component() {
         // WritableBookContent is a default component on writable_book
         // (empty pages — vanilla's componentMap.has is true for it too),
         // so what actually distinguishes an edited book is non-empty
-        // pages
+        // pages — which the write-ack predicate in edit_book relies on
         let book = ItemStack::new(ItemKind::WritableBook, 1).with_component(WritableBookContent {
             pages: vec![azalea::core::filterable::Filterable {
                 raw: "page one".to_string(),

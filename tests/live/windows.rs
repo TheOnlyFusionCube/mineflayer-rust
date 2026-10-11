@@ -105,7 +105,8 @@ async fn typed_window_openers_and_guards() {
     let err = bot
         .open_enchantment_table(&below)
         .await
-        .err().expect("non-table block should not open");
+        .err()
+        .expect("non-table block should not open");
     eprintln!("open_enchantment_table(dirt-ish): {err}");
 
     // villager opener asserts the entity kind before interacting
@@ -117,7 +118,8 @@ async fn typed_window_openers_and_guards() {
         let err = bot
             .open_villager(&entity)
             .await
-            .err().expect("non-villager entity should not open");
+            .err()
+            .expect("non-villager entity should not open");
         eprintln!("open_villager({kind:?}): {err}");
     } else {
         eprintln!("no non-villager entity nearby; villager type-check skipped");
@@ -127,7 +129,8 @@ async fn typed_window_openers_and_guards() {
     // the block check like upstream's assert order
     let err = bot
         .set_command_block(feet, "say hi", CommandBlockOpts::default())
-        .err().expect("survival bot cannot set command blocks");
+        .err()
+        .expect("survival bot cannot set command blocks");
     eprintln!("set_command_block(survival): {err}");
 
     // writeBook guards: slot range first, then "no book found"
@@ -141,12 +144,14 @@ async fn typed_window_openers_and_guards() {
     let err = bot
         .write_book(empty_slot as i32, vec!["x".into()])
         .await
-        .err().expect("empty slot has no book");
+        .err()
+        .expect("empty slot has no book");
     eprintln!("write_book(empty slot): {err}");
     let err = bot
         .sign_book(empty_slot as i32, vec!["x".into()], "u9bot", "t")
         .await
-        .err().expect("empty slot has no book to sign");
+        .err()
+        .expect("empty slot has no book to sign");
     eprintln!("sign_book(empty slot): {err}");
 
     // ---- openers on the wrong block: the window never opens ----
@@ -155,12 +160,14 @@ async fn typed_window_openers_and_guards() {
     let err = bot
         .open_furnace(&below)
         .await
-        .err().expect("ground is not a furnace");
+        .err()
+        .expect("ground is not a furnace");
     eprintln!("open_furnace(ground): {err}");
     let err = bot
         .open_anvil(&below)
         .await
-        .err().expect("ground is not an anvil");
+        .err()
+        .expect("ground is not an anvil");
     eprintln!("open_anvil(ground): {err}");
     assert!(bot.current_window().is_none());
 
