@@ -31,6 +31,11 @@ pub enum Error {
     /// event from `updateSign` before writing).
     #[error("invalid sign text: {0}")]
     SignText(String),
+    /// A `pathfinder.goto` rejection — upstream puts these names on
+    /// `err.name` (`NoPath`, `Timeout`, `GoalChanged`, `PathStopped`) so
+    /// callers can discriminate without parsing the message.
+    #[error("{0}")]
+    Path(#[from] crate::pathfinder::PathError),
 }
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.

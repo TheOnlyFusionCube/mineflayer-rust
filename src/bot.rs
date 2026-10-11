@@ -543,12 +543,16 @@ pub enum BotEvent {
     /// `path_update` — a new path was found, or a calculation finished
     /// (azalea also ends a failed calculation this way, matching
     /// upstream's per-result `path_update`; `path` is empty then).
-    /// `is_partial` mirrors upstream's `r.partial` flag.
+    /// `is_partial` mirrors upstream's `r.partial` flag and `status`
+    /// upstream's `results.status` (`'success'`/`'partial'`/`'noPath'`/
+    /// `'timeout'`).
     PathUpdate {
         /// The path node list (empty while no path is executing).
         path: Vec<BlockPos>,
         /// Whether the path only gets partway to the goal.
         is_partial: bool,
+        /// The search outcome that produced this update.
+        status: crate::pathfinder::PathStatus,
     },
     /// `goal_reached` — the current goal's success check holds.
     /// Suppressed for `dynamic` goals, like upstream; `goal` is the
