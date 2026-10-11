@@ -23,6 +23,7 @@ mod bot;
 mod bridge;
 mod error;
 
+pub mod auto_eat;
 pub mod chat;
 pub mod collect;
 pub mod craft;
@@ -74,7 +75,8 @@ pub use world::{
 
 pub use interact::{DigAbortReason, DigFace, ForceLook};
 
-// — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp —
+// — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp, -auto-eat —
+pub use auto_eat::{AutoEat, AutoEatOpts, EatOpts, FoodData, FoodPriority, FoodSelection};
 pub use collect::{CollectBlock, CollectTarget, Collected};
 pub use pvp::Pvp;
 pub use tool::Tool;
