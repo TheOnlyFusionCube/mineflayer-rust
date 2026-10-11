@@ -108,11 +108,20 @@ impl WorldRef {
         with_world(&self.client, |w| w.set_block_state(pos, state)).flatten()
     }
 
-    /// `world.findBlocks` — same engine as [`Bot::find_blocks`].
+    /// `world.findBlocks` — same engine as [`Bot::find_blocks`]. A `None`
+    /// `point` centers on the client entity's position — upstream's
+    /// `options.point || bot.entity.position` (a `WorldRef` is always a
+    /// view onto a bot's client). Pre-spawn falls back to the origin.
     pub fn find_blocks(&self, opts: &FindBlocksOpts) -> Vec<BlockPos> {
-        let point = opts
-            .point
-            .map_or_else(BlockPos::default, |p| p.to_block_pos_floor());
+        let point = opts.point.map_or_else(
+            || {
+                self.client
+                    .get_component::<Position>()
+                    .map(|p| (**p).to_block_pos_floor())
+                    .unwrap_or_default()
+            },
+            |p| p.to_block_pos_floor(),
+        );
         let max_distance = opts.max_distance.unwrap_or(DEFAULT_MAX_DISTANCE);
         let count = opts.count.unwrap_or(DEFAULT_COUNT);
         if count == 0 {
@@ -894,17 +903,23 @@ impl LidCounts {
 /// `rain.js` + `game.js` state. Azalea drops or internalizes these
 /// packets, so we re-decode them off [`BotEvent::Packet`] and emit the
 /// world-domain [`BotEvent`]s.
+///
+/// `shutdown` is the same receiver [`Bot::shutdown`] hands the drivers:
+/// if the bridge task dies while `Bot` handles live, no `End` is ever
+/// emitted and `rx` never closes — this arm keeps the task panic-proof.
 pub(crate) fn spawn_packet_bridge(
     client: azalea::Client,
     events: broadcast::Sender<BotEvent>,
     state: Arc<RwLock<WorldState>>,
     mut alive: watch::Receiver<()>,
+    mut shutdown: watch::Receiver<()>,
 ) {
     // Subscribe before spawning: broadcast subscribers only see events
     // sent after they subscribe, and login-time packets (login, brand,
     // set_time, spawn position) arrive while the task is still queued.
     let mut rx = events.subscribe();
     tokio::task::spawn_local(async move {
+        let _ = shutdown.borrow_and_update();
         let mut lids = LidCounts::default();
         loop {
             let event = tokio::select! {
@@ -914,6 +929,7 @@ pub(crate) fn spawn_packet_bridge(
                     Err(broadcast::error::RecvError::Closed) => break,
                 },
                 _ = alive.changed() => break,
+                _ = shutdown.changed() => break,
             };
             match event {
                 BotEvent::End(_) => break,

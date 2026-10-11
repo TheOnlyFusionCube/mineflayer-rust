@@ -456,6 +456,11 @@ impl Pathfinder<'_> {
         // emit `GoalReached` before we listen
         let mut rx = self.bot.events();
         let mut ticks = self.client().get_tick_broadcaster();
+        // `End` arrives over `rx`, but >8192 queued events at disconnect
+        // can push it past a lagged receiver — the bridge's shutdown watch
+        // closes that gap
+        let mut shutdown = self.bot.shutdown.clone();
+        let _ = shutdown.borrow_and_update();
         let client = self.client().clone();
         let probe = goal.clone();
         self.set_goal(goal, false)?;
@@ -475,6 +480,7 @@ impl Pathfinder<'_> {
                         }
                     }
                 }
+                _ = shutdown.changed() => return Err(Error::NotConnected),
                 t = ticks.recv() => {
                     if matches!(t, Err(broadcast::error::RecvError::Closed)) {
                         return Err(Error::NotConnected);
@@ -731,7 +737,7 @@ fn follow_driver(
     cancel: Arc<AtomicBool>,
     bot: Bot,
     issue_gen: u64,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
         let mut shutdown = bot.shutdown.clone();
@@ -742,8 +748,11 @@ fn follow_driver(
         loop {
             tokio::select! {
                 r = ticks.recv() => {
-                    if r.is_err() {
-                        break;
+                    match r {
+                        // capacity-1 broadcast — a scheduling stall loses
+                        // ticks, not the follow; only a dead channel exits
+                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return,
                     }
                 }
                 _ = shutdown.changed() => return,
@@ -792,7 +801,7 @@ fn follow_driver(
         };
         stop_pathfinding_patched(&client, false);
         bot.emit_event(BotEvent::PathStop { goal: Some(goal) });
-    });
+    })
 }
 
 /// The `dynamic`-goal watcher: once azalea clears a reached goal, keep
@@ -809,15 +818,18 @@ fn dynamic_watcher(
     cancel: Arc<AtomicBool>,
     mut shutdown: watch::Receiver<()>,
     issue_gen: u64,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
         let _ = shutdown.borrow_and_update();
         loop {
             tokio::select! {
                 r = ticks.recv() => {
-                    if r.is_err() {
-                        break;
+                    match r {
+                        // capacity-1 broadcast — a scheduling stall loses
+                        // ticks, not the watcher; only a dead channel exits
+                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => return,
                     }
                 }
                 _ = shutdown.changed() => return,
@@ -838,7 +850,7 @@ fn dynamic_watcher(
             }
             client.start_goto_with_opts(SharedGoal(goal.clone()), movements.to_opts());
         }
-    });
+    })
 }
 
 /// Per-tick diff state for the path events — see [`bridge_events`].
@@ -1061,5 +1073,130 @@ mod tests {
         assert!(c.blocks_to_avoid.contains(&BlockKind::Cactus));
         assert!(!c.blocks_to_avoid.contains(&BlockKind::Lava));
         assert!(c.blocks_cant_break.contains(&BlockKind::Chest));
+    }
+
+    /// A client whose ECS carries `TickBroadcast` (watchers park on it)
+    /// plus the pathfinder message resources, so a watcher's
+    /// `start_goto_with_opts` lands in `Messages<GotoEvent>` where the
+    /// test can count it. No systems run — ticks arrive only via
+    /// [`crate::test_util::tick_sender`].
+    fn watcher_client(bundle: impl bevy_ecs::bundle::Bundle) -> azalea::Client {
+        let mut app = azalea::app::App::new();
+        app.add_plugins(azalea::tick_broadcast::TickBroadcastPlugin)
+            .add_plugins(pathfinder::PathfinderPlugin);
+        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let entity = ecs.write().spawn(bundle).id();
+        azalea::Client::new(entity, ecs)
+    }
+
+    /// Count of `GotoEvent`s the watcher has issued so far.
+    fn goto_messages(client: &azalea::Client) -> usize {
+        client
+            .ecs
+            .read()
+            .resource::<bevy_ecs::message::Messages<pathfinder::GotoEvent>>()
+            .len()
+    }
+
+    /// `TickBroadcast` is `broadcast::channel(1)` — a two-tick burst while
+    /// the watcher is parked reports `Lagged(1)`, routine scheduling lag
+    /// that must not kill the watcher. Only the bridge's shutdown drop
+    /// retires it.
+    #[tokio::test]
+    async fn dynamic_watcher_survives_lagged_and_exits_on_shutdown() {
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            PathfinderFacade {
+                goal: Some(Goal::Y { y: 70 }),
+                goal_gen: 7,
+                dynamic: true,
+                ..Default::default()
+            },
+        ));
+        // a goal the bot isn't standing in, so the watcher re-issues it
+        let goal: Arc<dyn AzaleaGoal> = Arc::new(goals::BlockPosGoal(BlockPos::new(100, 64, 100)));
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let handle = dynamic_watcher(
+            client.clone(),
+            goal,
+            Movements::default(),
+            Arc::new(AtomicBool::new(false)),
+            shutdown_rx,
+            7,
+        );
+        let ticks = crate::test_util::tick_sender(&client);
+
+        // the spawned task subscribes on its first poll — spin until a
+        // receiver exists, then overflow the capacity-1 channel
+        while ticks.send(()).is_err() {
+            tokio::task::yield_now().await;
+        }
+        ticks.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!handle.is_finished(), "watcher died on Lagged");
+
+        // a real tick still drives work: the unmet goal gets re-issued
+        ticks.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!handle.is_finished());
+        assert!(goto_messages(&client) > 0, "watcher stopped re-issuing");
+
+        drop(shutdown_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("watcher outlived the connection")
+            .unwrap();
+    }
+
+    /// Same survival contract for the follow driver: `Lagged` is routine,
+    /// only shutdown (or cancel/despawn) retires it.
+    #[tokio::test]
+    async fn follow_driver_survives_lagged_and_exits_on_shutdown() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let target_entity = client
+            .ecs
+            .write()
+            .spawn(Position::new(Vec3::new(5., 64., 0.)))
+            .id();
+        let target = client.entity_ref_for(target_entity);
+        facade_mut(&client, |f| {
+            f.goal = Some(Goal::Follow {
+                entity: target.clone(),
+                range: 2.,
+            });
+            f.goal_gen = 3;
+        });
+        let (bot, shutdown_tx) = crate::test_util::bot_with_shutdown(client.clone());
+        let handle = follow_driver(
+            client.clone(),
+            target,
+            2.,
+            Movements::default(),
+            Arc::new(AtomicBool::new(false)),
+            bot,
+            3,
+        );
+        let ticks = crate::test_util::tick_sender(&client);
+
+        // the spawned task subscribes on its first poll — spin until a
+        // receiver exists, then overflow the capacity-1 channel
+        while ticks.send(()).is_err() {
+            tokio::task::yield_now().await;
+        }
+        ticks.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!handle.is_finished(), "follow driver died on Lagged");
+
+        // still working: the entity's new block position gets re-pathed
+        ticks.send(()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!handle.is_finished());
+        assert!(goto_messages(&client) > 0, "follow stopped re-pathing");
+
+        drop(shutdown_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("follow driver outlived the connection")
+            .unwrap();
     }
 }

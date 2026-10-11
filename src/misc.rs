@@ -701,6 +701,13 @@ impl Bot {
         let mut bobber: Option<MinecraftEntityId> = None;
         self.client.start_use_item();
 
+        // the `events` sender lives on `Bot`, so `rx` can never report
+        // `Closed` while `self` is held — select on the bridge's shutdown
+        // watch (and match `End`) or the loop parks forever on disconnect.
+        // `End` is the fast path; shutdown covers the lagged-out case where
+        // >8192 queued events push `End` past the receiver
+        let mut shutdown = self.shutdown.clone();
+        let _ = shutdown.borrow_and_update();
         let result = loop {
             let event = tokio::select! {
                 event = rx.recv() => match event {
@@ -711,7 +718,11 @@ impl Bot {
                 _ = &mut cancel_rx => break Err(Error::Operation(
                     "Fishing cancelled due to calling bot.fish() again".into(),
                 )),
+                _ = shutdown.changed() => break Err(Error::NotConnected),
             };
+            if matches!(event, BotEvent::End(_)) {
+                break Err(Error::NotConnected);
+            }
             let BotEvent::Packet(packet) = event else {
                 continue;
             };
@@ -1291,5 +1302,31 @@ mod tests {
             }),
         );
         assert!(out.is_empty());
+    }
+
+    /// `fish()` must not park on disconnect: `End` is the in-band exit —
+    /// the `events` sender lives on `Bot`, so `Closed` can't be counted
+    /// on (the bridge's shutdown watch is the backstop for the
+    /// lagged-out case).
+    #[tokio::test]
+    async fn fish_exits_on_end() {
+        let bot = Bot::new(crate::test_util::live_entity_client((
+            azalea::world::WorldName(azalea::Identifier::new("minecraft:overworld")),
+            Position::new(Vec3::new(0., 64., 0.)),
+        )));
+        let bot2 = bot.clone();
+        let fishing = tokio::spawn(async move { bot2.fish().await });
+        // `End` can land before the task subscribes — keep emitting until
+        // one is seen
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            while !fishing.is_finished() {
+                bot.emit_event(BotEvent::End("socketClosed".to_string()));
+                tokio::task::yield_now().await;
+            }
+            fishing.await.unwrap()
+        })
+        .await
+        .expect("fish ignored End");
+        assert!(matches!(result, Err(Error::NotConnected)));
     }
 }

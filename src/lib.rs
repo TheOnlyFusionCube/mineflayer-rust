@@ -81,6 +81,8 @@ pub use tool::Tool;
 
 #[cfg(test)]
 pub(crate) mod test_util {
+    use std::ops::Deref as _;
+
     /// A `Client` whose own entity is already despawned — the state packets
     /// still in flight during teardown race into.
     pub(crate) fn despawned_client() -> azalea::Client {
@@ -106,5 +108,41 @@ pub(crate) mod test_util {
         let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
         let entity = ecs.write().spawn(bundle).id();
         azalea::Client::new(entity, ecs)
+    }
+
+    /// A `Client` whose ECS carries a `TickBroadcast` — tick-driven waits
+    /// park on `get_tick_broadcaster()` instead of panicking. No systems
+    /// run, so ticks only arrive when the test sends them via
+    /// [`tick_sender`].
+    pub(crate) fn tick_client(bundle: impl azalea::ecs::bundle::Bundle) -> azalea::Client {
+        let mut app = azalea::app::App::new();
+        app.add_plugins(azalea::tick_broadcast::TickBroadcastPlugin);
+        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let entity = ecs.write().spawn(bundle).id();
+        azalea::Client::new(entity, ecs)
+    }
+
+    /// The `TickBroadcast` sender — capacity 1, so two sends while a
+    /// receiver is parked make its next `recv` report `Lagged(1)`, the
+    /// routine scheduling stall the tick drivers must survive.
+    pub(crate) fn tick_sender(client: &azalea::Client) -> tokio::sync::broadcast::Sender<()> {
+        client
+            .ecs
+            .read()
+            .resource::<azalea::tick_broadcast::TickBroadcast>()
+            .deref()
+            .clone()
+    }
+
+    /// A `Bot` whose `shutdown` receiver is wired to the returned sender —
+    /// drop the sender to play the bridge's exit (disconnect), like
+    /// `bridge::spawn` does.
+    pub(crate) fn bot_with_shutdown(
+        client: azalea::Client,
+    ) -> (crate::Bot, tokio::sync::watch::Sender<()>) {
+        let mut bot = crate::Bot::new(client);
+        let (tx, rx) = tokio::sync::watch::channel(());
+        bot.shutdown = rx;
+        (bot, tx)
     }
 }

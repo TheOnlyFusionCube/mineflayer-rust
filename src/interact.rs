@@ -103,6 +103,18 @@ pub enum DigAbortReason {
     Timeout,
 }
 
+/// How a `dig` wait ended — `dig_opts` maps it onto the event + result.
+enum DigExit {
+    /// The block became air.
+    Done,
+    /// The dig aborted for the given reason (emits `diggingAborted`).
+    Aborted(DigAbortReason),
+    /// The connection ended mid-wait. Upstream's `diggingTask` parks
+    /// forever here; the disconnect isn't an abort, so no `diggingAborted`
+    /// is emitted — `End` already reported it.
+    Disconnected,
+}
+
 /// What a held item will spawn when placed with [`Bot::place_entity`]
 /// (`lib/plugins/place_entity.js`'s `expectedName` reduction).
 #[derive(Debug)]
@@ -287,15 +299,73 @@ impl Bot {
         };
         self.client.start_mining(pos);
 
+        let outcome = self
+            .dig_wait(
+                pos,
+                my_seq,
+                tokio::time::Instant::now() + wait + DIG_FINISH_GRACE,
+            )
+            .await;
+
+        // upstream's `lastDigTime = Date.now()` runs on resolve or abort
+        {
+            let mut ecs = self.client.ecs.write();
+            if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
+                shared.last_dig_time = Some(Instant::now());
+            }
+        }
+        match outcome {
+            DigExit::Done => {
+                let new_block = self.block_at(pos).unwrap_or_else(|| block.clone());
+                self.emit_event(BotEvent::DiggingCompleted(new_block));
+                Ok(())
+            }
+            DigExit::Aborted(DigAbortReason::Timeout) => {
+                self.emit_event(BotEvent::DiggingAborted {
+                    block: block.clone(),
+                    reason: DigAbortReason::Timeout,
+                });
+                Err(Error::Timeout)
+            }
+            DigExit::Aborted(reason) => {
+                self.emit_event(BotEvent::DiggingAborted {
+                    block: block.clone(),
+                    reason,
+                });
+                Err(Error::Operation(DIG_ABORTED.to_string()))
+            }
+            DigExit::Disconnected => Err(Error::NotConnected),
+        }
+    }
+
+    /// The dig wait after `start_mining` is on the wire: poll each tick
+    /// until the block turns air, the dig aborts, the deadline hits, or
+    /// the connection ends. Split from `dig_opts` so tests can drive it —
+    /// the `HitResultComponent` it gates on can't be constructed outside
+    /// azalea.
+    ///
+    /// The `shutdown` and `sleep_until` arms carry the exits ticks can't:
+    /// `TickBroadcast`'s sender lives in the ECS `World` kept alive by
+    /// `self.client`, so `recv` never sees `Closed` on disconnect, and a
+    /// stalled tick stream would park the deadline check forever — the
+    /// deadline must resolve without a tick arriving.
+    async fn dig_wait(
+        &self,
+        pos: BlockPos,
+        my_seq: u64,
+        deadline: tokio::time::Instant,
+    ) -> DigExit {
         let mut ticks = self.client.get_tick_broadcaster();
-        let deadline = Instant::now() + wait + DIG_FINISH_GRACE;
+        let mut shutdown = self.shutdown.clone();
+        // mark the initial value seen so only the sender's drop resolves
+        let _ = shutdown.borrow_and_update();
         let mut started = false;
         let mut start_grace = DIG_START_GRACE_TICKS;
         // once `Mining` disappears the finish (or an engine abort) has been
         // sent; the air update still needs ~1 RTT — give it a short grace
         // before declaring the dig interrupted
         let mut finish_grace = DIG_START_GRACE_TICKS;
-        let reason = loop {
+        loop {
             let (target, aborted) = {
                 let ecs = self.client.ecs.read();
                 let entity = self.client.entity;
@@ -312,67 +382,43 @@ impl Bot {
                 (target, aborted)
             };
             if aborted {
-                break Some(DigAbortReason::Stopped);
+                break DigExit::Aborted(DigAbortReason::Stopped);
             }
             match target {
-                Some((p, _)) if p != pos => break Some(DigAbortReason::Stopped),
+                Some((p, _)) if p != pos => break DigExit::Aborted(DigAbortReason::Stopped),
                 Some(_) => started = true,
                 None => {
                     if started {
                         finish_grace = finish_grace.saturating_sub(1);
                         if finish_grace == 0 {
-                            break Some(DigAbortReason::Interrupted);
+                            break DigExit::Aborted(DigAbortReason::Interrupted);
                         }
                     } else {
                         start_grace = start_grace.saturating_sub(1);
                         if start_grace == 0 {
-                            break Some(DigAbortReason::Interrupted);
+                            break DigExit::Aborted(DigAbortReason::Interrupted);
                         }
                     }
                 }
             }
             if self.block_is_air(pos) {
-                break None;
+                break DigExit::Done;
             }
-            if Instant::now() >= deadline {
-                break Some(DigAbortReason::Timeout);
-            }
-            match ticks.recv().await {
-                // capacity-1 broadcast — a scheduling stall loses ticks,
-                // not the dig; only a dead channel interrupts
-                Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => {
-                    break Some(DigAbortReason::Interrupted);
+            tokio::select! {
+                r = ticks.recv() => {
+                    match r {
+                        // capacity-1 broadcast — a scheduling stall loses
+                        // ticks, not the dig; only a dead channel interrupts
+                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => {
+                            break DigExit::Aborted(DigAbortReason::Interrupted);
+                        }
+                    }
                 }
-            }
-        };
-
-        // upstream's `lastDigTime = Date.now()` runs on resolve or abort
-        {
-            let mut ecs = self.client.ecs.write();
-            if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
-                shared.last_dig_time = Some(Instant::now());
-            }
-        }
-        match reason {
-            None => {
-                let new_block = self.block_at(pos).unwrap_or_else(|| block.clone());
-                self.emit_event(BotEvent::DiggingCompleted(new_block));
-                Ok(())
-            }
-            Some(DigAbortReason::Timeout) => {
-                self.emit_event(BotEvent::DiggingAborted {
-                    block: block.clone(),
-                    reason: DigAbortReason::Timeout,
-                });
-                Err(Error::Timeout)
-            }
-            Some(reason) => {
-                self.emit_event(BotEvent::DiggingAborted {
-                    block: block.clone(),
-                    reason,
-                });
-                Err(Error::Operation(DIG_ABORTED.to_string()))
+                _ = shutdown.changed() => break DigExit::Disconnected,
+                _ = tokio::time::sleep_until(deadline) => {
+                    break DigExit::Aborted(DigAbortReason::Timeout);
+                }
             }
         }
     }
@@ -881,6 +927,57 @@ mod tests {
         shared.abort_current();
         assert_eq!(shared.aborted_seq, 3);
         assert_eq!(shared.last_dig_time, stamped);
+    }
+
+    /// The dig wait must not park on disconnect: `TickBroadcast`'s sender
+    /// is kept alive by `self.client`, so `Closed` never arrives — the
+    /// bridge's shutdown drop is the only exit, the same shape the pvp
+    /// driver uses.
+    #[tokio::test]
+    async fn dig_wait_exits_on_shutdown() {
+        let client = crate::test_util::tick_client(());
+        let (bot, shutdown_tx) = crate::test_util::bot_with_shutdown(client);
+        let pos = BlockPos::new(1, 64, 1);
+        // parked mid-wait: no ticks arrive, no mining components — the
+        // state the dig loop sits in after `start_mining`
+        let wait = tokio::spawn({
+            let bot = bot.clone();
+            async move {
+                bot.dig_wait(
+                    pos,
+                    1,
+                    tokio::time::Instant::now() + Duration::from_secs(60),
+                )
+                .await
+            }
+        });
+        tokio::task::yield_now().await;
+        drop(shutdown_tx);
+        let exit = tokio::time::timeout(Duration::from_secs(5), wait)
+            .await
+            .expect("dig_wait outlived the connection")
+            .unwrap();
+        assert!(matches!(exit, DigExit::Disconnected));
+    }
+
+    /// A stalled tick stream can't stall the deadline: `sleep_until`
+    /// resolves without a tick arriving.
+    #[tokio::test]
+    async fn dig_wait_deadline_fires_without_ticks() {
+        let client = crate::test_util::tick_client(());
+        let (bot, _shutdown_tx) = crate::test_util::bot_with_shutdown(client);
+        let pos = BlockPos::new(1, 64, 1);
+        let exit = tokio::time::timeout(
+            Duration::from_secs(5),
+            bot.dig_wait(
+                pos,
+                1,
+                tokio::time::Instant::now() + Duration::from_millis(50),
+            ),
+        )
+        .await
+        .expect("deadline never fired");
+        assert!(matches!(exit, DigExit::Aborted(DigAbortReason::Timeout)));
     }
 
     #[test]
