@@ -24,8 +24,7 @@ use azalea::{
         MobEffectData, Physics, Pose, Position,
         indexing::EntityIdIndex,
         metadata::{
-            AbstractEntityShiftKeyDown, AttachedToTarget, FallFlying, FireworksItem,
-            PaintingDirection, PaintingVariant, SleepingPos,
+            AttachedToTarget, FallFlying, FireworksItem, PaintingDirection, PaintingVariant,
         },
     },
     inventory::{
@@ -66,8 +65,8 @@ pub(crate) struct EntityTracker {
     /// Entity ids we've resolved to an ECS `Entity`, kept after despawn so
     /// `entityGone`/`playerCollect` still produce an [`EntityRef`] handle.
     known: HashMap<MinecraftEntityId, Entity>,
-    /// Last-seen metadata state per entity, for edge detection on
-    /// `entity_metadata` packets (crouch/elytra/sleep).
+    /// Last flag-carried metadata state per entity, for edge detection on
+    /// `entity_metadata` packets (crouch release, elytra start).
     meta: HashMap<MinecraftEntityId, EntityMeta>,
     /// `c_set_equipment` contents per entity. azalea drops this packet
     /// (`debug!`-only handler), so equipment lives here.
@@ -98,8 +97,10 @@ pub(crate) struct EntityTracker {
     chat_sessions: HashMap<uuid::Uuid, ProfileKeys>,
 }
 
-/// Last-seen metadata snapshot for edge detection (sleep isn't tracked —
-/// `entitySleep` fires on every packet carrying the flag).
+/// Last flag-carried snapshot per entity for the edge-detected events
+/// (`entityUncrouch`, `entityElytraFlew`). Updated only when a packet
+/// carries `shared_flags`, like upstream's `entity.crouching`/
+/// `entity.elytraFlying`.
 #[derive(Default)]
 struct EntityMeta {
     shift_key_down: bool,
@@ -450,47 +451,51 @@ impl EntityTracker {
             out.push(BotEvent::ItemDrop(entity.clone()));
         }
 
-        // upstream emits entityCrouch/entitySleep on every metadata packet
-        // carrying the flag; only the *release* transitions (uncrouch) and
-        // elytra-start are edge-detected
-        let meta = self.meta.entry(id).or_default();
-        let shift_down = entity
-            .get_component::<AbstractEntityShiftKeyDown>()
-            .map(|f| f.0)
-            .unwrap_or(false);
-        let fall_flying = entity
-            .get_component::<FallFlying>()
-            .map(|f| f.0)
-            .unwrap_or(false);
-        let sleeping = entity
-            .get_component::<Pose>()
-            .map(|pose| *pose == Pose::Sleeping)
-            .unwrap_or(false)
-            || entity
-                .get_component::<SleepingPos>()
-                .map(|pos| pos.0.is_some())
-                .unwrap_or(false);
-
-        if shift_down {
-            out.push(BotEvent::EntityCrouch(entity.clone()));
-        } else if meta.shift_key_down {
-            out.push(BotEvent::EntityUncrouch(entity.clone()));
-        }
-        if sleeping {
+        // upstream fires entitySleep when the packet itself carries
+        // `sleeping_pos` or `pose === 2` — metadata index 6 = pose (all
+        // entities), index 14 = sleeping_pos (living entities)
+        if packed_items.iter().any(|item| {
+            (item.index == 6 && matches!(&item.value, EntityDataValue::Pose(Pose::Sleeping)))
+                || (item.index == 14
+                    && matches!(&item.value, EntityDataValue::OptionalBlockPos(Some(_))))
+        }) {
             out.push(BotEvent::EntitySleep(entity.clone()));
         }
-        if fall_flying && !meta.fall_flying {
-            out.push(BotEvent::EntityElytraFlew(entity.clone()));
+
+        // upstream gates crouch/uncrouch/elytra on the packet carrying
+        // `shared_flags` (metadata index 0, byte): bit 0x80 is elytra, bit
+        // 0x02 is sneaking. Uncrouch and the elytra edge use the last
+        // flag-carried value, not the entity's current component state.
+        if let Some(flags) = packed_items.iter().find_map(|item| {
+            if item.index != 0 {
+                return None;
+            }
+            match &item.value {
+                EntityDataValue::Byte(flags) => Some(*flags),
+                _ => None,
+            }
+        }) {
+            let meta = self.meta.entry(id).or_default();
+            let fall_flying = flags & 0x80 != 0;
+            let shift_down = flags & 0x02 != 0;
+            if fall_flying && !meta.fall_flying {
+                out.push(BotEvent::EntityElytraFlew(entity.clone()));
+            }
+            if !fall_flying && meta.fall_flying && Some(id) == self_id {
+                // upstream clears the firework boost when we stop elytra flying
+                self.firework_rocket_duration = 0;
+                self.seen_fireworks.clear();
+            }
+            if shift_down {
+                out.push(BotEvent::EntityCrouch(entity.clone()));
+            } else if meta.shift_key_down {
+                out.push(BotEvent::EntityUncrouch(entity.clone()));
+            }
+            *meta = EntityMeta {
+                shift_key_down: shift_down,
+                fall_flying,
+            };
         }
-        if !fall_flying && meta.fall_flying && Some(id) == self_id {
-            // upstream clears the firework boost when we stop elytra flying
-            self.firework_rocket_duration = 0;
-            self.seen_fireworks.clear();
-        }
-        *meta = EntityMeta {
-            shift_key_down: shift_down,
-            fall_flying,
-        };
 
         // firework rockets attached to us feed `usedFirework` +
         // `bot.fireworkRocketDuration` (upstream reads the metadata the same way)
@@ -1475,6 +1480,167 @@ mod tests {
             action: AnimationAction::SwingMainHand,
         });
         assert!(observe_event(&tracker, &client, &Event::Packet(Arc::new(packet))).is_empty());
+    }
+
+    #[test]
+    fn crouch_and_sleep_require_the_metadata_item() {
+        use azalea::{
+            BlockPos,
+            entity::{EntityMetadataItems, metadata::AbstractEntityShiftKeyDown},
+            protocol::packets::game::c_set_entity_data::ClientboundSetEntityData,
+        };
+
+        fn packet(items: Vec<EntityDataItem>) -> ClientboundGamePacket {
+            ClientboundGamePacket::SetEntityData(ClientboundSetEntityData {
+                id: MinecraftEntityId(7),
+                packed_items: EntityMetadataItems(items),
+            })
+        }
+        let flags = |b: u8| EntityDataItem {
+            index: 0,
+            value: EntityDataValue::Byte(b),
+        };
+        let air = EntityDataItem {
+            index: 1,
+            value: EntityDataValue::Int(300),
+        };
+
+        let client = crate::test_util::live_entity_client(());
+        // the entity IS crouched component-side — the regression this test
+        // pins is that packets without shared_flags still emit nothing
+        let e = client
+            .ecs
+            .write()
+            .spawn((MinecraftEntityId(7), AbstractEntityShiftKeyDown(true)))
+            .id();
+        let mut tracker = EntityTracker::default();
+        tracker.known.insert(MinecraftEntityId(7), e);
+
+        // unrelated metadata while crouched: EntityUpdate only, no Crouch
+        let out = tracker.handle_packet(&client, &packet(vec![air.clone()]));
+        assert!(
+            matches!(&out[..], [BotEvent::EntityUpdate(_)]),
+            "expected EntityUpdate only, got {out:?}"
+        );
+        // shared_flags 0x02: crouch fires, and refires per flag packet
+        // (upstream emits unconditionally while the bit is set)
+        for _ in 0..2 {
+            let out = tracker.handle_packet(&client, &packet(vec![flags(0x02)]));
+            assert!(
+                matches!(
+                    &out[..],
+                    [BotEvent::EntityUpdate(_), BotEvent::EntityCrouch(_)]
+                ),
+                "expected Update+Crouch, got {out:?}"
+            );
+        }
+        // still crouched component-side, but this packet carries no flags:
+        // nothing crouch-related may emit
+        let out = tracker.handle_packet(&client, &packet(vec![air]));
+        assert!(
+            matches!(&out[..], [BotEvent::EntityUpdate(_)]),
+            "expected EntityUpdate only, got {out:?}"
+        );
+        // flags with the bit clear: the release edge fires once
+        let out = tracker.handle_packet(&client, &packet(vec![flags(0x00)]));
+        assert!(
+            matches!(
+                &out[..],
+                [BotEvent::EntityUpdate(_), BotEvent::EntityUncrouch(_)]
+            ),
+            "expected Update+Uncrouch, got {out:?}"
+        );
+        let out = tracker.handle_packet(&client, &packet(vec![flags(0x00)]));
+        assert!(
+            matches!(&out[..], [BotEvent::EntityUpdate(_)]),
+            "expected EntityUpdate only, got {out:?}"
+        );
+
+        // sleep fires per packet carrying pose=Sleeping or a Some
+        // sleeping_pos — never on unrelated metadata
+        let sleeping_pose = EntityDataItem {
+            index: 6,
+            value: EntityDataValue::Pose(Pose::Sleeping),
+        };
+        let bed_pos = EntityDataItem {
+            index: 14,
+            value: EntityDataValue::OptionalBlockPos(Some(BlockPos::new(1, 64, 1))),
+        };
+        let no_bed = EntityDataItem {
+            index: 14,
+            value: EntityDataValue::OptionalBlockPos(None),
+        };
+        let out = tracker.handle_packet(&client, &packet(vec![sleeping_pose]));
+        assert!(
+            matches!(
+                &out[..],
+                [BotEvent::EntityUpdate(_), BotEvent::EntitySleep(_)]
+            ),
+            "expected Update+Sleep, got {out:?}"
+        );
+        let out = tracker.handle_packet(&client, &packet(vec![bed_pos]));
+        assert!(
+            matches!(
+                &out[..],
+                [BotEvent::EntityUpdate(_), BotEvent::EntitySleep(_)]
+            ),
+            "expected Update+Sleep, got {out:?}"
+        );
+        // an absent sleeping_pos (waking) carries no sleep signal
+        let out = tracker.handle_packet(&client, &packet(vec![no_bed]));
+        assert!(
+            matches!(&out[..], [BotEvent::EntityUpdate(_)]),
+            "expected EntityUpdate only, got {out:?}"
+        );
+    }
+
+    #[test]
+    fn elytra_flew_is_flag_packet_gated_and_edged() {
+        use azalea::{
+            entity::EntityMetadataItems,
+            protocol::packets::game::c_set_entity_data::ClientboundSetEntityData,
+        };
+
+        fn packet(items: Vec<EntityDataItem>) -> ClientboundGamePacket {
+            ClientboundGamePacket::SetEntityData(ClientboundSetEntityData {
+                id: MinecraftEntityId(7),
+                packed_items: EntityMetadataItems(items),
+            })
+        }
+        let flags = |b: u8| EntityDataItem {
+            index: 0,
+            value: EntityDataValue::Byte(b),
+        };
+
+        let client = crate::test_util::live_entity_client(());
+        let e = client.ecs.write().spawn(MinecraftEntityId(7)).id();
+        let mut tracker = EntityTracker::default();
+        tracker.known.insert(MinecraftEntityId(7), e);
+
+        // fall-flying bit: fires on the false->true edge only
+        let out = tracker.handle_packet(&client, &packet(vec![flags(0x80)]));
+        assert!(
+            matches!(
+                &out[..],
+                [BotEvent::EntityUpdate(_), BotEvent::EntityElytraFlew(_)]
+            ),
+            "expected Update+ElytraFlew, got {out:?}"
+        );
+        let out = tracker.handle_packet(&client, &packet(vec![flags(0x80)]));
+        assert!(
+            matches!(&out[..], [BotEvent::EntityUpdate(_)]),
+            "expected EntityUpdate only, got {out:?}"
+        );
+        // bit clears then sets again: a fresh edge refires
+        tracker.handle_packet(&client, &packet(vec![flags(0x00)]));
+        let out = tracker.handle_packet(&client, &packet(vec![flags(0x80)]));
+        assert!(
+            matches!(
+                &out[..],
+                [BotEvent::EntityUpdate(_), BotEvent::EntityElytraFlew(_)]
+            ),
+            "expected Update+ElytraFlew, got {out:?}"
+        );
     }
 
     #[test]

@@ -5,11 +5,15 @@
 //! to `BotEvent`s, forward over the broadcast channel, and shut the client
 //! down when every `Bot` handle is gone.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, RwLock},
+};
 
 use azalea::{
     ClientInformation, Event,
     chat::ChatPacket,
+    player::GameProfileComponent,
     protocol::packets::game::{ClientboundGamePacket, c_system_chat::ClientboundSystemChat},
 };
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver, watch};
@@ -18,6 +22,7 @@ use crate::{
     BotEvent,
     chat::{ChatShared, TabList},
     entity,
+    world::WorldState,
 };
 
 /// Shared state the bridge needs beyond its own bookkeeping — one struct so
@@ -29,6 +34,10 @@ pub(crate) struct BridgeDeps {
     pub chat: Arc<Mutex<ChatShared>>,
     /// Entity-domain packet decode state — see [`entity::EntityTracker`].
     pub entities: Arc<std::sync::RwLock<entity::EntityTracker>>,
+    /// Facade-kept world/game state (clocks, weather, spawn point) — the
+    /// world-domain packet decode runs in this task so its events land in
+    /// packet order (see [`crate::world::observe_event`]).
+    pub world: Arc<RwLock<WorldState>>,
     /// Inventory/window-domain state — see `windows::WindowTracker`.
     pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
     /// Typed-window packet state (container data, merchant offers) —
@@ -72,6 +81,7 @@ pub(crate) fn spawn(
             quit_reason,
             chat,
             entities,
+            world,
             windows,
             window_data,
             recipes,
@@ -144,7 +154,13 @@ pub(crate) fn spawn(
                     // recipe book: records c_recipe_book_add/remove into
                     // shared state; emits no events (craft has none)
                     crate::craft::observe_event(&recipes, &event);
-                    for bot_event in translate(&mut state, &quit_reason, event) {
+                    // world domain: blocks/time/weather/game decode off the
+                    // packets azalea drops. Runs here — not in a second task
+                    // — so derived events keep packet order and a lagging
+                    // broadcast consumer can't drop them.
+                    let world_events =
+                        crate::world::observe_event(&world, &client, &mut state.lids, &event);
+                    for bot_event in translate(&mut state, &quit_reason, &client, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
                         let _ = events.send(bot_event.clone());
@@ -166,6 +182,9 @@ pub(crate) fn spawn(
                         let _ = events.send(bot_event);
                     }
                     for bot_event in window_data_events {
+                        let _ = events.send(bot_event);
+                    }
+                    for bot_event in world_events {
                         let _ = events.send(bot_event);
                     }
                     if keepalive_seen {
@@ -208,17 +227,34 @@ pub(crate) fn spawn(
 /// Bridge bookkeeping that doesn't fit in the events themselves.
 #[derive(Default)]
 struct BridgeState {
-    /// Whether `Spawn` has been emitted yet. Subsequent azalea `Spawn`s are
-    /// respawns/dimension changes; mineflayer reports those as
-    /// `respawn` followed by `spawn`.
+    /// Whether `Spawn` has been emitted — azalea 0.16 fires `Event::Spawn`
+    /// exactly once per entity lifetime (`SentSpawnEvent` is never
+    /// removed — verified against events.rs and a live `Simulation`), so
+    /// this only dedupes the initial emit. Post-respawn `spawn`s come
+    /// from the `c_set_health` packet arm like upstream.
     seen_spawn: bool,
     /// Whether `End` has been emitted — dedupes disconnect signals so `end`
     /// fires exactly once, like upstream.
     ended: bool,
     /// Whether `Connected` has been emitted — it precedes the *first*
-    /// `Login` only (upstream `connect` is once per socket; azalea `Login`
-    /// can refire on world switches).
+    /// `Login` only (upstream `connect` is once per socket; azalea
+    /// `Event::Login` also fires exactly once per entity lifetime, so the
+    /// gate is belt-and-braces).
     connected: bool,
+    /// Upstream's `!isAlive`: set by `Event::Death` (azalea raises it from
+    /// two sources for one vanilla death — `player_combat_kill` and
+    /// `Changed<Health> == 0`) and by `c_respawn`, cleared by
+    /// `c_set_health` with health > 0 (health.js's exact re-arm).
+    dead: bool,
+    /// Tab-list membership, upstream's `bot.players` mirror. Gates
+    /// `playerJoined` (first add only — a re-add is `playerUpdated`),
+    /// `playerUpdated` (dropped for never-added players), and `playerLeft`
+    /// (dropped for unknown players and for the bot itself). Cleared on
+    /// the `c_login` packet like upstream's `bot.players = {}`.
+    players: HashSet<uuid::Uuid>,
+    /// World-domain chest-lid dedup (`openCountByPos`) — see
+    /// [`crate::world::LidCounts`].
+    lids: crate::world::LidCounts,
     /// Movement tracking for `move`/`mount`/`dismount` (U5).
     movement: crate::movement::MovementTracker,
     /// Chat-domain state shared with `Bot` (pattern registry, tablist,
@@ -233,14 +269,17 @@ struct BridgeState {
 fn translate(
     state: &mut BridgeState,
     quit_reason: &Mutex<Option<String>>,
+    client: &azalea::Client,
     event: Event,
 ) -> Vec<BotEvent> {
     match event {
         Event::Init => vec![BotEvent::Init],
         Event::Login => {
             // upstream order: 'connect' (socket up) then 'login'. azalea has
-            // no socket-level event; the login packet is the earliest
+            // no socket-level event; Event::Login is the earliest
             // connection-live signal, so Connected rides ahead of it once.
+            // (The bot.players resync lives in the packet arm — Event::Login
+            // never refires in azalea 0.16.)
             if state.connected {
                 vec![BotEvent::Login]
             } else {
@@ -250,13 +289,19 @@ fn translate(
         }
         Event::Spawn => {
             if state.seen_spawn {
-                vec![BotEvent::Respawn, BotEvent::Spawn]
+                vec![]
             } else {
                 state.seen_spawn = true;
                 vec![BotEvent::Spawn]
             }
         }
-        Event::Death(_) => vec![BotEvent::Death],
+        Event::Death(_) => {
+            if state.dead {
+                return vec![];
+            }
+            state.dead = true;
+            vec![BotEvent::Death]
+        }
         Event::Disconnect(reason) => {
             if state.ended {
                 return vec![];
@@ -298,12 +343,45 @@ fn translate(
         Event::Tick => vec![BotEvent::Tick],
         Event::Packet(packet) => {
             let mut out = vec![BotEvent::Packet(packet.clone())];
+            out.extend(lifecycle_packet_events(state, &packet));
             out.extend(packet_side_events(&state.chat, &packet));
             out
         }
-        Event::AddPlayer(info) => vec![BotEvent::PlayerJoined(info)],
-        Event::UpdatePlayer(info) => vec![BotEvent::PlayerUpdated(info)],
-        Event::RemovePlayer(info) => vec![BotEvent::PlayerLeft(info)],
+        Event::AddPlayer(info) => {
+            // upstream keys on whether the uuid was already in bot.players:
+            // a re-add (azalea emits AddPlayerEvent unconditionally on the
+            // add_player action) is `playerUpdated`, not `playerJoined`.
+            if state.players.insert(info.uuid) {
+                vec![BotEvent::PlayerJoined(info)]
+            } else {
+                vec![BotEvent::PlayerUpdated(info)]
+            }
+        }
+        Event::UpdatePlayer(info) => {
+            // upstream drops info-update actions for players it never added
+            if state.players.contains(&info.uuid) {
+                vec![BotEvent::PlayerUpdated(info)]
+            } else {
+                vec![]
+            }
+        }
+        Event::RemovePlayer(info) => {
+            // upstream's `continue` on `player.entity === bot.entity` runs
+            // before `delete bot.players[uuid]` — check self first so our
+            // own remove can't evict us (a later re-add must emit
+            // playerUpdated, not playerJoined).
+            let self_uuid = client
+                .get_component::<GameProfileComponent>()
+                .map(|profile| profile.uuid);
+            if Some(info.uuid) == self_uuid {
+                return vec![];
+            }
+            // drops removes for players never added
+            if !state.players.remove(&info.uuid) {
+                return vec![];
+            }
+            vec![BotEvent::PlayerLeft(info)]
+        }
         Event::ReceiveChunk(pos) => vec![BotEvent::ChunkColumnLoad(pos)],
         // KeepAlive has no mineflayer analog — azalea answers keepalives
         // itself. Dropped by design (see api-parity.md `options.keepAlive`).
@@ -334,6 +412,40 @@ fn init_client_information(
             ..ClientInformation::default()
         }),
         (None, None) => None,
+    }
+}
+
+/// Lifecycle `BotEvent`s decoded from raw packets — upstream hooks these
+/// packets directly, while azalea lifts them into `Event`s that fire only
+/// once per entity lifetime (`Event::Spawn`/`Event::Login` never refire
+/// in 0.16: `SentSpawnEvent`/`MinecraftEntityId` are never removed —
+/// verified against events.rs and a live `Simulation`). Per-packet
+/// semantics have to live here.
+fn lifecycle_packet_events(
+    state: &mut BridgeState,
+    packet: &ClientboundGamePacket,
+) -> Vec<BotEvent> {
+    match packet {
+        // upstream clears `bot.players = {}` on the login packet — a
+        // mid-session relogin repopulates the tab list from scratch
+        ClientboundGamePacket::Login(_) => {
+            state.players.clear();
+            vec![]
+        }
+        // upstream sets isAlive=false and emits 'respawn' on every
+        // respawn packet — death respawn and dimension change alike
+        ClientboundGamePacket::Respawn(_) => {
+            state.dead = true;
+            vec![BotEvent::Respawn]
+        }
+        // upstream's isAlive re-arm: the first set_health with health > 0
+        // while dead emits 'spawn' — this carries every post-respawn
+        // spawn, since azalea's Event::Spawn only ever fires once
+        ClientboundGamePacket::SetHealth(p) if p.health > 0.0 && state.dead => {
+            state.dead = false;
+            vec![BotEvent::Spawn]
+        }
+        _ => vec![],
     }
 }
 
@@ -374,34 +486,114 @@ fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) 
 mod tests {
     use std::io;
 
-    use azalea::protocol::connect::ConnectionError;
+    use azalea::{
+        auth::game_profile::GameProfile, core::game_type::GameMode, player::PlayerInfo,
+        protocol::connect::ConnectionError,
+    };
 
     use super::*;
 
+    fn despawned() -> azalea::Client {
+        crate::test_util::despawned_client()
+    }
+
+    fn player_info(uuid: uuid::Uuid) -> PlayerInfo {
+        PlayerInfo {
+            profile: GameProfile::new(uuid, "faye".into()),
+            uuid,
+            gamemode: GameMode::Survival,
+            latency: 0,
+            display_name: None,
+        }
+    }
+
+    fn packet_event(packet: ClientboundGamePacket) -> Event {
+        Event::Packet(Arc::new(packet))
+    }
+
+    /// Upstream's lifecycle hooks are per-packet (`respawn`, `login`,
+    /// `update_health`) — azalea `Event::Spawn`/`Event::Login` fire only
+    /// once per entity lifetime, so the tests drive the packet arm the
+    /// same way the wire does.
+    fn set_health(health: f32) -> Event {
+        use azalea::protocol::packets::game::c_set_health::ClientboundSetHealth;
+        packet_event(ClientboundGamePacket::SetHealth(ClientboundSetHealth {
+            health,
+            food: 20,
+            saturation: 5.0,
+        }))
+    }
+
+    fn spawn_info() -> azalea::protocol::packets::common::CommonPlayerSpawnInfo {
+        use azalea::{
+            core::game_type::OptionalGameType,
+            registry::{DataRegistry as _, data::DimensionKind},
+        };
+        azalea::protocol::packets::common::CommonPlayerSpawnInfo {
+            dimension_type: DimensionKind::new_raw(0),
+            dimension: azalea::Identifier::new("minecraft:overworld"),
+            seed: 0,
+            game_type: GameMode::Survival,
+            previous_game_type: OptionalGameType(None),
+            is_debug: false,
+            is_flat: false,
+            last_death_location: None,
+            portal_cooldown: 0,
+            sea_level: 63,
+        }
+    }
+
+    fn respawn_packet() -> Event {
+        use azalea::protocol::packets::game::c_respawn::ClientboundRespawn;
+        packet_event(ClientboundGamePacket::Respawn(ClientboundRespawn {
+            common: spawn_info(),
+            data_to_keep: 0,
+        }))
+    }
+
+    fn login_packet() -> Event {
+        use azalea::protocol::packets::game::c_login::ClientboundLogin;
+        packet_event(ClientboundGamePacket::Login(ClientboundLogin {
+            player_id: azalea::core::entity_id::MinecraftEntityId(0),
+            hardcore: false,
+            levels: vec![],
+            max_players: 20,
+            chunk_radius: 2,
+            simulation_distance: 2,
+            reduced_debug_info: false,
+            show_death_screen: true,
+            do_limited_crafting: false,
+            common: spawn_info(),
+            enforces_secure_chat: false,
+        }))
+    }
+
     #[test]
     fn translate_one_to_one() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         assert!(matches!(
-            translate(&mut s, &qr, Event::Init)[..],
+            translate(&mut s, &qr, &client, Event::Init)[..],
             [BotEvent::Init]
         ));
         assert!(matches!(
-            translate(&mut s, &qr, Event::Login)[..],
+            translate(&mut s, &qr, &client, Event::Login)[..],
             [BotEvent::Connected, BotEvent::Login]
         ));
         assert!(matches!(
-            translate(&mut s, &qr, Event::Tick)[..],
+            translate(&mut s, &qr, &client, Event::Tick)[..],
             [BotEvent::Tick]
         ));
         assert!(matches!(
-            translate(&mut s, &qr, Event::Death(None))[..],
+            translate(&mut s, &qr, &client, Event::Death(None))[..],
             [BotEvent::Death]
         ));
         assert!(matches!(
             translate(
                 &mut s,
                 &qr,
+                &client,
                 Event::ReceiveChunk(azalea::core::position::ChunkPos::new(1, 2))
             )[..],
             [BotEvent::ChunkColumnLoad(_)]
@@ -409,49 +601,220 @@ mod tests {
     }
 
     #[test]
+    fn translate_death_once_per_life() {
+        let client = despawned();
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        // a vanilla death reaches azalea twice — player_combat_kill and the
+        // Changed<Health>==0 listener — but upstream's isAlive edge makes
+        // `death` strictly once per life
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::Death(None))[..],
+            [BotEvent::Death]
+        ));
+        assert!(translate(&mut s, &qr, &client, Event::Death(None)).is_empty());
+        assert!(translate(&mut s, &qr, &client, Event::Death(None)).is_empty());
+        // the respawn packet emits 'respawn' and keeps isAlive false —
+        // upstream suppresses a death that lands before the health update
+        assert!(matches!(
+            translate(&mut s, &qr, &client, respawn_packet())[..],
+            [BotEvent::Packet(_), BotEvent::Respawn]
+        ));
+        assert!(translate(&mut s, &qr, &client, Event::Death(None)).is_empty());
+        // upstream's re-arm is set_health with health > 0 — that emits the
+        // post-respawn 'spawn' and re-arms death
+        assert!(matches!(
+            translate(&mut s, &qr, &client, set_health(20.0))[..],
+            [BotEvent::Packet(_), BotEvent::Spawn]
+        ));
+        // a health packet while alive emits nothing extra
+        assert!(matches!(
+            translate(&mut s, &qr, &client, set_health(20.0))[..],
+            [BotEvent::Packet(_)]
+        ));
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::Death(None))[..],
+            [BotEvent::Death]
+        ));
+        assert!(translate(&mut s, &qr, &client, Event::Death(None)).is_empty());
+    }
+
+    #[test]
+    fn translate_player_join_left_gates() {
+        let client = despawned();
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        let uuid = uuid::Uuid::from_u128(0x1234);
+
+        // first add -> playerJoined
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::AddPlayer(player_info(uuid)))[..],
+            [BotEvent::PlayerJoined(_)]
+        ));
+        // a re-add (azalea fires AddPlayerEvent unconditionally) -> playerUpdated
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::AddPlayer(player_info(uuid)))[..],
+            [BotEvent::PlayerUpdated(_)]
+        ));
+        // an update for a never-added player -> nothing (upstream's `!player`)
+        let stranger = uuid::Uuid::from_u128(0xdead);
+        assert!(
+            translate(
+                &mut s,
+                &qr,
+                &client,
+                Event::UpdatePlayer(player_info(stranger))
+            )
+            .is_empty()
+        );
+        // an update for a listed player -> playerUpdated
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::UpdatePlayer(player_info(uuid)))[..],
+            [BotEvent::PlayerUpdated(_)]
+        ));
+        // remove of a never-added player -> nothing
+        assert!(
+            translate(
+                &mut s,
+                &qr,
+                &client,
+                Event::RemovePlayer(player_info(stranger))
+            )
+            .is_empty()
+        );
+        // remove of a listed player -> playerLeft
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::RemovePlayer(player_info(uuid)))[..],
+            [BotEvent::PlayerLeft(_)]
+        ));
+        // upstream clears bot.players on the login packet (Event::Login
+        // never refires) — after a relogin the same uuid joins again
+        // instead of updating
+        assert!(matches!(
+            translate(&mut s, &qr, &client, login_packet())[..],
+            [BotEvent::Packet(_)]
+        ));
+        assert!(matches!(
+            translate(&mut s, &qr, &client, Event::AddPlayer(player_info(uuid)))[..],
+            [BotEvent::PlayerJoined(_)]
+        ));
+    }
+
+    #[test]
+    fn translate_remove_player_skips_self() {
+        let self_uuid = uuid::Uuid::from_u128(0xbeef);
+        let client = crate::test_util::live_entity_client(GameProfileComponent(GameProfile::new(
+            self_uuid,
+            "bot".into(),
+        )));
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+
+        translate(
+            &mut s,
+            &qr,
+            &client,
+            Event::AddPlayer(player_info(self_uuid)),
+        );
+        // our own tab entry's removal is never playerLeft upstream
+        assert!(
+            translate(
+                &mut s,
+                &qr,
+                &client,
+                Event::RemovePlayer(player_info(self_uuid))
+            )
+            .is_empty()
+        );
+        // and it must not evict us from the set — a mid-session re-add of
+        // self is playerUpdated upstream, not playerJoined
+        assert!(matches!(
+            translate(
+                &mut s,
+                &qr,
+                &client,
+                Event::AddPlayer(player_info(self_uuid))
+            )[..],
+            [BotEvent::PlayerUpdated(_)]
+        ));
+        // other players still leave normally
+        let other = uuid::Uuid::from_u128(0x1234);
+        translate(&mut s, &qr, &client, Event::AddPlayer(player_info(other)));
+        assert!(matches!(
+            translate(
+                &mut s,
+                &qr,
+                &client,
+                Event::RemovePlayer(player_info(other))
+            )[..],
+            [BotEvent::PlayerLeft(_)]
+        ));
+    }
+
+    #[test]
     fn translate_connected_fires_once_before_first_login() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         // upstream 'connect' precedes 'login' and fires once per connection
         assert!(matches!(
-            translate(&mut s, &qr, Event::Login)[..],
+            translate(&mut s, &qr, &client, Event::Login)[..],
             [BotEvent::Connected, BotEvent::Login]
         ));
         // world switches re-login; connect does not refire
         assert!(matches!(
-            translate(&mut s, &qr, Event::Login)[..],
+            translate(&mut s, &qr, &client, Event::Login)[..],
             [BotEvent::Login]
         ));
     }
 
     #[test]
     fn translate_spawn_then_respawn() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        // first spawn: spawn only
+        // Event::Spawn fires once per entity lifetime in azalea 0.16 —
+        // the dedup guard covers the hypothetical refire
         assert!(matches!(
-            translate(&mut s, &qr, Event::Spawn)[..],
+            translate(&mut s, &qr, &client, Event::Spawn)[..],
             [BotEvent::Spawn]
         ));
-        // later spawns (death, dimension change): respawn then spawn
+        assert!(translate(&mut s, &qr, &client, Event::Spawn).is_empty());
+        // respawns (death, dimension change) are packet-driven like
+        // upstream: respawn packet -> 'respawn', post-respawn health
+        // update -> 'spawn'
         assert!(matches!(
-            translate(&mut s, &qr, Event::Spawn)[..],
-            [BotEvent::Respawn, BotEvent::Spawn]
+            translate(&mut s, &qr, &client, respawn_packet())[..],
+            [BotEvent::Packet(_), BotEvent::Respawn]
+        ));
+        assert!(matches!(
+            translate(&mut s, &qr, &client, set_health(20.0))[..],
+            [BotEvent::Packet(_), BotEvent::Spawn]
+        ));
+        // a dimension-change respawn while alive produces the same pair
+        assert!(matches!(
+            translate(&mut s, &qr, &client, respawn_packet())[..],
+            [BotEvent::Packet(_), BotEvent::Respawn]
+        ));
+        assert!(matches!(
+            translate(&mut s, &qr, &client, set_health(20.0))[..],
+            [BotEvent::Packet(_), BotEvent::Spawn]
         ));
     }
 
     #[test]
     fn translate_disconnect_variants() {
+        let client = despawned();
         let qr = Mutex::new(None);
 
         // plain close -> End("socketClosed"), upstream's default reason
         let mut s = BridgeState::default();
         assert!(matches!(
-            &translate(&mut s, &qr, Event::Disconnect(None))[..],
+            &translate(&mut s, &qr, &client, Event::Disconnect(None))[..],
             [BotEvent::End(r)] if r == "socketClosed"
         ));
         // End only fires once
-        assert!(translate(&mut s, &qr, Event::Disconnect(None)).is_empty());
+        assert!(translate(&mut s, &qr, &client, Event::Disconnect(None)).is_empty());
 
         // kick -> Kicked then End with the kick reason
         let mut s = BridgeState::default();
@@ -459,6 +822,7 @@ mod tests {
             &translate(
                 &mut s,
                 &qr,
+                &client,
                 Event::Disconnect(Some(azalea::FormattedText::from("banned")))
             )[..],
             [BotEvent::Kicked(k), BotEvent::End(r)] if k == "banned" && r == "banned"
@@ -467,10 +831,11 @@ mod tests {
 
     #[test]
     fn translate_disconnect_uses_quit_reason() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(Some("disconnect.quitting".to_string()));
         assert!(matches!(
-            &translate(&mut s, &qr, Event::Disconnect(None))[..],
+            &translate(&mut s, &qr, &client, Event::Disconnect(None))[..],
             [BotEvent::End(r)] if r == "disconnect.quitting"
         ));
         assert!(qr.lock().unwrap().is_none());
@@ -478,20 +843,22 @@ mod tests {
 
     #[test]
     fn translate_connection_failed_is_error_then_end() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let err = ConnectionError::from(io::Error::other("refused"));
         assert!(matches!(
-            &translate(&mut s, &qr, Event::ConnectionFailed(Arc::new(err)))[..],
+            &translate(&mut s, &qr, &client, Event::ConnectionFailed(Arc::new(err)))[..],
             [BotEvent::Error(e), BotEvent::End(r)] if e.contains("refused") && r == "socketClosed"
         ));
     }
 
     #[test]
     fn translate_keepalive_dropped() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        assert!(translate(&mut s, &qr, Event::KeepAlive(42)).is_empty());
+        assert!(translate(&mut s, &qr, &client, Event::KeepAlive(42)).is_empty());
     }
 
     #[test]
@@ -536,11 +903,13 @@ mod tests {
 
     #[test]
     fn translate_chat_emits_message_family() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let out = translate(
             &mut s,
             &qr,
+            &client,
             Event::Chat(azalea::chat::ChatPacket::new("<a> hi")),
         );
         assert!(
@@ -558,12 +927,13 @@ mod tests {
     fn translate_action_bar_packet_feeds_message_family() {
         use azalea::protocol::packets::game::c_set_action_bar_text::ClientboundSetActionBarText;
 
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let packet = ClientboundGamePacket::SetActionBarText(ClientboundSetActionBarText {
             text: azalea::FormattedText::from("bar!"),
         });
-        let out = translate(&mut s, &qr, Event::Packet(Arc::new(packet)));
+        let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(
             matches!(&out[..],
                 [
@@ -580,13 +950,14 @@ mod tests {
     fn translate_tab_list_packet_updates_shared() {
         use azalea::protocol::packets::game::c_tab_list::ClientboundTabList;
 
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let packet = ClientboundGamePacket::TabList(ClientboundTabList {
             header: azalea::FormattedText::from("h"),
             footer: azalea::FormattedText::from("f"),
         });
-        let out = translate(&mut s, &qr, Event::Packet(Arc::new(packet)));
+        let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(matches!(&out[..], [BotEvent::Packet(_)]));
         let tablist = s.chat.lock().unwrap().tablist();
         assert_eq!(tablist.header.to_string(), "h");
@@ -603,6 +974,7 @@ mod tests {
             protocol::packets::game::c_command_suggestions::ClientboundCommandSuggestions,
         };
 
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let (id, mut rx) = s.chat.lock().unwrap().register_completion();
@@ -613,13 +985,14 @@ mod tests {
                 vec![Suggestion::new(StringRange::new(0, 2), "gamemode")],
             ),
         });
-        let out = translate(&mut s, &qr, Event::Packet(Arc::new(packet)));
+        let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(matches!(&out[..], [BotEvent::Packet(_)]));
         assert_eq!(rx.try_recv().unwrap(), vec!["gamemode".to_string()]);
     }
 
     #[test]
     fn translate_chat_runs_patterns() {
+        let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         s.chat.lock().unwrap().add_pattern(
@@ -630,6 +1003,7 @@ mod tests {
         let out = translate(
             &mut s,
             &qr,
+            &client,
             Event::Chat(azalea::chat::ChatPacket::new("it worked")),
         );
         assert!(

@@ -56,6 +56,11 @@ use crate::{
 pub struct Bot {
     pub(crate) client: azalea::Client,
     events: broadcast::Sender<BotEvent>,
+    /// The receiver the first [`Bot::events`] call hands out — subscribed
+    /// before the bridge task started, so events that fired before
+    /// `connect` returned (`Init`, `Login`, the spawn burst) are still on
+    /// its ring. `None` once claimed.
+    bootstrap_events: Arc<Mutex<Option<broadcast::Receiver<BotEvent>>>>,
     /// Reason passed to [`Bot::quit`]/[`Bot::end`]; the bridge consumes it when
     /// azalea reports the disconnect so `BotEvent::End` can carry it
     /// (upstream: `client.end(reason)` -> `'end'` event).
@@ -79,8 +84,8 @@ pub struct Bot {
     /// header/footer, `tab_complete` correlation) — see `chat::ChatShared`.
     pub(crate) chat: Arc<Mutex<ChatShared>>,
     /// Facade-kept world/game state (spawn point, clocks, weather, login
-    /// metadata) maintained by the packet bridge in [`crate::world`] —
-    /// azalea drops most of these packets upstream.
+    /// metadata) fed by [`crate::world::observe_event`] inside the bridge
+    /// task — azalea drops most of these packets upstream.
     pub(crate) world_state: Arc<RwLock<WorldState>>,
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links), shared with the bridge task — see `entity::EntityTracker`.
@@ -1061,7 +1066,6 @@ impl BotBuilder {
         let (alive, alive_rx) = watch::channel(());
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let world_state = Arc::new(RwLock::new(WorldState::default()));
-        let world_alive = alive_rx.clone();
         let entities = Arc::new(std::sync::RwLock::new(
             crate::entity::EntityTracker::default(),
         ));
@@ -1070,6 +1074,10 @@ impl BotBuilder {
         )));
         let window_data = Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new()));
         let recipes = Arc::new(Mutex::new(crate::craft::RecipeBook::default()));
+        // subscribed before the bridge starts, so `Event::Init` — which
+        // azalea queues before `join` returns — and everything since is on
+        // the receiver the first `Bot::events()` call hands out.
+        let bootstrap_events = events.subscribe();
         bridge::spawn(
             client.clone(),
             rx,
@@ -1081,6 +1089,7 @@ impl BotBuilder {
                 quit_reason: quit_reason.clone(),
                 chat: chat.clone(),
                 entities: entities.clone(),
+                world: world_state.clone(),
                 windows: windows.clone(),
                 window_data: window_data.clone(),
                 recipes: recipes.clone(),
@@ -1089,17 +1098,11 @@ impl BotBuilder {
                 check_timeout_interval: builder.check_timeout_interval,
             },
         );
-        crate::world::spawn_packet_bridge(
-            client.clone(),
-            events.clone(),
-            world_state.clone(),
-            world_alive,
-            shutdown_rx.clone(),
-        );
 
         Ok(Bot {
             client,
             events,
+            bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
             quit_reason,
             _alive: alive,
             shutdown: shutdown_rx,
@@ -1133,6 +1136,7 @@ impl Bot {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         Self {
             client,
+            bootstrap_events: Arc::new(Mutex::new(Some(events.subscribe()))),
             events: events.clone(),
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
@@ -1158,9 +1162,19 @@ impl Bot {
 
     /// Subscribe to this bot's event stream.
     ///
+    /// The first call returns a receiver that was subscribed before the
+    /// event bridge started — upstream's `createBot` lets listeners attach
+    /// before anything fires, and this preserves that for the earliest
+    /// events (`Init` is already queued in azalea's channel when `connect`
+    /// returns, so a plain subscribe would race and lose it). Later calls
+    /// see only events sent after they subscribe.
+    ///
     /// Each call returns an independent receiver; slow consumers see
     /// [`broadcast::error::RecvError::Lagged`] rather than blocking the bot.
     pub fn events(&self) -> broadcast::Receiver<BotEvent> {
+        if let Some(rx) = self.bootstrap_events.lock().unwrap().take() {
+            return rx;
+        }
         self.events.subscribe()
     }
 
@@ -1320,6 +1334,30 @@ mod tests {
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Login));
         assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked(_)));
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked(_)));
+    }
+
+    #[test]
+    fn first_events_call_gets_the_pre_bridge_subscription() {
+        // azalea can queue Init before `connect` returns; the first
+        // `bot.events()` receiver was subscribed before the bridge started,
+        // so those earliest events are still on it. Later subscribers only
+        // see events sent after they attach.
+        let bot = Bot::new(crate::test_util::despawned_client());
+        bot.events.send(BotEvent::Init).unwrap();
+        bot.events.send(BotEvent::Spawn).unwrap();
+
+        let mut first = bot.events();
+        let mut second = bot.events();
+        assert!(matches!(first.try_recv().unwrap(), BotEvent::Init));
+        assert!(matches!(first.try_recv().unwrap(), BotEvent::Spawn));
+        assert!(matches!(
+            second.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        // a later send reaches both
+        bot.events.send(BotEvent::Tick).unwrap();
+        assert!(matches!(first.try_recv().unwrap(), BotEvent::Tick));
+        assert!(matches!(second.try_recv().unwrap(), BotEvent::Tick));
     }
 
     #[test]
