@@ -878,6 +878,7 @@ impl BotBuilder {
             events.clone(),
             world_state.clone(),
             world_alive,
+            shutdown_rx.clone(),
         );
 
         Ok(Bot {
