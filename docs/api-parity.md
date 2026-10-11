@@ -487,7 +487,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 |---|---|---|---|---|
 | `bot.sleep(bedBlock)` | misc | `bot.sleep(BlockPos).await` | diverges | same flow minus upstream's client-side night/monster/occupancy checks (server-enforced) |
 | `bot.wake()` | misc | `bot.wake()` | diverges | sync send of `s_player_command` StopSleeping (upstream's await only wraps packet write) |
-| `bot.isABed(bedBlock)` | misc | `bot.is_a_bed(BlockState) -> bool` | ported | takes a block *state* like upstream's block.type check |
+| `bot.isABed(bedBlock)` | misc | `bot.is_a_bed(BlockState) -> bool` | diverges | takes a block *state* like upstream's block.type check; accepts any `*_bed` name — broader than upstream's 16-color whitelist + legacy `'bed'` (identical for vanilla, looser for modded/prefixed names) |
 | `bot.isSleeping` | misc | `bot.is_sleeping() -> bool` | ported | `Pose::Sleeping` |
 | `bot.parseBedMetadata (undoc)` | misc | `n/a` | diverges | upstream internal helper; azalea's `Pose` covers it |
 | `event('sleep')` | misc | `BotEvent::Sleep` | ported | Pose diff per tick |
@@ -526,12 +526,12 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | ported | waits for `container_set_slot` echo; rejects after 5s like upstream |
+| `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | diverges | waits for the `container_set_slot` echo but errors `Server rejected` on the first non-matching echo — upstream ignores interleaved non-matching updates and keeps waiting the full 5 s for the requested item (and on ack-less versions skips the echo for a stats round-trip) |
 | `bot.creative.clearSlot(slot)` | inventory | `bot.creative().clear_slot(slot).await` | ported | — |
-| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | ported | — |
+| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | diverges | clears serially and aborts on the first error; upstream `Promise.all`s every slot clear — concurrent, and sibling clears still run when one fails |
 | `bot.creative.flyTo(dest)` | inventory | `bot.creative().fly_to(Vec3).await` | ported | straight-line 0.5-block steps per 50ms |
-| `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | ported | sets `PlayerAbilities.flying` + s_player_abilities |
-| `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | ported | — |
+| `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | diverges | sets `PlayerAbilities.flying` and sends `s_player_abilities` (what the vanilla client does on double-jump); upstream only zeroes `bot.physics.gravity` locally — no packet |
+| `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | diverges | same packet-vs-local difference as `start_flying` |
 
 ## Plugin ecosystem (in port scope — U7/U12)
 
@@ -563,7 +563,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('goal_updated')` | pathfinder | `BotEvent::GoalUpdated{goal, dynamic}` | ported | emitted synchronously by `set_goal`, payload like upstream's `(goal, dynamic)` |
 | `event('path_stop')` | pathfinder | `BotEvent::PathStop{goal}` | ported | `stop()`, a follow goal going invalid, or azalea clearing the goal without reaching (world change, internal stop); `goal` carries the abandoned facade goal (`Some`) — upstream emits no payload |
 | `event('path_reset')` | pathfinder | `BotEvent::PathReset{reason}` | diverges | only `goal_updated`/`movements_updated` reasons are observable; azalea's internal repaths (stuck, block change, chunk load, dig error, …) surface as `path_update` and can't be told apart |
-| `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(target).await -> Result<Collected>` | ported | `CollectTarget` accepts Block/BlockPos/BlockKind/kind-list/predicate + `.count()/.max_distance()/.point()`; find→goto→dig loop re-searches per iteration + bounded drop vacuum; emits `CollectBlockFound`/`Collected`/`CollectDone` (upstream emits none); partial hauls resolve `Ok` — compare `collected.blocks.len()` to the asked count |
+| `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(target).await -> Result<Collected>` | ported | `CollectTarget` accepts Block/BlockPos/BlockKind/kind-list/predicate + `.count()/.max_distance()/.point()`; find→goto→dig loop re-searches per iteration + bounded drop vacuum; emits `CollectBlockFound`/`Collected`/`CollectDone` (`CollectDone` is the `collectBlock_finished` equivalent — upstream emits it on its own emitter); partial hauls resolve `Ok` — compare `collected.blocks.len()` to the asked count |
 | `pvp.attack(target) / .stop()` | pathfinder | `bot.pvp().attack(&entity)` / `.stop()` / `.target()` | ported | dynamic `Goal::Follow` + per-tick driver: looks at target, swings in 3.0 range when attack cooldown is ready; retarget on a second `attack()`; ends on stop/target death/despawn |
 | `event('stoppedAttacking')` | pathfinder | `BotEvent::StoppedAttacking` | ported | emitted exactly once per attack run — by `stop()` or by the driver when the target dies/despawns; never on retarget |
 | `tool.equipForBlock etc.` | pathfinder | `bot.tool().equip_for_block(&block)` / `.best_tool_for(&block)` / `.equip_for_entity(&entity)` | diverges | wraps azalea's `best_tool_in_hotbar_for_block` — hotbar-only (upstream scans the full inventory); `best_tool_for` returns `None` when the bare hand wins; `equip_for_entity` is a generic max-`attack_damage` hotbar pick — no entity-aware weapon scoring exists on either side |
