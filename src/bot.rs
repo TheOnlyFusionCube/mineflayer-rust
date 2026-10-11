@@ -689,6 +689,13 @@ pub enum BotEvent {
         /// Whether the offhand was doing the eating.
         offhand: bool,
     },
+    /// `connect` — the connection is live. Upstream fires on raw socket
+    /// connect (pre-login); azalea surfaces no socket-level event, so this
+    /// is emitted right before the first [`BotEvent::Login`] (the
+    /// clientbound login packet is the earliest proof the wire is up).
+    /// Once per connection — later `Login`s (world switches) don't refire
+    /// it.
+    Connected,
 }
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world

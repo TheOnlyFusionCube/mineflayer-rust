@@ -331,6 +331,58 @@ impl FindBlocksOpts {
     }
 }
 
+/// `Location` (module export) — upstream's legacy helper from
+/// `lib/location.js`: splits an absolute position into its floored block
+/// position, the point inside its 16³ chunk section, and the packed
+/// block/biome indices chunk consumers index with.
+///
+/// Upstream's fields are `Vec3`s; here the integer ones are [`BlockPos`]
+/// and the indices are plain ints.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Location {
+    /// `floored` — the absolute block position (each component floored).
+    pub floored: BlockPos,
+    /// `blockPoint` — the position inside the chunk section (0..=15 each,
+    /// euclidean-mod 16 like upstream's `modulus`, so negative coordinates
+    /// wrap correctly).
+    pub block_point: BlockPos,
+    /// `chunkCorner` — `floored - block_point` (all components multiples
+    /// of 16).
+    pub chunk_corner: BlockPos,
+    /// `blockIndex` — `block_point.x + 16 * z + 256 * y` (upstream's
+    /// packed index into a chunk section's block array).
+    pub block_index: u32,
+    /// `biomeBlockIndex` — `block_point.x + 16 * z`.
+    pub biome_block_index: u32,
+    /// `chunkYIndex` — `floor(absolute.y / 16)` on the *unfloored* y,
+    /// matching upstream exactly.
+    pub chunk_y_index: i32,
+}
+
+impl Location {
+    /// `new Location(absoluteVector)`.
+    pub fn new(absolute: Vec3) -> Self {
+        let floored = BlockPos::new(
+            absolute.x.floor() as i32,
+            absolute.y.floor() as i32,
+            absolute.z.floor() as i32,
+        );
+        let block_point = BlockPos::new(
+            floored.x.rem_euclid(16),
+            floored.y.rem_euclid(16),
+            floored.z.rem_euclid(16),
+        );
+        Self {
+            floored,
+            block_point,
+            chunk_corner: floored - block_point,
+            block_index: (block_point.x + 16 * block_point.z + 256 * block_point.y) as u32,
+            biome_block_index: (block_point.x + 16 * block_point.z) as u32,
+            chunk_y_index: (absolute.y / 16.).floor() as i32,
+        }
+    }
+}
+
 /// `bot.time` — everything derived from the server's `set_time` clocks.
 /// `None` from [`Bot::time`] until the first `set_time` packet arrives.
 #[derive(Clone, Debug, PartialEq)]
@@ -1498,5 +1550,36 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn location_fields_match_upstream_formulas() {
+        let loc = Location::new(Vec3 {
+            x: 20.5,
+            y: 70.0,
+            z: -18.2,
+        });
+        assert_eq!(loc.floored, BlockPos::new(20, 70, -19));
+        // upstream `modulus` floors the remainder: -19 -> 13, not -3
+        assert_eq!(loc.block_point, BlockPos::new(4, 6, 13));
+        assert_eq!(loc.chunk_corner, BlockPos::new(16, 64, -32));
+        assert_eq!(loc.block_index, 4 + 16 * 13 + 256 * 6);
+        assert_eq!(loc.biome_block_index, 4 + 16 * 13);
+        // chunkYIndex floors the *unfloored* absolute y / 16
+        assert_eq!(loc.chunk_y_index, 4);
+    }
+
+    #[test]
+    fn location_negative_y_wraps_like_upstream() {
+        let loc = Location::new(Vec3 {
+            x: 0.,
+            y: -0.5,
+            z: 0.,
+        });
+        assert_eq!(loc.floored, BlockPos::new(0, -1, 0));
+        assert_eq!(loc.block_point, BlockPos::new(0, 15, 0));
+        assert_eq!(loc.chunk_corner, BlockPos::new(0, -16, 0));
+        assert_eq!(loc.block_index, 256 * 15);
+        assert_eq!(loc.chunk_y_index, -1);
     }
 }

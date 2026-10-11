@@ -14,8 +14,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
 | `createBot(options)` | module | `Bot::builder() -> BotBuilder; BotBuilder::connect() -> Result<Bot>` | ported | builder style; connect runs bot on a dedicated thread (azalea LocalSet) |
-| `Location` | module | `struct Location` | pending | legacy helper; azalea BlockPos/Vec3 cover most uses |
-| `Painting` | module | `struct Painting` | pending | entity metadata wrapper |
+| `Location` | module | `mineflayer::Location::new(Vec3)` | ported | same floored/block_point/chunk_corner/block_index/biome_block_index/chunk_y_index formulas (upstream lib/location.js); `rem_euclid(16)` matches upstream's `modulus` on negatives; upstream's Vec3 fields are `BlockPos` here (integer-identical — upstream floors them anyway) |
+| `Painting` | module | `Painting::from_entity(&EntityRef) -> Option<Painting>` | diverges | `{id, position, variant, direction}` read from painting-entity metadata — `spawn_entity_painting` packet no longer exists in mc26; `name` is the `data::PaintingVariant` handle (resolve title via `client.resolve_registry_key`), and upstream's `block.painting` position index isn't ported |
 | `ScoreBoard (class)` | module | `mineflayer::ScoreBoard` | ported | see Scoreboard section |
 | `BossBar (class)` | module | `mineflayer::BossBar` | ported | see Scoreboard section |
 | `Particle (class)` | module | `mineflayer::Particle` | ported | see Particles section |
@@ -23,20 +23,20 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `latestSupportedVersion` | module | `const MC_VERSION: &str` | diverges | single-version: equals the azalea-targeted MC version |
 | `oldestSupportedVersion` | module | `n/a` | diverges | single-version: same as latest |
 | `supportFeature(feature, version)` | module | `n/a` | wontfix | upstream feature-support lookup has no analog; not implemented |
-| `mcdata.blocks` | module | `azalea::registry / azalea::block` | pending | re-export azalea registry |
-| `mcdata.items` | module | `azalea::registry / azalea_inventory::item` | pending | re-export azalea registry |
-| `mcdata.materials` | module | `own lookup table (dig-speed materials)` | pending | minecraft-data 'materials' have no azalea analog; tool-speed data |
+| `mcdata.blocks` | module | `mcdata::BlockKind` | diverges | closed enum, not a lookup table: `Registry::from_u32`/`to_u32` = id index, `to_str`/`FromStr`/`TryFrom<&Identifier>` = name lookups; per-block data lives on `BlockTrait::behavior` |
+| `mcdata.items` | module | `mcdata::ItemKind` | diverges | same enum surface as blocks; per-item data is on `ItemStack` data components, not a static record |
+| `mcdata.materials` | module | `n/a` | wontfix | minecraft-data's material→tool-multiplier table models a pre-1.20.5 era; in mc26 dig speed is per-item `minecraft:tool` data-component rules over block tag sets — `azalea::entity::mining::get_mine_progress` already implements that path |
 | `mcdata.recipes` | module | recipe book bridge (`c_recipe_book_add`/`remove`) | diverges | book-scoped server-unlocked recipes, not a static mcdata table; tag ingredients resolve via azalea's static item tags; azalea's `ItemStack` slot display decodes kind/count swapped — un-swapped at conversion |
 | `mcdata.instruments` | module | `enum Instrument` (misc.rs, re-exported) | ported | 16 note-block instruments; `From<u8>` action-id decode; used by `NoteHeard` |
-| `mcdata.biomes` | module | `azalea::registry::data / builtin::Biome` | pending | — |
-| `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
-| `Vec3 (prismarine)` | module | `azalea::Vec3 (re-export)` | pending | azalea_core::position::Vec3 |
+| `mcdata.biomes` | module | `mcdata::Biome` + `mcdata::BiomeKey` | diverges | protocol-id handle into the server's `worldgen/biome` registry (data-driven since 1.18 — no compile-time table); resolve name via `client.resolve_registry_key`, element NBT under `RegistryHolder::extra` |
+| `mcdata.entities` | module | `mcdata::EntityKind` | diverges | closed enum, not a lookup table (same `Registry`/name surface as BlockKind) |
+| `Vec3 (prismarine)` | module | `azalea::Vec3` + `mineflayer::Vec3Ext` trait | ported | Vec3Ext covers node-vec3's missing surface (offset/floored/modulus/unit/to_array/xy/yz/set/update/…); gaps: mutating `scale`/`normalize`/`add`/`subtract`/`multiply`/`divide` (names shadowed by azalea's inherent non-mutating versions — `*=`/`+=`/ops), `equals(other,error)` tolerance arg, `xz()` returns Vec3 not the `[x,z]` pair |
 | `Entity (prismarine-entity)` | module | `azalea::EntityRef` + `EntityExt` trait | diverges | EntityExt covers look/velocity/onGround/username/skin only; uuid/kind/attributes/effects/metadata need raw `get_component`, equipment needs `bot.equipment` |
 | `Block (prismarine-block)` | module | `mineflayer::world::Block { pos, state, world }` | diverges | name/kind/state_id/bounding_box/diggable/property/behavior ported; `name()` is namespaced (`"minecraft:gravel"`, upstream `"gravel"` — exposed by examples/digger.rs; `Item::name` does strip); no blockEntity/getSignText (azalea has no block-entity storage — U11) |
-| `Biome (prismarine-biome)` | module | `azalea::registry Biome` | pending | — |
+| `Biome (prismarine-biome)` | module | `mineflayer::Biome` (= `azalea::registry::data::Biome`) | diverges | bare protocol-id handle — upstream objects carry `name`/`displayName`/`temperature`/`rainfall`; those fields live in server-sent registry NBT (`RegistryHolder.extra` under `worldgen/biome`), and the key resolves via `client.resolve_registry_key` — no field access on the handle itself (same gap as `mcdata.biomes`) |
 | `Item (prismarine-item)` | module | `mineflayer::Item { stack, slot }` | ported | kind/name/display_name/count/metadata/durability/component_patch + same_item; empty stack → `None` like upstream `null`; slot -1 = cursor |
 | `Recipe (prismarine-recipe)` | module | `craft::Recipe` (+ `Ingredient`/`RecipeItem`/`RecipeResult`/`DeltaEntry`) | diverges | fields ported; ingredients model tag alternatives as `any_of` sets instead of per-kind recipe expansion |
-| `ChatMessage (prismarine-chat)` | module | `azalea::chat::FormattedText wrapper` | pending | mc26.1: azalea::chat is azalea_client::plugins::chat |
+| `ChatMessage (prismarine-chat)` | module | `mineflayer::ChatMessage` (wraps `azalea::FormattedText`) | diverges | parse/from_notch/to_string/to_ansi/to_html + text/translate/with/extra/style accessors; missing upstream's `lang` overrides (en_us only), indexed `getText`/`length`, `toMotd`, `MessageBuilder`; `score`/`selector`/`keybind`/`nbt`/`object` components fail to parse entirely (azalea-chat deserialize errors where prismarine-chat accepts) |
 | `Window (prismarine-windows)` | module | `mineflayer::Window` (Arc over `ContainerHandleRef`) | ported | cheap cloneable shared handle + explicit idempotent `close()` like upstream; `ContainerHandle` drop-close intentionally not used; see Window classes |
 
 ## `createBot(options)` fields
@@ -97,12 +97,12 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.registry` | lifecycle | `bot.registry() -> RegistryHolder` | ported | azalea dynamic registries snapshot |
 | `bot._client` | lifecycle | `bot.client() -> &azalea::Client` | ported | unstable upstream; public escape hatch here |
 | `bot._warn(...)` | lifecycle | `n/a` | wontfix | n/a — tracing/logging, not an API |
-| `bot._getDimensionName() (internal)` | lifecycle | `pub(crate) helpers — internal` | pending | dimension-name lookup |
+| `bot._getDimensionName() (internal)` | lifecycle | `bot.dimension() -> Option<WorldName>` | ported | upstream internal helper reads `bot.game.dimension`; ours is the public `dimension()` getter (WorldName = the dimension identifier) |
 | `event('inject_allowed')` | lifecycle | `BotEvent::Init` | ported | azalea Event::Init analog |
 | `event('login')` | lifecycle | `BotEvent::Login` | ported | — |
 | `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | first azalea Spawn |
 | `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | synthesized: emitted before every `Spawn` after the first |
-| `event('connect') (undoc)` | lifecycle | `BotEvent::Connected?` | pending | — |
+| `event('connect') (undoc)` | lifecycle | `BotEvent::Connected` | diverges | upstream fires on raw socket connect (pre-login); azalea surfaces no socket-level event — emitted right before the first `Login` (earliest wire-up proof), once per connection |
 | `event('kicked')` | lifecycle | `BotEvent::Kicked(String)` | diverges | azalea folds kick into `Disconnect(reason)`; we emit Kicked then End; no loggedIn flag |
 | `event('end')` | lifecycle | `BotEvent::End(String)` | ported | exactly-once; reason = quit arg / kick / 'socketClosed' |
 | `event('error')` | lifecycle | `BotEvent::Error(String)` | ported | currently: connection failures only |
@@ -199,7 +199,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Player.entity` | entity | `player.entity -> Option<EntityRef>` | ported | pub field on Player struct |
 | `Player.uuid` | entity | `player.info.uuid` | ported | pub field on azalea PlayerInfo |
 | `Player.skinData` | entity | `player.skin_data() -> Option<SkinData>` | ported | — |
-| `Player.profileKeys` | entity | `player.profile_keys()` | pending | publicKey+signature |
+| `Player.profileKeys` | entity | `player.profile_keys -> Option<ProfileKeys>` | ported | `{public_key, signature}` bytes from `c_player_info_update`'s `initialize_chat` — azalea's `PlayerInfo` drops `chat_session`, so the bridge tracks it wire-side; cleared on re-add/`player_info_remove` |
 | `event('entitySpawn')` | entity | `BotEvent::EntitySpawn(EntityRef)` | ported | c_add_entity + self on Spawn, like upstream |
 | `event('entityGone')` | entity | `BotEvent::EntityGone{entity,id}` | diverges | entity is Option<EntityRef> — azalea clears the index before our packet event; id always present |
 | `event('entityMoved')` | entity | `BotEvent::EntityMoved(EntityRef)` | ported | pos/rot/teleport/head-rotation packets |

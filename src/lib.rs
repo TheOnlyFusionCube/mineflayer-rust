@@ -30,6 +30,7 @@ pub mod craft;
 pub mod entity;
 pub mod interact;
 pub mod inventory;
+pub mod mcdata;
 pub mod misc;
 pub mod movement;
 pub mod pathfinder;
@@ -37,6 +38,7 @@ pub mod pvp;
 pub mod scoreboard;
 pub mod state;
 pub mod tool;
+pub mod vec3;
 pub mod window_types;
 pub mod windows;
 pub mod world;
@@ -46,7 +48,7 @@ pub use error::{Error, Result};
 pub use movement::{Control, ControlState, PhysicsSettings};
 
 pub use chat::{
-    ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
+    ChatMessage, ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
 // ItemKind/MenuKind/DataComponentPatch appear in the public inventory API
@@ -54,10 +56,15 @@ pub use chat::{
 /// `BotBuilder::proxy` — azalea's SOCKS5 proxy type (`options.agent`-analog).
 pub use azalea::protocol::connect::Proxy;
 pub use azalea::{
+    Vec3,
     inventory::{DataComponentPatch, ItemStack},
-    registry::builtin::{ItemKind, MenuKind},
+    registry::{
+        builtin::{ItemKind, MenuKind},
+        data::Biome,
+    },
 };
 pub use craft::{DeltaEntry, Ingredient, Recipe, RecipeItem, RecipeResult};
+pub use entity::{Painting, Player, ProfileKeys};
 pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
 pub use misc::{
     ChatVisibility, Creative, HumanoidArm, Instrument, ModelCustomization, Particle,
@@ -72,10 +79,11 @@ pub use window_types::{
 pub use windows::{Chest, Dispenser, Item, Window};
 pub use world::{
     Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
-    Game, Time, WorldRef,
+    Game, Location, Time, WorldRef,
 };
 
 pub use interact::{DigAbortReason, DigFace, ForceLook};
+pub use vec3::Vec3Ext;
 
 // — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp, -auto-eat —
 pub use auto_eat::{AutoEat, AutoEatOpts, EatOpts, FoodData, FoodPriority, FoodSelection};
