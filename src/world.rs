@@ -1079,6 +1079,8 @@ fn block_event(
 mod tests {
     use azalea::{
         block::BlockState,
+        core::entity_id::MinecraftEntityId,
+        protocol::packets::game::c_block_destruction::ClientboundBlockDestruction,
         registry::builtin::BlockKind,
         world::{Chunk, PartialChunkStorage},
     };
@@ -1450,5 +1452,32 @@ mod tests {
         assert!(!lids.update(pos, 1));
         assert!(lids.update(pos, 0));
         assert!(lids.update(pos, 2));
+    }
+
+    #[test]
+    fn block_destruction_after_self_despawn_still_emits() {
+        let client = crate::test_util::despawned_client();
+        let state = RwLock::new(WorldState::default());
+        let mut lids = LidCounts::default();
+        // the breaker id resolves through our own entity's index — once it
+        // is despawned the lookup must miss, not panic.
+        let out = decode_packet(
+            &client,
+            &state,
+            &mut lids,
+            &ClientboundGamePacket::BlockDestruction(ClientboundBlockDestruction {
+                id: MinecraftEntityId(1),
+                pos: BlockPos::new(0, 60, 0),
+                progress: 4,
+            }),
+        );
+        assert!(matches!(
+            &out[..],
+            [BotEvent::BlockBreakProgress {
+                stage: 4,
+                entity: None,
+                ..
+            }]
+        ));
     }
 }

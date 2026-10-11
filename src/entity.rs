@@ -1119,10 +1119,14 @@ fn base64_decode(input: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use azalea::{
         core::attribute_modifier_operation::AttributeModifierOperation,
         inventory::components::AttributeModifier,
-        protocol::packets::game::c_update_attributes::AttributeSnapshot,
+        protocol::packets::game::{
+            c_animate::ClientboundAnimate, c_update_attributes::AttributeSnapshot,
+        },
     };
 
     use super::*;
@@ -1293,5 +1297,20 @@ mod tests {
         tracker.vehicle_of.insert(id(6), id(2));
         tracker.forget(None, id(6));
         assert!(tracker.passengers_of.get(&id(2)).unwrap().is_empty());
+    }
+
+    #[test]
+    fn packet_after_self_despawn_emits_nothing() {
+        let client = crate::test_util::despawned_client();
+        let tracker = RwLock::new(EntityTracker::default());
+        // teardown packets race the despawn of our own entity; the id
+        // lookup must miss quietly instead of panicking.
+        let packet = ClientboundGamePacket::Animate(ClientboundAnimate {
+            id: MinecraftEntityId(1),
+            action: AnimationAction::SwingMainHand,
+        });
+        assert!(
+            observe_event(&tracker, &client, &Event::Packet(Arc::new(packet))).is_empty()
+        );
     }
 }

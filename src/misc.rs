@@ -943,6 +943,7 @@ mod tests {
                 c_set_title_text::ClientboundSetTitleText,
                 c_set_titles_animation::ClientboundSetTitlesAnimation,
                 c_sound::{ClientboundSound, SoundSource},
+                c_sound_entity::ClientboundSoundEntity,
             },
         },
         registry::{DataRegistry, Holder, data::DimensionKind},
@@ -1271,5 +1272,24 @@ mod tests {
         assert!(skin.left_sleeve && skin.left_pants && !skin.cape && !skin.hat);
         // and `difficulty` keeps its upstream default
         assert_eq!(back.difficulty, 2);
+    }
+
+    #[test]
+    fn sound_entity_after_self_despawn_is_dropped() {
+        let client = crate::test_util::despawned_client();
+        // the sound position resolves through our own entity's index — once
+        // it is despawned the lookup must miss, not panic.
+        let out = handle_packet(
+            &client,
+            &ClientboundGamePacket::SoundEntity(ClientboundSoundEntity {
+                sound: Holder::Reference(SoundEvent::EntityFishingBobberSplash),
+                source: SoundSource::Neutral,
+                id: MinecraftEntityId(1),
+                volume: 1.0,
+                pitch: 1.0,
+                seed: 0,
+            }),
+        );
+        assert!(out.is_empty());
     }
 }

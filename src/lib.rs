@@ -41,3 +41,22 @@ pub use world::{
     Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
     Game, Time, WorldRef,
 };
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    /// A `Client` whose own entity is already despawned — the state packets
+    /// still in flight during teardown race into.
+    pub(crate) fn despawned_client() -> azalea::Client {
+        let mut app = azalea::app::App::new();
+        // `Client::new` wants `Arc<RwLock<World>>`; `start_ecs_runner` hands
+        // one back without naming parking_lot (not a direct dependency).
+        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let entity = {
+            let mut ecs = ecs.write();
+            let entity = ecs.spawn_empty().id();
+            ecs.despawn(entity);
+            entity
+        };
+        azalea::Client::new(entity, ecs)
+    }
+}
