@@ -34,6 +34,8 @@ pub(crate) struct BridgeDeps {
     /// Typed-window packet state (container data, merchant offers) —
     /// see `window_types::WindowDataTracker`.
     pub window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
+    /// Recipe-book state — see `craft::RecipeBook`.
+    pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
 }
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
@@ -54,6 +56,7 @@ pub(crate) fn spawn(
             entities,
             windows,
             window_data,
+            recipes,
         } = deps;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
@@ -98,6 +101,9 @@ pub(crate) fn spawn(
                     // trades). No ECS access — runs on packet fields only.
                     let window_data_events =
                         crate::window_types::observe_event(&window_data, &event);
+                    // recipe book: records c_recipe_book_add/remove into
+                    // shared state; emits no events (craft has none)
+                    crate::craft::observe_event(&recipes, &event);
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.

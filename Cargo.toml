@@ -75,3 +75,8 @@ required-features = ["live"]
 name = "live-windows"
 path = "tests/live/windows.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live-craft"
+path = "tests/live/craft.rs"
+required-features = ["live"]
