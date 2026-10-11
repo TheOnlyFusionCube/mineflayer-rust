@@ -50,6 +50,8 @@ pub use chat::{
 };
 // ItemKind/MenuKind/DataComponentPatch appear in the public inventory API
 // (toss/transfer/deposit/Window::menu_kind) — re-exported like `BlockPos`.
+/// `BotBuilder::proxy` — azalea's SOCKS5 proxy type (`options.agent`-analog).
+pub use azalea::protocol::connect::Proxy;
 pub use azalea::{
     inventory::{DataComponentPatch, ItemStack},
     registry::builtin::{ItemKind, MenuKind},
@@ -57,8 +59,8 @@ pub use azalea::{
 pub use craft::{DeltaEntry, Ingredient, Recipe, RecipeItem, RecipeResult};
 pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
 pub use misc::{
-    ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
-    TitleKind,
+    ChatVisibility, Creative, HumanoidArm, Instrument, ModelCustomization, Particle,
+    ParticleStatus, Settings, TitleKind,
 };
 pub use pathfinder::{Goal, Movements, Pathfinder};
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};

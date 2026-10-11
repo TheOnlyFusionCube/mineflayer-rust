@@ -36,6 +36,20 @@ pub(crate) struct BridgeDeps {
     pub window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
     /// Recipe-book state — see `craft::RecipeBook`.
     pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
+    /// `options.*` client-information fields from the builder, sent via
+    /// `set_client_information` on `Event::Init` so the login packet carries
+    /// them (the `view_distance` spawn param is folded in — see
+    /// [`init_client_information`]). `None` sends nothing, leaving azalea's
+    /// defaults on the wire.
+    pub client_information: Option<ClientInformation>,
+    /// `options.brand` — sent as the `minecraft:brand` custom payload on
+    /// `Event::Login`; overwrites the `"vanilla"` azalea already sent during
+    /// the config phase (the server keeps the last brand received).
+    pub brand: Option<String>,
+    /// `options.checkTimeoutInterval` — the server keepalive watchdog
+    /// interval, armed on every `Event::KeepAlive` like upstream's per-
+    /// keepalive `setTimeout` re-arm.
+    pub check_timeout_interval: std::time::Duration,
 }
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
@@ -61,6 +75,9 @@ pub(crate) fn spawn(
             windows,
             window_data,
             recipes,
+            client_information,
+            brand,
+            check_timeout_interval,
         } = deps;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
@@ -69,18 +86,37 @@ pub(crate) fn spawn(
             chat,
             ..Default::default()
         };
+        // Keepalive watchdog deadline (`options.checkTimeoutInterval`) —
+        // `None` until the first keepalive arms it, like upstream's
+        // per-keepalive `setTimeout`.
+        let mut keepalive_deadline = None;
         loop {
             tokio::select! {
                 event = rx.recv() => {
                     let Some(event) = event else { break };
                     // Client information must be set on Init so the login
                     // packet already carries it (azalea docs).
-                    if let (Event::Init, Some(vd)) = (&event, view_distance) {
-                        client.set_client_information(ClientInformation {
-                            view_distance: vd,
-                            ..Default::default()
-                        });
+                    if let Event::Init = &event
+                        && let Some(info) =
+                            init_client_information(&client_information, view_distance)
+                    {
+                        client.set_client_information(info);
                     }
+                    // `options.brand` — upstream writes it on the login
+                    // packet; ours overwrites azalea's config-phase
+                    // "vanilla".
+                    if let (Event::Login, Some(brand)) = (&event, &brand) {
+                        use azalea::buf::AzBuf;
+                        let mut data = Vec::new();
+                        let _ = brand.clone().azalea_write(&mut data);
+                        client.write_packet(
+                            azalea::protocol::packets::game::s_custom_payload::ServerboundCustomPayload {
+                                identifier: "brand".into(),
+                                data: data.into(),
+                            },
+                        );
+                    }
+                    let keepalive_seen = matches!(&event, Event::KeepAlive(_));
                     // Domain decodes azalea doesn't lift into `Event`s
                     // (movement: move diff/forcedMove/abilities; entities:
                     // the whole entity event family). Both run before
@@ -132,6 +168,28 @@ pub(crate) fn spawn(
                     for bot_event in window_data_events {
                         let _ = events.send(bot_event);
                     }
+                    if keepalive_seen {
+                        keepalive_deadline =
+                            Some(tokio::time::Instant::now() + check_timeout_interval);
+                    }
+                }
+                // Server keepalive watchdog (`options.checkTimeoutInterval`):
+                // upstream's keepalive.js emits 'error' then ends the client
+                // with 'keepAliveError'. The End reason flows through the
+                // quit_reason slot that `translate` reads on Disconnect.
+                _ = async {
+                    match keepalive_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    keepalive_deadline = None;
+                    let _ = events.send(BotEvent::Error(format!(
+                        "client timed out after {} milliseconds",
+                        check_timeout_interval.as_millis()
+                    )));
+                    *quit_reason.lock().unwrap() = Some("keepAliveError".to_string());
+                    client.disconnect();
                 }
                 _ = alive.changed() => break,
             }
@@ -240,6 +298,28 @@ fn translate(
         // the future is dropped rather than crashing the bridge. (No logging
         // facade is in our dependency set, so there is nothing to log to.)
         _ => vec![],
+    }
+}
+
+/// The `ClientInformation` to send on `Event::Init`: the builder's merged
+/// `options.*` struct, with the signature-frozen `view_distance` spawn param
+/// taking precedence (it and `BotBuilder::view_distance` are the same
+/// value — the param exists because `spawn`'s signature is frozen).
+/// `None` = nothing to send; azalea ships its own defaults.
+fn init_client_information(
+    from_options: &Option<ClientInformation>,
+    view_distance: Option<u8>,
+) -> Option<ClientInformation> {
+    match (from_options, view_distance) {
+        (Some(info), vd) => Some(ClientInformation {
+            view_distance: vd.unwrap_or(info.view_distance),
+            ..info.clone()
+        }),
+        (None, Some(vd)) => Some(ClientInformation {
+            view_distance: vd,
+            ..ClientInformation::default()
+        }),
+        (None, None) => None,
     }
 }
 
@@ -382,6 +462,46 @@ mod tests {
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         assert!(translate(&mut s, &qr, Event::KeepAlive(42)).is_empty());
+    }
+
+    #[test]
+    fn init_client_information_merge() {
+        use azalea::protocol::common::client_information::{ChatVisibility, ParticleStatus};
+
+        // nothing set -> nothing sent (azalea's defaults go out on login)
+        assert_eq!(init_client_information(&None, None), None);
+        // only view_distance -> the pre-P1 path
+        assert_eq!(
+            init_client_information(&None, Some(4)),
+            Some(ClientInformation {
+                view_distance: 4,
+                ..ClientInformation::default()
+            })
+        );
+        // options struct alone -> sent as built
+        let info = ClientInformation {
+            chat_visibility: ChatVisibility::System,
+            chat_colors: false,
+            allows_listing: true,
+            particle_status: ParticleStatus::Minimal,
+            ..ClientInformation::default()
+        };
+        assert_eq!(
+            init_client_information(&Some(info.clone()), None),
+            Some(info.clone())
+        );
+        // the spawn param wins view_distance over the options struct
+        assert_eq!(
+            init_client_information(&Some(info), Some(12)),
+            Some(ClientInformation {
+                view_distance: 12,
+                chat_visibility: ChatVisibility::System,
+                chat_colors: false,
+                allows_listing: true,
+                particle_status: ParticleStatus::Minimal,
+                ..ClientInformation::default()
+            })
+        );
     }
 
     #[test]

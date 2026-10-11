@@ -433,6 +433,7 @@ fn entity_position(client: &azalea::Client, id: MinecraftEntityId) -> Option<Vec
         .ok()
 }
 
+pub use azalea::entity::HumanoidArm;
 pub use azalea::protocol::common::client_information::{
     ChatVisibility, ModelCustomization, ParticleStatus,
 };
