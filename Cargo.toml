@@ -70,3 +70,8 @@ required-features = ["live"]
 name = "live-inventory"
 path = "tests/live/inventory.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live-windows"
+path = "tests/live/windows.rs"
+required-features = ["live"]

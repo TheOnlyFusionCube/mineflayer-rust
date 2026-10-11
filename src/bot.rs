@@ -70,6 +70,10 @@ pub struct Bot {
     /// eat/use bookkeeping), shared with the bridge task — see
     /// `windows::WindowTracker`.
     pub(crate) windows: Arc<Mutex<crate::windows::WindowTracker>>,
+    /// Typed-window server state (container data, merchant offers,
+    /// readiness), shared with the bridge task — see
+    /// `window_types::WindowDataTracker`.
+    pub(crate) window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -572,6 +576,39 @@ pub enum BotEvent {
     /// `updateHeldItem`, so listeners should diff on kind+count like
     /// upstream's eat listener does).
     HeldItemChanged(Option<crate::windows::Item>),
+    // — typed windows (U9): `container_set_data`/`merchant_offers`
+    // decode. Window-level events stay bot-level with the window id
+    // they belong to (windows aren't emitters, same as upstream's
+    // `craft_progress_bar` feed consumers match on). —
+    /// A `container_set_data` property changed on a window — the raw
+    /// feed the typed windows consume (furnace fuel/progress, enchant
+    /// clues, anvil repair cost). Upstream's `craft_progress_bar`.
+    WindowDataUpdate {
+        /// Protocol window id the property belongs to.
+        window_id: i32,
+        /// The property index (menu-specific).
+        property: u16,
+        /// The new value (sign-extended from the wire's u16).
+        value: i16,
+    },
+    /// furnace `'update'` — a data property changed on a furnace-kind
+    /// window (furnace/blast_furnace/smoker).
+    FurnaceUpdate {
+        /// Protocol window id of the furnace window.
+        window_id: i32,
+    },
+    /// enchantment table `'ready'` — all three enchant-option level
+    /// costs are known; fires on the false→true edge like upstream.
+    EnchantmentTableReady {
+        /// Protocol window id of the enchantment table.
+        window_id: i32,
+    },
+    /// villager `'ready'` — the first `merchant_offers` packet for the
+    /// window arrived and `trades` is populated.
+    VillagerReady {
+        /// Protocol window id of the merchant window.
+        window_id: i32,
+    },
 }
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
@@ -783,6 +820,7 @@ impl BotBuilder {
         let windows = Arc::new(Mutex::new(crate::windows::WindowTracker::new(
             events.clone(),
         )));
+        let window_data = Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new()));
         bridge::spawn(
             client.clone(),
             rx,
@@ -794,6 +832,7 @@ impl BotBuilder {
                 chat: chat.clone(),
                 entities: entities.clone(),
                 windows: windows.clone(),
+                window_data: window_data.clone(),
             },
         );
         crate::world::spawn_packet_bridge(
@@ -812,6 +851,7 @@ impl BotBuilder {
             world_state,
             entities,
             windows,
+            window_data,
         })
     }
 }
@@ -842,6 +882,7 @@ impl Bot {
                 crate::entity::EntityTracker::default(),
             )),
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(events))),
+            window_data: Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new())),
         }
     }
 

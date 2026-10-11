@@ -283,15 +283,15 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.updateHeldItem()` | inventory | `bot.update_held_item()` | ported | re-emits `heldItemChanged` |
 | `bot.openContainer(b\|e, ..)` | inventory | `bot.open_container(impl Into<ContainerTarget>).await` | ported | `ContainerTarget::Block|Entity`; upstream allowed-name precheck + container menu-kind check (generic_9x*/generic_3x3/hopper/shulker_box); on mismatch we close the window then error — upstream throws leaving it open |
 | `bot.openChest(..) (dep)` | inventory | `bot.open_chest(..)` — alias of `open_container` | ported | identical to upstream (one shared function) |
-| `bot.openFurnace(block)` | inventory | `bot.open_furnace(b).await -> Furnace` | pending | — |
+| `bot.openFurnace(block)` | inventory | `bot.open_furnace(b).await -> Furnace` | ported | open_block + menu-kind check (furnace/blast_furnace/smoker); on mismatch we close the window then error — upstream leaves it open |
 | `bot.openDispenser(..) (dep)` | inventory | `bot.open_dispenser(..)` — alias of `open_container` | ported | identical to upstream (one shared function) |
-| `bot.openEnchantmentTable(b)` | inventory | `bot.open_enchantment_table(b).await` | pending | — |
-| `bot.openAnvil(b)` | inventory | `bot.open_anvil(b).await` | pending | — |
-| `bot.openVillager(e)` | inventory | `bot.open_villager(e).await` | pending | 'ready' event; merchant offers need bridge |
-| `bot.trade(villager, idx, times?)` | inventory | `villager.trade(idx, count).await` | pending | s_select_trade + click choreography |
-| `bot.writeBook(slot, pages)` | inventory | `bot.write_book(slot, pages).await` | pending | s_edit_book exists upstream |
-| `bot.signBook(slot,pages,author,title) (undoc)` | inventory | `bot.sign_book(..).await` | pending | — |
-| `bot.setCommandBlock(pos, cmd, opts)` | inventory | `bot.set_command_block(..)` | pending | — |
+| `bot.openEnchantmentTable(b)` | inventory | `bot.open_enchantment_table(b).await` | ported | `enchanting_table` name check before opening, then `enchantment` menu-kind check |
+| `bot.openAnvil(b)` | inventory | `bot.open_anvil(b).await` | ported | `anvil` menu kind covers chipped/damaged like upstream's regex |
+| `bot.openVillager(e)` | inventory | `bot.open_villager(e).await` | ported | villager entity-kind check + `merchant` menu kind, waits `VillagerReady` (merchant_offers) before returning |
+| `bot.trade(villager, idx, times?)` | inventory | `bot.trade(&v, idx, count)` / `villager.trade(idx,count)` | ported | s_select_trade + updateSlot:0/1/2 waits + per-iteration putAway(2); `count: None` = all remaining uses; leftover inputs put back |
+| `bot.writeBook(slot, pages)` | inventory | `bot.write_book(slot, pages).await` | ported | s_edit_book; non-hotbar books move to slot 36 + wait slot echoes like upstream's _syncWindow; bounded ack wait for the slot update |
+| `bot.signBook(slot,pages,author,title) (undoc)` | inventory | `bot.sign_book(..).await` | diverges | same dance; `author` is accepted but unused — the server credits the signing player (upstream's packet path doesn't send it either) |
+| `bot.setCommandBlock(pos, cmd, opts)` | inventory | `bot.set_command_block(..)` | ported | creative + `command_block` name checks; azalea splits upstream's flag bitfield into track_output/conditional/automatic bools |
 | `bot.inventory` | inventory | `bot.inventory() -> Window` | ported | id-0 player window; reads `inventory_menu` directly so it stays live while a container is open (azalea's handle gating would return `None`) |
 | `bot.quickBarSlot` | inventory | `bot.quick_bar_slot() -> u8` | ported | — |
 | `bot.heldItem` | inventory | `bot.held_item() -> Option<Item>` | ported | — |
@@ -308,35 +308,35 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `window event 'open'` | inventory | `BotEvent::WindowOpen(Window)` | ported | window-level events are bot-level here (windows aren't emitter objects) |
 | `window event 'close'` | inventory | `BotEvent::WindowClose(Window)` | ported | — |
 | `window event 'updateSlot'` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | also emitted for `set_slot` container_id -2 (player-inventory applies upstream never saw — azalea applies them, so reporting is strictly truer) |
-| `Furnace class` | inventory | `struct Furnace` | pending | — |
-| `Furnace.fuel` | inventory | `furnace.fuel() -> f32` | pending | — |
-| `Furnace.progress` | inventory | `furnace.progress() -> f32` | pending | — |
-| `Furnace.takeInput()` | inventory | `furnace.take_input().await -> Item` | pending | — |
-| `Furnace.takeFuel()` | inventory | `furnace.take_fuel().await` | pending | — |
-| `Furnace.takeOutput()` | inventory | `furnace.take_output().await` | pending | — |
-| `Furnace.putInput(type,meta,count)` | inventory | `furnace.put_input(..).await` | pending | — |
-| `Furnace.putFuel(...)` | inventory | `furnace.put_fuel(..).await` | pending | — |
-| `Furnace.inputItem()` | inventory | `furnace.input_item() -> Item` | pending | — |
-| `Furnace.fuelItem()` | inventory | `furnace.fuel_item()` | pending | — |
-| `Furnace.outputItem()` | inventory | `furnace.output_item()` | pending | — |
-| `furnace event 'update'` | inventory | `FurnaceEvent::Update` | pending | — |
-| `EnchantmentTable class` | inventory | `struct EnchantmentTable` | pending | — |
-| `EnchantmentTable.xpseed` | inventory | `enchant.xpseed()` | pending | c_container_set_data; azalea stores generic data only |
-| `EnchantmentTable.enchantments` | inventory | `enchant.enchantments() -> [Option<Enchant>;3]` | pending | — |
-| `EnchantmentTable.targetItem()` | inventory | `enchant.target_item()` | pending | — |
-| `EnchantmentTable.enchant(choice)` | inventory | `enchant.enchant(0..2).await` | pending | s_container_button_click |
-| `EnchantmentTable.takeTargetItem()` | inventory | `enchant.take_target_item().await` | pending | — |
-| `EnchantmentTable.putTargetItem(item)` | inventory | `enchant.put_target_item(..).await` | pending | — |
-| `EnchantmentTable.putLapis(item)` | inventory | `enchant.put_lapis(..).await` | pending | — |
-| `enchant event 'ready'` | inventory | `EnchantmentEvent::Ready` | pending | — |
-| `Anvil class` | inventory | `struct Anvil` | pending | not a Window subclass upstream |
-| `Anvil.combine(a,b,name?)` | inventory | `anvil.combine(..).await` | pending | click choreography + s_rename_item |
-| `Anvil.rename(item,name) (undoc)` | inventory | `anvil.rename(..).await` | pending | — |
-| `Villager class` | inventory | `struct Villager` | pending | Merchant menu; offers need c_merchant_offers bridge |
-| `Villager.trades` | inventory | `villager.trades() -> &[VillagerTrade]` | pending | — |
-| `Villager.selectedTrade` | inventory | `villager.selected_trade()` | pending | — |
-| `Villager.trade(index,count?)` | inventory | `villager.trade(idx,count).await` | pending | — |
-| `villager event 'ready'` | inventory | `VillagerEvent::Ready` | pending | — |
+| `Furnace class` | inventory | `struct Furnace` (Deref → Window) | ported | — |
+| `Furnace.fuel` | inventory | `furnace.fuel() -> f32` | ported | `fuelSeconds()`/`progressSeconds()` too; 0 until the data slots arrive like upstream's null guards |
+| `Furnace.progress` | inventory | `furnace.progress() -> f32` | ported | — |
+| `Furnace.takeInput()` | inventory | `furnace.take_input().await -> Item` | ported | — |
+| `Furnace.takeFuel()` | inventory | `furnace.take_fuel().await` | ported | — |
+| `Furnace.takeOutput()` | inventory | `furnace.take_output().await` | ported | — |
+| `Furnace.putInput(type,meta,count)` | inventory | `furnace.put_input(..).await` | ported | `count: None` = 1 like upstream's `?? 1` |
+| `Furnace.putFuel(...)` | inventory | `furnace.put_fuel(..).await` | ported | — |
+| `Furnace.inputItem()` | inventory | `furnace.input_item() -> Item` | ported | — |
+| `Furnace.fuelItem()` | inventory | `furnace.fuel_item()` | ported | — |
+| `Furnace.outputItem()` | inventory | `furnace.output_item()` | ported | — |
+| `furnace event 'update'` | inventory | `BotEvent::FurnaceUpdate{window_id}` | diverges | bot-level event (windows aren't emitters); fires per container_set_data on furnace-kind windows; raw `WindowDataUpdate` also emitted |
+| `EnchantmentTable class` | inventory | `struct EnchantmentTable` (Deref → Window) | ported | — |
+| `EnchantmentTable.xpseed` | inventory | `enchant.xpseed()` | ported | -1 until property 3 arrives |
+| `EnchantmentTable.enchantments` | inventory | `enchant.enchantments() -> [EnchantmentOption;3]` | diverges | `{level, expected}`; the clue id resolves through the server's dynamic registry to an `EnchantmentKey` (upstream exposes the raw int) |
+| `EnchantmentTable.targetItem()` | inventory | `enchant.target_item()` | ported | — |
+| `EnchantmentTable.enchant(choice)` | inventory | `enchant.enchant(0..2).await` | ported | s_container_button_click after the ready gate; resolves the new slot-0 item |
+| `EnchantmentTable.takeTargetItem()` | inventory | `enchant.take_target_item().await` | ported | — |
+| `EnchantmentTable.putTargetItem(item)` | inventory | `enchant.put_target_item(..).await` | ported | — |
+| `EnchantmentTable.putLapis(item)` | inventory | `enchant.put_lapis(..).await` | ported | — |
+| `enchant event 'ready'` | inventory | `BotEvent::EnchantmentTableReady{window_id}` | diverges | bot-level, edge-triggered when all 3 level costs are known; unlatches on -1 like upstream |
+| `Anvil class` | inventory | `struct Anvil` (Deref → Window) | ported | `repair_cost()` exposes container_set_data prop 0 |
+| `Anvil.combine(a,b,name?)` | inventory | `anvil.combine(..).await` | diverges | same click choreography + s_rename_item prefix sends, but order/xp are checked from the *server-reported* cost (azalea has no client-side `Item.anvil`); tries the swapped order when the first isn't affordable |
+| `Anvil.rename(item,name) (undoc)` | inventory | `anvil.rename(..).await` | diverges | as combine — server-reported cost; creative skips the xp wait (upstream waits unconditionally) |
+| `Villager class` | inventory | `struct Villager` (Deref → Window) | ported | Merchant menu |
+| `Villager.trades` | inventory | `villager.trades() -> Vec<VillagerTrade>` | ported | decoded merchant_offers incl. realPrice formula |
+| `Villager.selectedTrade` | inventory | `villager.selected_trade()` | ported | — |
+| `Villager.trade(index,count?)` | inventory | `villager.trade(idx,count).await` | ported | — |
+| `villager event 'ready'` | inventory | `BotEvent::VillagerReady{window_id}` | diverges | bot-level, once per window on first merchant_offers |
 | `event('windowOpen')` | inventory | `BotEvent::WindowOpen(Window)` | ported | emitted on first `container_set_content` after `open_screen`, upstream's `setWindowItems` gate |
 | `event('windowClose')` | inventory | `BotEvent::WindowClose(Window)` | ported | client + server closes, once each |
 | `event('heldItemChanged')` | inventory | `BotEvent::HeldItemChanged(Option<Item>)` | ported | emitted on set_held_slot / inventory updateSlot / setQuickBarSlot like upstream |

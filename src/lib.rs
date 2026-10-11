@@ -21,6 +21,7 @@ pub mod movement;
 pub mod pathfinder;
 pub mod scoreboard;
 pub mod state;
+pub mod window_types;
 pub mod windows;
 pub mod world;
 
@@ -45,6 +46,10 @@ pub use misc::{
 };
 pub use pathfinder::{Goal, Movements, Pathfinder};
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
+pub use window_types::{
+    Anvil, CommandBlockMode, CommandBlockOpts, EnchantmentOption, EnchantmentTable,
+    ExpectedEnchant, Furnace, Villager, VillagerTrade,
+};
 pub use windows::{Chest, Dispenser, Item, Window};
 pub use world::{
     Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
