@@ -99,10 +99,10 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot._warn(...)` | lifecycle | `n/a` | wontfix | n/a — tracing/logging, not an API |
 | `bot._getDimensionName() (internal)` | lifecycle | `bot.dimension() -> Option<WorldName>` | ported | upstream internal helper reads `bot.game.dimension`; ours is the public `dimension()` getter (WorldName = the dimension identifier) |
 | `event('inject_allowed')` | lifecycle | `BotEvent::Init` | ported | azalea Event::Init analog; the first `bot.events()` receiver is subscribed before the bridge starts, so an Init queued during `connect` can't be missed |
-| `event('login')` | lifecycle | `BotEvent::Login` | ported | — |
-| `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | first azalea Spawn |
-| `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | synthesized: emitted before every `Spawn` after the first |
-| `event('connect') (undoc)` | lifecycle | `BotEvent::Connected` | diverges | upstream fires on raw socket connect (pre-login); azalea surfaces no socket-level event — emitted right before the first `Login` (earliest wire-up proof), once per connection |
+| `event('login')` | lifecycle | `BotEvent::Login` | diverges | azalea `Event::Login` fires once per entity lifetime (never refires in 0.16) — a mid-session `ClientboundLogin` (proxy/config-cycle relogin) does not re-emit it; upstream emits per login packet |
+| `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | initial `Event::Spawn`; post-respawn 'spawn' from the first `c_set_health` with health > 0 while dead — upstream's `isAlive` re-arm (azalea Spawn never refires in 0.16) |
+| `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | emitted per `c_respawn` packet — death respawn and dimension change alike, like upstream's `respawn` packet handler |
+| `event('connect') (undoc)` | lifecycle | `BotEvent::Connected` | diverges | upstream fires on raw socket connect (pre-login); azalea surfaces no socket-level event — emitted right before the first `Login` (earliest wire-up proof), once per connection (azalea Login is also once-only, so the edge is exactly once) |
 | `event('kicked')` | lifecycle | `BotEvent::Kicked(String)` | diverges | azalea folds kick into `Disconnect(reason)`; we emit Kicked then End; no loggedIn flag |
 | `event('end')` | lifecycle | `BotEvent::End(String)` | ported | exactly-once; reason = quit arg / kick / 'socketClosed' |
 | `event('error')` | lifecycle | `BotEvent::Error(String)` | ported | currently: connection failures only |
@@ -231,7 +231,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('playerCollect')` | entity | `BotEvent::PlayerCollect{collector,collected}` | ported | c_take_item_entity |
 | `event('playerJoined')` | entity | `BotEvent::PlayerJoined(PlayerInfo)` | ported | first AddPlayer per uuid (a re-add is `PlayerUpdated`, like upstream's `bot.players` membership check) |
 | `event('playerUpdated')` | entity | `BotEvent::PlayerUpdated(PlayerInfo)` | ported | updates for never-added uuids are dropped |
-| `event('playerLeft')` | entity | `BotEvent::PlayerLeft(PlayerInfo)` | ported | drops removes for unknown uuids and for the bot's own entry; membership cleared on Login like upstream |
+| `event('playerLeft')` | entity | `BotEvent::PlayerLeft(PlayerInfo)` | ported | drops removes for unknown uuids and for the bot's own entry (self check runs before the membership delete, like upstream); membership cleared on the `c_login` packet like upstream's `bot.players = {}` |
 | `event('usedFirework')` | entity | `BotEvent::UsedFirework(MinecraftEntityId)` | diverges | payload is the firework entity id; upstream passes the raw id too |
 
 ## Movement / physics / controls
@@ -473,7 +473,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.experience.points` | state | `bot.experience() -> Experience { total, .. }` | ported | named `total` in azalea |
 | `bot.experience.progress` | state | `bot.experience() -> Experience { progress, .. }` | ported | azalea Experience component |
 | `event('health')` | state | `BotEvent::Health` | ported | emitted per `set_health` packet |
-| `event('death')` | state | `BotEvent::Death` | ported | once per life like upstream's `isAlive` edge — azalea raises Event::Death twice per vanilla death (player_combat_kill + health==0); deduped, re-armed on Spawn (payload packet dropped) |
+| `event('death')` | state | `BotEvent::Death` | ported | once per life like upstream's `isAlive` edge — azalea raises Event::Death twice per vanilla death (player_combat_kill + health==0); deduped, set again by `c_respawn`, re-armed by `c_set_health` health > 0 (payload packet dropped) |
 | `event('breath')` | state | `BotEvent::Breath` | ported | AirSupply tick diff |
 | `event('experience')` | state | `BotEvent::Experience` | ported | emitted per `set_experience` packet |
 | `event('spawnReset')` | state | `BotEvent::SpawnReset` | ported | `game_event` NoRespawnBlockAvailable |
