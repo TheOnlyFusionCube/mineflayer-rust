@@ -181,6 +181,112 @@ pub struct TabList {
     pub footer: FormattedText,
 }
 
+/// `ChatMessage` (prismarine-chat) — a chat component with upstream's
+/// accessors: `toString`/`toAnsi`/`toHtml`, `text`/`translate`/`with`/`extra`,
+/// `ChatMessage.fromNotch`.
+///
+/// A thin wrapper over azalea's [`FormattedText`] (`inner` is upstream's
+/// `.json` — the parsed component). `Display`/`to_ansi`/`to_html` render it;
+/// translatable components resolve through the bundled en_us strings
+/// (azalea-language), the same default upstream's `toString()` uses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChatMessage {
+    /// The parsed component (upstream's `.json`).
+    pub inner: FormattedText,
+}
+
+impl ChatMessage {
+    /// `new ChatMessage(component)` — wrap an already-parsed component.
+    /// Chat packets arrive as `FormattedText`, so `ChatMessage::from(packet.message())`
+    /// is the common path.
+    pub fn new(inner: impl Into<FormattedText>) -> Self {
+        Self {
+            inner: inner.into(),
+        }
+    }
+
+    /// `new ChatMessage(json)` — parse raw chat JSON (a string, object, or
+    /// array form), like upstream's constructor.
+    pub fn parse(json: &str) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_str::<FormattedText>(json).map(Self::new)
+    }
+
+    /// `ChatMessage.fromNotch(str)` — parse a legacy `§`-coded string.
+    pub fn from_notch(text: &str) -> Self {
+        Self::new(azalea_chat::text_component::legacy_color_code_to_text_component(text))
+    }
+
+    /// `msg.toAnsi()` — the plain-text render with ANSI style escapes.
+    pub fn to_ansi(&self) -> String {
+        self.inner.to_ansi()
+    }
+
+    /// `msg.toHtml()`.
+    pub fn to_html(&self) -> String {
+        self.inner.to_html()
+    }
+
+    /// `msg.text` — the literal text, when this is a text component.
+    pub fn text(&self) -> Option<&str> {
+        match &self.inner {
+            FormattedText::Text(c) => Some(&c.text),
+            _ => None,
+        }
+    }
+
+    /// `msg.translate` — the translation key, when this is a translatable
+    /// component.
+    pub fn translate(&self) -> Option<&str> {
+        match &self.inner {
+            FormattedText::Translatable(c) => Some(&c.key),
+            _ => None,
+        }
+    }
+
+    /// `msg.with` — the translation arguments, when translatable.
+    pub fn with(&self) -> Option<&[azalea_chat::translatable_component::PrimitiveOrComponent]> {
+        match &self.inner {
+            FormattedText::Translatable(c) => Some(&c.args),
+            _ => None,
+        }
+    }
+
+    /// `msg.extra` — the sibling components.
+    pub fn extra(&self) -> &[FormattedText] {
+        &self.inner.get_base().siblings
+    }
+
+    /// `msg`'s style — upstream's `color`/`bold`/`clickEvent`/`hoverEvent`
+    /// fields all live on azalea's `Style`.
+    pub fn style(&self) -> &azalea_chat::style::Style {
+        &self.inner.get_base().style
+    }
+
+    /// Unwrap into the azalea [`FormattedText`].
+    pub fn into_inner(self) -> FormattedText {
+        self.inner
+    }
+}
+
+impl From<FormattedText> for ChatMessage {
+    fn from(inner: FormattedText) -> Self {
+        Self::new(inner)
+    }
+}
+impl From<ChatMessage> for FormattedText {
+    fn from(msg: ChatMessage) -> Self {
+        msg.inner
+    }
+}
+/// `msg.toString()` — plain text (translatable components rendered through
+/// en_us, upstream's default language argument). `to_string` comes from
+/// [`ToString`], like upstream's method.
+impl std::fmt::Display for ChatMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
 /// A single registered pattern set and its in-flight match progress —
 /// upstream's `_patterns[ix]` entry.
 #[derive(Debug)]
@@ -861,5 +967,36 @@ mod tests {
         });
         assert_eq!(shared.tablist.header.to_string(), "h");
         assert_eq!(shared.tablist.footer.to_string(), "f");
+    }
+
+    #[test]
+    fn chat_message_parses_json_and_accessors() {
+        // text + extra: upstream `new ChatMessage({text, extra})`
+        let msg =
+            ChatMessage::parse(r#"{"text":"hi","extra":[{"text":"!"},{"text":"?"}]}"#).unwrap();
+        assert_eq!(msg.to_string(), "hi!?");
+        assert_eq!(msg.text(), Some("hi"));
+        assert_eq!(msg.extra().len(), 2);
+
+        // bare strings parse as text components (upstream does the same)
+        let msg = ChatMessage::parse("\"plain\"").unwrap();
+        assert_eq!(msg.to_string(), "plain");
+
+        // translatable: key + args, rendered through en_us like upstream's
+        // default toString()
+        let msg = ChatMessage::parse(r#"{"translate":"chat.type.text","with":["faye","hello"]}"#)
+            .unwrap();
+        assert_eq!(msg.translate(), Some("chat.type.text"));
+        assert_eq!(msg.with().map(|a| a.len()), Some(2));
+        assert_eq!(msg.to_string(), "<faye> hello");
+        assert!(msg.text().is_none());
+    }
+
+    #[test]
+    fn chat_message_from_notch_parses_section_codes() {
+        let msg = ChatMessage::from_notch("§bhi§r!");
+        assert_eq!(msg.to_string(), "hi!");
+        // §b styles the run — the ansi render carries escape codes
+        assert_ne!(msg.to_ansi(), msg.to_string());
     }
 }

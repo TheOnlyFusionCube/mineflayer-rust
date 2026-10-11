@@ -14,7 +14,7 @@ use std::{
 
 use azalea::{
     EntityRef, Event, FormattedText, Vec3,
-    core::{difficulty::Difficulty, entity_id::MinecraftEntityId},
+    core::{difficulty::Difficulty, direction::Direction, entity_id::MinecraftEntityId},
     ecs::{
         entity::Entity,
         query::{QueryFilter, With},
@@ -24,7 +24,8 @@ use azalea::{
         MobEffectData, Physics, Pose, Position,
         indexing::EntityIdIndex,
         metadata::{
-            AbstractEntityShiftKeyDown, AttachedToTarget, FallFlying, FireworksItem, SleepingPos,
+            AbstractEntityShiftKeyDown, AttachedToTarget, FallFlying, FireworksItem,
+            PaintingDirection, PaintingVariant, SleepingPos,
         },
     },
     inventory::{
@@ -91,6 +92,10 @@ pub(crate) struct EntityTracker {
     /// scaling. `None` until the server sends one (upstream's
     /// `bot.game.difficulty` is likewise only set after the game packet).
     difficulty: Option<Difficulty>,
+    /// Chat-signing keys per player uuid, from `c_player_info_update`'s
+    /// `initialize_chat` action — azalea's [`PlayerInfo`] drops the field
+    /// (`profileKeys` upstream).
+    chat_sessions: HashMap<uuid::Uuid, ProfileKeys>,
 }
 
 /// Last-seen metadata snapshot for edge detection (sleep isn't tracked —
@@ -385,6 +390,31 @@ impl EntityTracker {
                 self.difficulty = Some(p.difficulty);
                 vec![]
             }
+            PlayerInfoUpdate(p) => {
+                for entry in &p.entries {
+                    // upstream rebuilds the player object on add_player —
+                    // a re-add without chat keys clears them here too
+                    if p.actions.add_player {
+                        self.chat_sessions.remove(&entry.profile.uuid);
+                    }
+                    if let Some(session) = &entry.chat_session {
+                        self.chat_sessions.insert(
+                            entry.profile.uuid,
+                            ProfileKeys {
+                                public_key: session.profile_public_key.key.clone(),
+                                signature: session.profile_public_key.key_signature.clone(),
+                            },
+                        );
+                    }
+                }
+                vec![]
+            }
+            PlayerInfoRemove(p) => {
+                for uuid in &p.profile_ids {
+                    self.chat_sessions.remove(uuid);
+                }
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -561,14 +591,73 @@ fn entity_status_kind(event_id: u8) -> Option<StatusKind> {
 /// The mineflayer `Player` object — a tab-list entry plus its world entity.
 ///
 /// `info` is azalea's [`PlayerInfo`] (`profile.uuid`, `gamemode`, `latency`,
-/// `display_name`, chat session); `entity` is the player's in-world entity
-/// when it's spawned and loaded.
+/// `display_name`); `entity` is the player's in-world entity when it's
+/// spawned and loaded. `profile_keys` is the chat-signing key upstream
+/// exposes as `player.profileKeys` — azalea's `PlayerInfo` drops it, so the
+/// bridge tracks it off the `c_player_info_update` wire data.
 #[derive(Clone)]
 pub struct Player {
     /// The full tab-list entry.
     pub info: PlayerInfo,
     /// The player entity in the world, if spawned and loaded.
     pub entity: Option<EntityRef>,
+    /// `player.profileKeys` — the chat-signing public key the server sent
+    /// for this player, if any.
+    pub profile_keys: Option<ProfileKeys>,
+}
+
+/// `player.profileKeys` — the player's chat-signing public key and Mojang
+/// signature, decoded from the `initialize_chat` action of
+/// `c_player_info_update` (`RemoteChatSessionData.profile_public_key`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProfileKeys {
+    /// `profileKeys.publicKey` — the player's RSA public key (DER bytes).
+    pub public_key: Vec<u8>,
+    /// `profileKeys.signature` — Mojang's signature over the key.
+    pub signature: Vec<u8>,
+}
+
+/// `Painting` (module export) — upstream's `{id, position, name, direction}`
+/// wrapper, built from a painting entity's tracked metadata.
+///
+/// Upstream constructs it from the `spawn_entity_painting` packet, which no
+/// longer exists in mc26 — paintings arrive as regular entities
+/// (`EntityKind::Painting`) carrying `PaintingVariant`/`PaintingDirection`
+/// metadata. [`Painting::from_entity`] reads those components off any
+/// [`EntityRef`]; upstream's `block.painting`/paintings-by-position index
+/// isn't ported (enumerate `bot.entities()` and filter through
+/// `from_entity` instead).
+#[derive(Clone, Debug)]
+pub struct Painting {
+    /// `painting.id` — the protocol entity id.
+    pub id: MinecraftEntityId,
+    /// `painting.position`.
+    pub position: Vec3,
+    /// `painting.name` — the variant as its registry handle. Resolve the
+    /// title (`"kebab"`, `"pigscene"`, …) with
+    /// `azalea::Client::resolve_registry_key` →
+    /// `data::PaintingVariantKey`.
+    pub variant: azalea::registry::data::PaintingVariant,
+    /// `painting.direction` — the wall face the painting hangs on
+    /// (upstream stores the face's normal `Vec3`; azalea decodes the typed
+    /// [`Direction`]).
+    pub direction: Direction,
+}
+
+impl Painting {
+    /// Build from a painting [`EntityRef`]; `None` for any other entity
+    /// kind (or an unloaded one).
+    pub fn from_entity(entity: &EntityRef) -> Option<Painting> {
+        // `_ =` drops the lock guard at the statement (a `let`-binding
+        // would hold it for the rest of the function).
+        let _ = entity.get_component::<azalea::entity::metadata::Painting>()?;
+        Some(Painting {
+            id: *entity.get_component::<MinecraftEntityId>()?,
+            position: **entity.get_component::<Position>()?,
+            variant: entity.get_component::<PaintingVariant>()?.0,
+            direction: entity.get_component::<PaintingDirection>()?.0,
+        })
+    }
 }
 
 impl Player {
@@ -772,7 +861,21 @@ impl Bot {
             .into_iter()
             .map(|info| {
                 let entity = self.client.entity_by_uuid(info.uuid);
-                (info.profile.name.clone(), Player { info, entity })
+                let profile_keys = self
+                    .entities
+                    .read()
+                    .unwrap()
+                    .chat_sessions
+                    .get(&info.uuid)
+                    .cloned();
+                (
+                    info.profile.name.clone(),
+                    Player {
+                        info,
+                        entity,
+                        profile_keys,
+                    },
+                )
             })
             .collect()
     }
@@ -1372,5 +1475,181 @@ mod tests {
             action: AnimationAction::SwingMainHand,
         });
         assert!(observe_event(&tracker, &client, &Event::Packet(Arc::new(packet))).is_empty());
+    }
+
+    #[test]
+    fn painting_from_entity_reads_metadata() {
+        use azalea::registry::{DataRegistry as _, data::PaintingVariant as VariantKind};
+
+        let client = crate::test_util::live_entity_client(());
+        let e = client
+            .ecs
+            .write()
+            .spawn((
+                MinecraftEntityId(7),
+                Position::new(Vec3 {
+                    x: 1.,
+                    y: 2.,
+                    z: 3.,
+                }),
+                azalea::entity::metadata::Painting,
+                PaintingDirection(Direction::South),
+                PaintingVariant(VariantKind::new_raw(2)),
+            ))
+            .id();
+        let painting = Painting::from_entity(&client.entity_ref_for(e)).unwrap();
+        assert_eq!(painting.id, MinecraftEntityId(7));
+        assert_eq!(
+            painting.position,
+            Vec3 {
+                x: 1.,
+                y: 2.,
+                z: 3.
+            }
+        );
+        assert_eq!(painting.direction, Direction::South);
+        assert_eq!(painting.variant, VariantKind::new_raw(2));
+
+        // a non-painting entity yields None
+        let other = client.ecs.write().spawn(MinecraftEntityId(8)).id();
+        assert!(Painting::from_entity(&client.entity_ref_for(other)).is_none());
+    }
+
+    #[test]
+    fn profile_keys_tracked_from_player_info_update() {
+        use azalea::{
+            auth::game_profile::GameProfile,
+            protocol::packets::game::{
+                c_player_info_remove::ClientboundPlayerInfoRemove,
+                c_player_info_update::{
+                    ActionEnumSet, ClientboundPlayerInfoUpdate, PlayerInfoEntry,
+                },
+                s_chat_session_update::{ProfilePublicKeyData, RemoteChatSessionData},
+            },
+        };
+
+        let client = crate::test_util::despawned_client();
+        let mut tracker = EntityTracker::default();
+        let uuid = uuid::Uuid::from_u128(0x1234);
+        tracker.handle_packet(
+            &client,
+            &ClientboundGamePacket::PlayerInfoUpdate(ClientboundPlayerInfoUpdate {
+                actions: ActionEnumSet {
+                    add_player: true,
+                    initialize_chat: true,
+                    update_game_mode: true,
+                    update_listed: true,
+                    update_latency: true,
+                    update_display_name: false,
+                    update_list_order: false,
+                    update_hat: false,
+                },
+                entries: vec![PlayerInfoEntry {
+                    profile: GameProfile::new(uuid, "faye".into()),
+                    chat_session: Some(RemoteChatSessionData {
+                        session_id: uuid::Uuid::from_u128(0xbeef),
+                        profile_public_key: ProfilePublicKeyData {
+                            expires_at: 0,
+                            key: vec![1, 2, 3],
+                            key_signature: vec![4, 5],
+                        },
+                    }),
+                    ..Default::default()
+                }],
+            }),
+        );
+        assert_eq!(
+            tracker.chat_sessions.get(&uuid),
+            Some(&ProfileKeys {
+                public_key: vec![1, 2, 3],
+                signature: vec![4, 5],
+            })
+        );
+
+        // a re-add without a chat session clears the old key
+        tracker.handle_packet(
+            &client,
+            &ClientboundGamePacket::PlayerInfoUpdate(ClientboundPlayerInfoUpdate {
+                actions: ActionEnumSet {
+                    add_player: true,
+                    initialize_chat: false,
+                    update_game_mode: false,
+                    update_listed: false,
+                    update_latency: false,
+                    update_display_name: false,
+                    update_list_order: false,
+                    update_hat: false,
+                },
+                entries: vec![PlayerInfoEntry {
+                    profile: GameProfile::new(uuid, "faye".into()),
+                    ..Default::default()
+                }],
+            }),
+        );
+        assert!(tracker.chat_sessions.is_empty());
+
+        // re-add the key, then PlayerInfoRemove clears it
+        tracker.chat_sessions.insert(
+            uuid,
+            ProfileKeys {
+                public_key: vec![1],
+                signature: vec![2],
+            },
+        );
+        tracker.handle_packet(
+            &client,
+            &ClientboundGamePacket::PlayerInfoRemove(ClientboundPlayerInfoRemove {
+                profile_ids: vec![uuid],
+            }),
+        );
+        assert!(tracker.chat_sessions.is_empty());
+    }
+
+    #[test]
+    fn players_attaches_profile_keys() {
+        use azalea::{
+            auth::game_profile::GameProfile, core::game_type::GameMode, local_player::TabList,
+        };
+
+        let uuid = uuid::Uuid::from_u128(0x1234);
+        let mut tab = TabList::default();
+        tab.insert(
+            uuid,
+            PlayerInfo {
+                profile: GameProfile::new(uuid, "faye".into()),
+                uuid,
+                gamemode: GameMode::Survival,
+                latency: 12,
+                display_name: None,
+            },
+        );
+        let client = crate::test_util::live_entity_client(tab);
+        // `players()` resolves each uuid against `EntityUuidIndex`, a
+        // plugin-installed resource this bare ECS doesn't have.
+        client
+            .ecs
+            .write()
+            .init_resource::<azalea::entity::indexing::EntityUuidIndex>();
+        let mut bot = Bot::new(client);
+        let mut tracker = EntityTracker::default();
+        tracker.chat_sessions.insert(
+            uuid,
+            ProfileKeys {
+                public_key: vec![9],
+                signature: vec![8],
+            },
+        );
+        bot.entities = Arc::new(std::sync::RwLock::new(tracker));
+
+        let players = bot.players();
+        assert_eq!(
+            players["faye"].profile_keys,
+            Some(ProfileKeys {
+                public_key: vec![9],
+                signature: vec![8],
+            })
+        );
+        // players without a recorded session get None
+        assert!(players["faye"].entity.is_none());
     }
 }

@@ -157,6 +157,10 @@ struct BridgeState {
     /// Whether `End` has been emitted — dedupes disconnect signals so `end`
     /// fires exactly once, like upstream.
     ended: bool,
+    /// Whether `Connected` has been emitted — it precedes the *first*
+    /// `Login` only (upstream `connect` is once per socket; azalea `Login`
+    /// can refire on world switches).
+    connected: bool,
     /// Movement tracking for `move`/`mount`/`dismount` (U5).
     movement: crate::movement::MovementTracker,
     /// Chat-domain state shared with `Bot` (pattern registry, tablist,
@@ -175,7 +179,17 @@ fn translate(
 ) -> Vec<BotEvent> {
     match event {
         Event::Init => vec![BotEvent::Init],
-        Event::Login => vec![BotEvent::Login],
+        Event::Login => {
+            // upstream order: 'connect' (socket up) then 'login'. azalea has
+            // no socket-level event; the login packet is the earliest
+            // connection-live signal, so Connected rides ahead of it once.
+            if state.connected {
+                vec![BotEvent::Login]
+            } else {
+                state.connected = true;
+                vec![BotEvent::Connected, BotEvent::Login]
+            }
+        }
         Event::Spawn => {
             if state.seen_spawn {
                 vec![BotEvent::Respawn, BotEvent::Spawn]
@@ -294,7 +308,7 @@ mod tests {
         ));
         assert!(matches!(
             translate(&mut s, &qr, Event::Login)[..],
-            [BotEvent::Login]
+            [BotEvent::Connected, BotEvent::Login]
         ));
         assert!(matches!(
             translate(&mut s, &qr, Event::Tick)[..],
@@ -311,6 +325,22 @@ mod tests {
                 Event::ReceiveChunk(azalea::core::position::ChunkPos::new(1, 2))
             )[..],
             [BotEvent::ChunkColumnLoad(_)]
+        ));
+    }
+
+    #[test]
+    fn translate_connected_fires_once_before_first_login() {
+        let mut s = BridgeState::default();
+        let qr = Mutex::new(None);
+        // upstream 'connect' precedes 'login' and fires once per connection
+        assert!(matches!(
+            translate(&mut s, &qr, Event::Login)[..],
+            [BotEvent::Connected, BotEvent::Login]
+        ));
+        // world switches re-login; connect does not refire
+        assert!(matches!(
+            translate(&mut s, &qr, Event::Login)[..],
+            [BotEvent::Login]
         ));
     }
 
