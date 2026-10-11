@@ -98,7 +98,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot._client` | lifecycle | `bot.client() -> &azalea::Client` | ported | unstable upstream; public escape hatch here |
 | `bot._warn(...)` | lifecycle | `n/a` | wontfix | n/a — tracing/logging, not an API |
 | `bot._getDimensionName() (internal)` | lifecycle | `bot.dimension() -> Option<WorldName>` | ported | upstream internal helper reads `bot.game.dimension`; ours is the public `dimension()` getter (WorldName = the dimension identifier) |
-| `event('inject_allowed')` | lifecycle | `BotEvent::Init` | ported | azalea Event::Init analog |
+| `event('inject_allowed')` | lifecycle | `BotEvent::Init` | ported | azalea Event::Init analog; the first `bot.events()` receiver is subscribed before the bridge starts, so an Init queued during `connect` can't be missed |
 | `event('login')` | lifecycle | `BotEvent::Login` | ported | — |
 | `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | first azalea Spawn |
 | `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | synthesized: emitted before every `Spawn` after the first |
@@ -217,11 +217,11 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('entityEat')` | entity | `BotEvent::EntityEat(EntityRef)` | diverges | animate 3 is the off-hand swing in this protocol; upstream's eat mapping kept for parity |
 | `event('entityCriticalEffect')` | entity | `BotEvent::EntityCriticalEffect(EntityRef)` | ported | animate 4 |
 | `event('entityMagicCriticalEffect')` | entity | `BotEvent::EntityMagicCriticalEffect(EntityRef)` | ported | animate 5 |
-| `event('entityCrouch')` | entity | `BotEvent::EntityCrouch(EntityRef)` | ported | metadata shift-key edge detection |
-| `event('entityUncrouch')` | entity | `BotEvent::EntityUncrouch(EntityRef)` | ported | — |
+| `event('entityCrouch')` | entity | `BotEvent::EntityCrouch(EntityRef)` | ported | per packet carrying `shared_flags` with the sneak bit set (packet-content gating, like upstream) |
+| `event('entityUncrouch')` | entity | `BotEvent::EntityUncrouch(EntityRef)` | ported | flag packet with the sneak bit clear while previously crouched |
 | `event('entityEquip')` | entity | `BotEvent::EntityEquip(EntityRef)` | ported | c_set_equipment decoded ourselves (azalea logs-and-drops it) |
-| `event('entitySleep')` | entity | `BotEvent::EntitySleep(EntityRef)` | ported | pose/sleeping-pos metadata edge |
-| `event('entityElytraFlew')` | entity | `BotEvent::EntityElytraFlew(EntityRef)` | ported | fall-flying metadata edge |
+| `event('entitySleep')` | entity | `BotEvent::EntitySleep(EntityRef)` | ported | packet carrying `sleeping_pos` (idx 14, Some) or `pose` (idx 6) == Sleeping, like upstream |
+| `event('entityElytraFlew')` | entity | `BotEvent::EntityElytraFlew(EntityRef)` | ported | `shared_flags` fall-fly bit false→true edge |
 | `event('entityAttach')` | entity | `BotEvent::EntityAttach{entity,vehicle}` | diverges | driven by c_set_entity_link (leashes); upstream also uses attach_entity for riders — passengers tracked separately (Mounted/Dismounted) |
 | `event('entityDetach')` | entity | `BotEvent::EntityDetach{entity,vehicle}` | diverges | see entityAttach |
 | `event('entityEffect')` | entity | `BotEvent::EntityEffect{entity,effect,data}` | ported | c_update_mob_effect |
@@ -229,9 +229,9 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('entityPlaced') (undoc)` | entity | `BotEvent::EntityPlaced(EntityRef)` | ported | emitted by `place_entity` after the spawn packet |
 | `event('itemDrop')` | entity | `BotEvent::ItemDrop(EntityRef)` | ported | item-stack metadata entry, like upstream |
 | `event('playerCollect')` | entity | `BotEvent::PlayerCollect{collector,collected}` | ported | c_take_item_entity |
-| `event('playerJoined')` | entity | `BotEvent::PlayerJoined(PlayerInfo)` | ported | azalea Event::AddPlayer |
-| `event('playerUpdated')` | entity | `BotEvent::PlayerUpdated(PlayerInfo)` | ported | azalea Event::UpdatePlayer |
-| `event('playerLeft')` | entity | `BotEvent::PlayerLeft(PlayerInfo)` | ported | azalea Event::RemovePlayer |
+| `event('playerJoined')` | entity | `BotEvent::PlayerJoined(PlayerInfo)` | ported | first AddPlayer per uuid (a re-add is `PlayerUpdated`, like upstream's `bot.players` membership check) |
+| `event('playerUpdated')` | entity | `BotEvent::PlayerUpdated(PlayerInfo)` | ported | updates for never-added uuids are dropped |
+| `event('playerLeft')` | entity | `BotEvent::PlayerLeft(PlayerInfo)` | ported | drops removes for unknown uuids and for the bot's own entry; membership cleared on Login like upstream |
 | `event('usedFirework')` | entity | `BotEvent::UsedFirework(MinecraftEntityId)` | diverges | payload is the firework entity id; upstream passes the raw id too |
 
 ## Movement / physics / controls
@@ -340,7 +340,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Villager.trade(index,count?)` | inventory | `villager.trade(idx,count).await` | ported | — |
 | `villager event 'ready'` | inventory | `BotEvent::VillagerReady{window_id}` | diverges | bot-level, once per window on first merchant_offers |
 | `event('windowOpen')` | inventory | `BotEvent::WindowOpen(Window)` | ported | emitted on first `container_set_content` after `open_screen`, upstream's `setWindowItems` gate |
-| `event('windowClose')` | inventory | `BotEvent::WindowClose(Window)` | ported | client + server closes, once each |
+| `event('windowClose')` | inventory | `BotEvent::WindowClose(Window)` | diverges | client + server closes, once each; upstream also emits `windowClose(null)` on a close packet with no tracked window — the typed `Window` payload can't express null, so that event is skipped |
 | `event('heldItemChanged')` | inventory | `BotEvent::HeldItemChanged(Option<Item>)` | ported | emitted wherever upstream's `updateHeldItem()` runs — set_held_slot, every resolved `set_slot`/`window_items` incl. pending windows and `lastClosedWindow` remaps, setQuickBarSlot |
 | `bot._setSlot (internal)` | inventory | `windows::observe_event` | ported | folded into the bridge-side tracker (slot snapshots, old/new events, azalea-gap patches) |
 | `bot._syncWindow (internal)` | inventory | `azalea ContainerHandleRef::click` | ported | azalea tracks state_id internally |
@@ -473,7 +473,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.experience.points` | state | `bot.experience() -> Experience { total, .. }` | ported | named `total` in azalea |
 | `bot.experience.progress` | state | `bot.experience() -> Experience { progress, .. }` | ported | azalea Experience component |
 | `event('health')` | state | `BotEvent::Health` | ported | emitted per `set_health` packet |
-| `event('death')` | state | `BotEvent::Death` | ported | azalea Event::Death (payload packet dropped) |
+| `event('death')` | state | `BotEvent::Death` | ported | once per life like upstream's `isAlive` edge — azalea raises Event::Death twice per vanilla death (player_combat_kill + health==0); deduped, re-armed on Spawn (payload packet dropped) |
 | `event('breath')` | state | `BotEvent::Breath` | ported | AirSupply tick diff |
 | `event('experience')` | state | `BotEvent::Experience` | ported | emitted per `set_experience` packet |
 | `event('spawnReset')` | state | `BotEvent::SpawnReset` | ported | `game_event` NoRespawnBlockAvailable |
@@ -607,7 +607,7 @@ Public API beyond the upstream inventory — listed so the ledger stays complete
 
 | Rust API | domain | status | notes |
 |---|---|---|---|
-| `bot.events()` | lifecycle | additive | `broadcast::Receiver<BotEvent>` subscription — the `bot.on`/`once` mechanism every event row implies |
+| `bot.events()` | lifecycle | additive | `broadcast::Receiver<BotEvent>` subscription — the `bot.on`/`once` mechanism every event row implies. The first call returns a receiver subscribed before the event bridge started, so `Init`/other startup events are not lost; derived world/entity/window events are decoded inside the bridge's event loop, so they land in packet order and can't be dropped by a lagging consumer |
 | `bot.equip_kind(ItemKind, EquipDest)` | inventory | additive | the `equip(itemId, dest)` arm of upstream `equip`; the `bot.equip` row names only `equip(&Item, dest)` |
 | `bot.find_inventory_item(kind)` | inventory | additive | bot-level shortcut over `bot.inventory().find_item_range`; upstream's `window.findInventoryItem` is prismarine-windows internal |
 | `bot.equipment(entity)` | entity | additive | per-entity `EquipmentSlot -> ItemStack` map; no upstream analog (named inside the `Entity` row note) |

@@ -3,13 +3,10 @@
 //! point, difficulty) that azalea does not track and which is therefore
 //! recovered here from raw `ClientboundGamePacket`s.
 
-use std::{
-    collections::HashMap,
-    io::Cursor,
-    sync::{Arc, RwLock},
-};
+use std::{collections::HashMap, io::Cursor, sync::RwLock};
 
 use azalea::{
+    Event,
     block::{BlockState, BlockStates, BlockTrait},
     buf::AzBuf,
     core::{
@@ -30,7 +27,6 @@ use azalea::{
     registry::{DataRegistryKey, builtin::BlockKind, identifier::Identifier},
     world::{World, WorldName, find_blocks::find_blocks_in_chunk, iterators::ChunkIterator},
 };
-use tokio::sync::{broadcast, watch};
 
 use crate::{Bot, BotEvent, Error, Result};
 
@@ -432,8 +428,8 @@ pub struct Game {
     pub height: Option<u32>,
 }
 
-/// Facade-kept world/game state, fed by [`spawn_packet_bridge`]. Kept
-/// outside `WorldState` fields that azalea already owns (dimension,
+/// Facade-kept world/game state, fed by [`observe_event`] inside the
+/// bridge's event loop. Fields that azalea already owns (dimension,
 /// gamemode) are read live off the client instead.
 #[derive(Default)]
 pub(crate) struct WorldState {
@@ -931,9 +927,10 @@ fn chest_other_half_pos(
     Some(pos + offset)
 }
 
-/// Chest-lid dedup state (mineflayer's `openCountByPos`).
+/// Chest-lid dedup state (mineflayer's `openCountByPos`) — owned by the
+/// bridge task, one per connection.
 #[derive(Default)]
-struct LidCounts(HashMap<BlockPos, u8>);
+pub(crate) struct LidCounts(HashMap<BlockPos, u8>);
 
 impl LidCounts {
     /// Port of the upstream `openCountByPos` check: emit when the stored
@@ -951,50 +948,30 @@ impl LidCounts {
     }
 }
 
-/// Packet-translation task: mineflayer's `plugins/blocks.js` + `time.js` +
-/// `rain.js` + `game.js` state. Azalea drops or internalizes these
-/// packets, so we re-decode them off [`BotEvent::Packet`] and emit the
-/// world-domain [`BotEvent`]s.
+/// Feed one azalea [`Event`] into the world domain — the packet decode of
+/// mineflayer's `plugins/blocks.js` + `time.js` + `rain.js` + `game.js`.
+/// Azalea drops or internalizes these packets, so the bridge runs this
+/// synchronously on every event (same loop position as the entity and
+/// window observers): derived events keep packet order like upstream's
+/// in-handler emits, and nothing rides a second broadcast hop that could
+/// lag or drop.
 ///
-/// `shutdown` is the same receiver [`Bot::shutdown`] hands the drivers:
-/// if the bridge task dies while `Bot` handles live, no `End` is ever
-/// emitted and `rx` never closes — this arm keeps the task panic-proof.
-pub(crate) fn spawn_packet_bridge(
-    client: azalea::Client,
-    events: broadcast::Sender<BotEvent>,
-    state: Arc<RwLock<WorldState>>,
-    mut alive: watch::Receiver<()>,
-    mut shutdown: watch::Receiver<()>,
-) {
-    // Subscribe before spawning: broadcast subscribers only see events
-    // sent after they subscribe, and login-time packets (login, brand,
-    // set_time, spawn position) arrive while the task is still queued.
-    let mut rx = events.subscribe();
-    tokio::task::spawn_local(async move {
-        let _ = shutdown.borrow_and_update();
-        let mut lids = LidCounts::default();
-        loop {
-            let event = tokio::select! {
-                event = rx.recv() => match event {
-                    Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                },
-                _ = alive.changed() => break,
-                _ = shutdown.changed() => break,
-            };
-            match event {
-                BotEvent::End(_) => break,
-                BotEvent::Tick => state.write().unwrap().tick_clocks(),
-                BotEvent::Packet(packet) => {
-                    for event in decode_packet(&client, &state, &mut lids, &packet) {
-                        let _ = events.send(event);
-                    }
-                }
-                _ => {}
-            }
+/// `lids` is the bridge-kept `openCountByPos` dedup map — one per
+/// connection, like upstream's.
+pub(crate) fn observe_event(
+    state: &RwLock<WorldState>,
+    client: &azalea::Client,
+    lids: &mut LidCounts,
+    event: &Event,
+) -> Vec<BotEvent> {
+    match event {
+        Event::Tick => {
+            state.write().unwrap().tick_clocks();
+            vec![]
         }
-    });
+        Event::Packet(packet) => decode_packet(client, state, lids, packet),
+        _ => vec![],
+    }
 }
 
 fn decode_packet(
@@ -1148,6 +1125,8 @@ fn block_event(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use azalea::{
         block::BlockState,
         core::entity_id::MinecraftEntityId,
@@ -1550,6 +1529,69 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn observe_event_decodes_packets_in_call_order() {
+        use azalea::protocol::packets::game::{
+            c_forget_level_chunk::ClientboundForgetLevelChunk, c_game_event::ClientboundGameEvent,
+        };
+
+        let client = crate::test_util::despawned_client();
+        let state = RwLock::new(WorldState::default());
+        let mut lids = LidCounts::default();
+        let packet = |p| Event::Packet(Arc::new(p));
+
+        // The decode used to ride a second broadcast hop: events could land
+        // out of packet order and `Lagged` silently dropped them. Running
+        // inside the bridge's event loop makes the emission synchronous —
+        // this sequence is asserted in the order the packets arrived.
+        let out = observe_event(
+            &state,
+            &client,
+            &mut lids,
+            &packet(ClientboundGamePacket::ForgetLevelChunk(
+                ClientboundForgetLevelChunk {
+                    pos: ChunkPos::new(3, 4),
+                },
+            )),
+        );
+        assert!(matches!(&out[..], [BotEvent::ChunkUnload(_)]));
+        let out = observe_event(
+            &state,
+            &client,
+            &mut lids,
+            &packet(ClientboundGamePacket::GameEvent(ClientboundGameEvent {
+                event: EventType::StartRaining,
+                param: 0.,
+            })),
+        );
+        assert!(matches!(&out[..], [BotEvent::Rain]));
+        // state is updated by the same call, not a later task hop
+        assert!(state.read().unwrap().is_raining);
+    }
+
+    #[test]
+    fn observe_event_ticks_clocks_on_tick() {
+        let client = crate::test_util::despawned_client();
+        let state = RwLock::new(WorldState {
+            clocks: HashMap::from([(
+                Identifier::from("minecraft:overworld"),
+                ClockState {
+                    total_ticks: 100,
+                    partial_tick: 0.9,
+                    rate: 1.,
+                },
+            )]),
+            ..Default::default()
+        });
+        let mut lids = LidCounts::default();
+        assert!(observe_event(&state, &client, &mut lids, &Event::Tick).is_empty());
+        let clock = &state.read().unwrap().clocks[&Identifier::from("minecraft:overworld")];
+        assert_eq!(clock.total_ticks, 101);
+        assert!((clock.partial_tick - 0.9).abs() < f32::EPSILON);
+        // non-packet events decode to nothing
+        assert!(observe_event(&state, &client, &mut lids, &Event::Login).is_empty());
     }
 
     #[test]

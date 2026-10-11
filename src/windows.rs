@@ -826,7 +826,10 @@ pub(crate) fn observe_event(
             // arrived — drop it only if the close names the same id
             t.pending.take_if(|w| w.id == p.container_id);
             let Some(shared) = t.current.take() else {
-                // server acking our own close() — already emitted
+                // server acking our own close() — already emitted.
+                // upstream emits windowClose with `null` here; a typed
+                // `Window` payload can't express null, so the event is
+                // skipped — documented deviation in api-parity.md.
                 return Vec::new();
             };
             shared.closed.store(true, Ordering::SeqCst);
