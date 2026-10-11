@@ -19,6 +19,7 @@ use azalea::{
     entity::{
         ActiveEffects, EntityDataItem, EntityDataValue, EntityKindComponent, LookDirection,
         MobEffectData, Physics, Pose, Position,
+        indexing::EntityIdIndex,
         metadata::{
             AbstractEntityShiftKeyDown, AttachedToTarget, FallFlying, FireworksItem, SleepingPos,
         },
@@ -121,6 +122,29 @@ pub(crate) fn observe_event(
     }
 }
 
+/// [`Client::entity_id_by_minecraft_id`](azalea::Client::entity_id_by_minecraft_id)
+/// without the panic — azalea resolves the id by `query_self`-ing our own
+/// entity for `EntityIdIndex`, but teardown packets race the despawn of
+/// that entity.
+pub(crate) fn entity_id_by_minecraft_id(
+    client: &azalea::Client,
+    id: MinecraftEntityId,
+) -> Option<Entity> {
+    client
+        .try_query_self::<&EntityIdIndex, _>(|index| index.get_by_minecraft_entity(id))
+        .ok()
+        .flatten()
+}
+
+/// [`Client::entity_by_minecraft_id`](azalea::Client::entity_by_minecraft_id)
+/// without the panic — same despawn race as above.
+pub(crate) fn entity_by_minecraft_id(
+    client: &azalea::Client,
+    id: MinecraftEntityId,
+) -> Option<EntityRef> {
+    entity_id_by_minecraft_id(client, id).map(|e| client.entity_ref_for(e))
+}
+
 impl EntityTracker {
     fn clear(&mut self) {
         *self = EntityTracker::default();
@@ -129,7 +153,7 @@ impl EntityTracker {
     /// Resolve a protocol entity id to an [`EntityRef`], preferring the live
     /// ECS index and falling back to ids remembered before despawn.
     fn resolve(&mut self, client: &azalea::Client, id: MinecraftEntityId) -> Option<EntityRef> {
-        if let Some(entity) = client.entity_id_by_minecraft_id(id) {
+        if let Some(entity) = entity_id_by_minecraft_id(client, id) {
             self.known.insert(id, entity);
             return Some(client.entity_ref_for(entity));
         }
@@ -1309,8 +1333,6 @@ mod tests {
             id: MinecraftEntityId(1),
             action: AnimationAction::SwingMainHand,
         });
-        assert!(
-            observe_event(&tracker, &client, &Event::Packet(Arc::new(packet))).is_empty()
-        );
+        assert!(observe_event(&tracker, &client, &Event::Packet(Arc::new(packet))).is_empty());
     }
 }

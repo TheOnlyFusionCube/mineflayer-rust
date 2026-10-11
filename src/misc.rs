@@ -427,7 +427,7 @@ fn sound_event(
 }
 
 fn entity_position(client: &azalea::Client, id: MinecraftEntityId) -> Option<Vec3> {
-    let entity = client.entity_id_by_minecraft_id(id)?;
+    let entity = crate::entity::entity_id_by_minecraft_id(client, id)?;
     client
         .try_query_entity::<&Position, _>(entity, |p| **p)
         .ok()

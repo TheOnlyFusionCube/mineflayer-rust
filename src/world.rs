@@ -997,7 +997,7 @@ fn decode_packet(
             vec![BotEvent::BlockEntityData(p.clone())]
         }
         ClientboundGamePacket::BlockDestruction(p) => {
-            let entity = client.entity_by_minecraft_id(p.id);
+            let entity = crate::entity::entity_by_minecraft_id(client, p.id);
             let block = block_at(client, p.pos);
             if p.progress <= 9 {
                 vec![BotEvent::BlockBreakProgress {
