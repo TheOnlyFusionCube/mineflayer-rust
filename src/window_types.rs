@@ -7,8 +7,8 @@
 //! Upstream attaches per-window fields (furnace fuel, enchant options,
 //! trades) to the window object and updates them from packets azalea
 //! drops entirely (`container_set_data` = upstream `craft_progress_bar`,
-//! `merchant_offers` = upstream `trade_list`). [`WindowDataTracker`]
-//! decodes them per window id; [`observe_event`] runs in the bridge next
+//! `merchant_offers` = upstream `trade_list`). `WindowDataTracker`
+//! decodes them per window id; `observe_event` runs in the bridge next
 //! to `windows::observe_event` and emits the typed events
 //! ([`BotEvent::FurnaceUpdate`], [`BotEvent::EnchantmentTableReady`],
 //! [`BotEvent::VillagerReady`]) plus the generic
@@ -17,7 +17,7 @@
 //! Windows aren't event emitters here (same call U8 made): typed-window
 //! events are bot-level and carry the `window_id` they belong to.
 //!
-//! # Slot layouts (azalea [`Menu`] shapes, same as upstream)
+//! # Slot layouts (azalea [`Menu`](azalea::inventory::Menu) shapes, same as upstream)
 //!
 //! - Furnace/blast/smoker: `0` input, `1` fuel, `2` output.
 //! - Enchantment table: `0` target item, `1` lapis.

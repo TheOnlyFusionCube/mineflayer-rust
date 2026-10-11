@@ -2,7 +2,7 @@
 //! length splitting, chat patterns (`chat:{name}` events), `await_message`,
 //! `tab_complete`, and the tab-list header/footer.
 //!
-//! Incoming messages are normalized by [`ChatShared::message_events`], which
+//! Incoming messages are normalized by `ChatShared::message_events`, which
 //! the bridge calls for every chat packet and for the dedicated action-bar
 //! packet (azalea drops `c_set_action_bar_text`; upstream routes game_info
 //! text through `message`/`messagestr`/`actionBar`, so we synthesize an

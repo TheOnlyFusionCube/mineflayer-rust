@@ -439,7 +439,7 @@ impl Bot {
     }
 
     /// `bot.transfer(options)` — move items between slot ranges with the
-    /// upstream click choreography (see [`transfer`]).
+    /// upstream click choreography (see `transfer`).
     pub async fn transfer(&self, options: TransferOpts) -> Result<()> {
         let window = options
             .window

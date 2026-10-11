@@ -6,6 +6,18 @@
 //! underneath. The unit of truth for API coverage is `docs/api-parity.md`;
 //! every public mineflayer API is tracked there as `pending`, `ported`,
 //! `diverges`, or `wontfix`.
+//!
+//! Domain modules — each an `impl Bot` block mirroring a mineflayer docs
+//! section: [`chat`] (chat/whisper/patterns/tablist), [`world`] (blocks,
+//! raycasts, signs, time, weather), [`entity`] (entities, players, combat),
+//! [`movement`] (control states, look, physics reads), [`interact`]
+//! (dig/place/activate), [`pathfinder`] (goals and movements), [`inventory`]
+//! (items, equip, transfer, openers), [`windows`] (`Window`/`Item`),
+//! [`window_types`] (furnace/enchant/anvil/villager/book/command block),
+//! [`craft`] (recipe book + crafting), [`misc`] (settings, bed, fish,
+//! creative, resource packs), [`scoreboard`] (objectives, teams, boss bars),
+//! [`state`] (health/food/experience/dimension reads). Runnable ports of
+//! upstream's examples live in `examples/` (`echo`, `digger`, `chest`).
 
 mod bot;
 mod bridge;

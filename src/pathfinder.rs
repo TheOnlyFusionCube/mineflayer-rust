@@ -9,7 +9,7 @@
 //! the goal stands — the same recovery loop upstream drives by re-running
 //! A* after `path_reset`, so mid-path fixes come free. Facade bookkeeping
 //! azalea has no slot for (the [`Goal`] enum the user set, `dynamic`,
-//! `Movements`, watcher cancellation) lives in the [`PathfinderFacade`] ECS
+//! `Movements`, watcher cancellation) lives in the `PathfinderFacade` ECS
 //! component on the client entity.
 //!
 //! Events are a tick-aligned diff of the `Pathfinder`/`ExecutingPath`/

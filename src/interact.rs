@@ -2,7 +2,7 @@
 //! placing entities (`lib/plugins/digging.js`, `place_block.js`,
 //! `generic_place.js`, `place_entity.js`, `inventory.js#activateBlock`).
 //!
-//! azalea owns the wire mechanics: [`Client::mine`]-equivalent start +
+//! azalea owns the wire mechanics: `Client::mine`-equivalent start +
 //! `Mining`/`MiningQueued` components, `ServerboundUseItemOn` for block
 //! interactions, and the mine-progress formula behind `dig_time`. This module
 //! layers the mineflayer contract on top:
@@ -15,7 +15,7 @@
 //!   resolving, then emit `blockPlaced`/`entityPlaced`.
 //! - `activate_block` sends the right-click interaction (which doubles as a
 //!   placement trigger, exactly like upstream).
-//! - [`InteractShared`] holds the bookkeeping upstream keeps in JS-side
+//! - `InteractShared` holds the bookkeeping upstream keeps in JS-side
 //!   state (`lastDigTime`, abort coordination); azalea's `Mining` component
 //!   is the `targetDigBlock`/`targetDigFace` source of truth.
 

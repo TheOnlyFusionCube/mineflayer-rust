@@ -3,7 +3,7 @@
 //! scoreboard module.
 //!
 //! azalea stores none of this data (scores, teams, boss bars, pending
-//! resource packs, …), so [`MiscState`] is kept as an ECS component on the
+//! resource packs, …), so `MiscState` is kept as an ECS component on the
 //! bot entity: the bridge writes it from decoded packets, `Bot` methods
 //! read it.
 

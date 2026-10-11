@@ -3,7 +3,7 @@
 //!
 //! Entity *state* lives in azalea's ECS (tracked by its `EntityPlugin`); this
 //! module only adds what azalea doesn't expose: packet-driven entity events
-//! ([`BotEvent`] variants decoded in [`observe_event`]), tracked side state
+//! ([`BotEvent`] variants decoded in `observe_event`), tracked side state
 //! that isn't in the ECS (equipment, raw attributes, vehicles), and the
 //! `bot.*` method surface.
 

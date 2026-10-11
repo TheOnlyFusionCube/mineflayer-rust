@@ -171,7 +171,10 @@ impl Block {
         }
     }
 
-    /// `block.name` — e.g. `"grass_block"`.
+    /// `block.name` — e.g. `"minecraft:grass_block"`. Diverges from
+    /// upstream, whose `block.name` strips the namespace
+    /// (`"grass_block"`); compare with [`crate::Item::name`], which
+    /// does strip it.
     pub fn name(&self) -> &'static str {
         self.state.as_block_kind().to_str()
     }
@@ -741,7 +744,7 @@ impl Bot {
 
     /// `bot.canSeeBlock(block)` — ray from the eyes to the block's
     /// center; the first block upstream's matcher accepts must be the
-    /// target (see [`can_see_accepts`]).
+    /// target (see `can_see_accepts`).
     pub fn can_see_block(&self, block: &Block) -> bool {
         let (Some(eye), Some(world)) = (self.eye_pos(), self.world()) else {
             return false;

@@ -3,9 +3,9 @@
 //! `bot.bossBars` surface.
 //!
 //! azalea stores none of this; everything here is facade-kept state on
-//! [`crate::misc::MiscState`], fed by `c_set_objective` / `c_set_score` /
+//! `crate::misc::MiscState`, fed by `c_set_objective` / `c_set_score` /
 //! `c_reset_score` / `c_set_display_objective` / `c_set_player_team` /
-//! `c_boss_event` packets decoded in [`handle`].
+//! `c_boss_event` packets decoded in `handle`.
 
 use std::collections::{HashMap, HashSet};
 

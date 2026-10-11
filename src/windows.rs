@@ -29,12 +29,12 @@
 //!
 //! # Events
 //!
-//! The bridge calls [`observe_event`] for every azalea event. It decodes
+//! The bridge calls `observe_event` for every azalea event. It decodes
 //! the container packets azalea doesn't lift into `Event`s (open/close/
 //! set-content/set-slot/held-slot/cooldown) into
 //! [`BotEvent::WindowOpen`], [`BotEvent::WindowClose`],
 //! [`BotEvent::WindowUpdateSlot`] and [`BotEvent::HeldItemChanged`], keeps
-//! [`WindowTracker`] current, and patches the two azalea gaps that matter
+//! `WindowTracker` current, and patches the two azalea gaps that matter
 //! for parity: `container_set_content`'s `carried_item` (azalea ignores
 //! it, so the cursor would desync) and `c_set_player_inventory` (azalea
 //! drops the packet entirely).
@@ -301,7 +301,7 @@ impl Window {
         self.shared.title.clone()
     }
 
-    /// Whether this window is still open (a fresh [`Bot::inventory`]
+    /// Whether this window is still open (a fresh [`crate::Bot::inventory`]
     /// window is always open — the player inventory can't be closed
     /// server-side).
     pub fn is_open(&self) -> bool {
@@ -310,7 +310,7 @@ impl Window {
 
     /// The live [`Menu`], or `None` if the window is closed (the menu is
     /// a clone of ECS state; writes to it do nothing — use clicks).
-    /// Always resolves for id 0 — see [`menu_for_id`].
+    /// Always resolves for id 0 — see `menu_for_id`.
     pub fn menu(&self) -> Option<Menu> {
         let inv = self.shared.client.get_component::<Inventory>()?;
         menu_for_id(&inv, self.shared.id)
@@ -481,7 +481,7 @@ impl Window {
 
     /// `window.close()` — copy the window's player region back into the
     /// inventory model (upstream `copyInventory`), send `container_close`,
-    /// clear [`Bot::current_window`] if it's this window, and emit
+    /// clear [`crate::Bot::current_window`] if it's this window, and emit
     /// [`BotEvent::WindowClose`] exactly once. Idempotent.
     ///
     /// For the player inventory (id 0) this is a client-side no-op —

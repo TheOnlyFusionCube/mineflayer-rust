@@ -4,9 +4,9 @@
 //!
 //! Upstream reads a static minecraft-data table; this port reads the
 //! server's own recipe book: mc26 sends `c_recipe_book_add` with full
-//! [`RecipeDisplayEntry`]s (shape, per-slot alternatives, result) as
+//! `RecipeDisplayEntry`s (shape, per-slot alternatives, result) as
 //! recipes unlock, and `c_recipe_book_remove` retracts them. The bridge
-//! records both into [`RecipeBook`]; `recipes_for`/`recipes_all` convert
+//! records both into `RecipeBook`; `recipes_for`/`recipes_all` convert
 //! the crafting displays into [`Recipe`]s. The book only contains what
 //! the server has unlocked — a fresh vanilla join knows one recipe
 //! (crafting table) and learns more as the inventory changes.

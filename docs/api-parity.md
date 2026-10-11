@@ -32,7 +32,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
 | `Vec3 (prismarine)` | module | `azalea::Vec3 (re-export)` | pending | azalea_core::position::Vec3 |
 | `Entity (prismarine-entity)` | module | `azalea::EntityRef` + `EntityExt` trait | diverges | EntityExt covers look/velocity/onGround/username/skin only; uuid/kind/attributes/effects/metadata need raw `get_component`, equipment needs `bot.equipment` |
-| `Block (prismarine-block)` | module | `mineflayer::world::Block { pos, state, world }` | diverges | name/kind/state_id/bounding_box/diggable/property/behavior ported; no blockEntity/getSignText (azalea has no block-entity storage — U11) |
+| `Block (prismarine-block)` | module | `mineflayer::world::Block { pos, state, world }` | diverges | name/kind/state_id/bounding_box/diggable/property/behavior ported; `name()` is namespaced (`"minecraft:gravel"`, upstream `"gravel"` — exposed by examples/digger.rs; `Item::name` does strip); no blockEntity/getSignText (azalea has no block-entity storage — U11) |
 | `Biome (prismarine-biome)` | module | `azalea::registry Biome` | pending | — |
 | `Item (prismarine-item)` | module | `mineflayer::Item { stack, slot }` | ported | kind/name/display_name/count/metadata/durability/component_patch + same_item; empty stack → `None` like upstream `null`; slot -1 = cursor |
 | `Recipe (prismarine-recipe)` | module | `craft::Recipe` (+ `Ingredient`/`RecipeItem`/`RecipeResult`/`DeltaEntry`) | diverges | fields ported; ingredients model tag alternatives as `any_of` sets instead of per-kind recipe expansion |
