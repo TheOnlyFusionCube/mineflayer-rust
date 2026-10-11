@@ -24,7 +24,7 @@ use crate::{Bot, BotEvent, Error, Result};
 
 /// Upstream's `CHAT_LENGTH_LIMIT` for >=1.11 (`options.chatLengthLimit`
 /// default; azalea targets mc26 so the pre-1.11 100-char limit never applies).
-const CHAT_LENGTH_LIMIT: usize = 256;
+pub(crate) const CHAT_LENGTH_LIMIT: usize = 256;
 
 /// Upstream's default `awaitMessage` / `tabComplete` timeout behavior
 /// (20s for awaitMessage, 5s for tabComplete).
@@ -310,7 +310,7 @@ impl ChatPatterns {
 /// `Bot` is `Arc<Mutex<..>>` rather than purely a handle: `add_chat_pattern`
 /// on any `Bot` clone must reach the matcher that runs inside the bridge,
 /// and `tab_complete` replies arrive there too.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ChatShared {
     patterns: ChatPatterns,
     tablist: TabList,
@@ -318,6 +318,26 @@ pub(crate) struct ChatShared {
     /// a transaction id the server echoes in `c_command_suggestions`.
     next_completion_id: u32,
     completion_pending: HashMap<u32, oneshot::Sender<Vec<String>>>,
+    /// `options.defaultChatPatterns` — upstream's flag controls the legacy
+    /// `chat`/`whisper` pattern registration; here it gates
+    /// [`BotEvent::Whisper`], the `is_whisper`-derived stand-in for the
+    /// whisper patterns (`BotEvent::Chat` is the raw packet stream and is
+    /// already a documented divergence from upstream's pattern-sourced
+    /// `chat` event).
+    pub(crate) default_chat_patterns: bool,
+}
+
+impl Default for ChatShared {
+    /// `options.defaultChatPatterns` defaults to `true` upstream.
+    fn default() -> Self {
+        Self {
+            patterns: ChatPatterns::default(),
+            tablist: TabList::default(),
+            next_completion_id: 0,
+            completion_pending: HashMap::new(),
+            default_chat_patterns: true,
+        }
+    }
 }
 
 impl ChatShared {
@@ -368,7 +388,7 @@ impl ChatShared {
                 packet: packet.clone(),
             },
         ];
-        if packet.is_whisper() {
+        if packet.is_whisper() && self.default_chat_patterns {
             out.push(BotEvent::Whisper(packet.clone()));
         }
         out.extend(self.patterns.handle_message(&message));
@@ -407,14 +427,13 @@ impl ChatShared {
 /// Split `message` for sending with a `header` prefix — upstream's
 /// `chatWithHeader`. Commands (leading `/`, empty header) pass through
 /// unsplit; everything else is split on newlines (empty lines dropped) and
-/// chunked so each part — header included — fits the chat limit.
-fn split_chat_message(header: &str, message: &str) -> Vec<String> {
+/// chunked so each part — header included — fits `limit`
+/// (`options.chatLengthLimit`, default [`CHAT_LENGTH_LIMIT`]).
+fn split_chat_message(header: &str, message: &str, limit: usize) -> Vec<String> {
     if header.is_empty() && message.starts_with('/') {
         return vec![message.to_string()];
     }
-    let limit = CHAT_LENGTH_LIMIT
-        .saturating_sub(header.chars().count())
-        .max(1);
+    let limit = limit.saturating_sub(header.chars().count()).max(1);
     let mut out = Vec::new();
     for sub in message.split('\n') {
         if sub.is_empty() {
@@ -454,7 +473,9 @@ async fn await_message_on(
 impl Bot {
     /// `bot.chat(message)` — send a chat message, or a command when it starts
     /// with `/`. Long messages and `\n` newlines are split into multiple
-    /// sends like upstream (256-char limit, commands never split).
+    /// sends like upstream (256-char limit by default —
+    /// `options.chatLengthLimit` via [`crate::BotBuilder::chat_length_limit`];
+    /// commands never split).
     ///
     /// Errors when not in-game, matching upstream throwing before `login` or
     /// after an early disconnect.
@@ -474,7 +495,7 @@ impl Bot {
         if !self.logged_in() {
             return Err(Error::NotConnected);
         }
-        for part in split_chat_message(header, message) {
+        for part in split_chat_message(header, message, self.chat_length_limit) {
             if part.starts_with('/') {
                 // commands go through azalea's command path (leading `/`
                 // stripped into a signed command packet)
@@ -591,30 +612,33 @@ mod tests {
 
     #[test]
     fn split_short_message() {
-        assert_eq!(split_chat_message("", "hello"), vec!["hello"]);
+        assert_eq!(
+            split_chat_message("", "hello", CHAT_LENGTH_LIMIT),
+            vec!["hello"]
+        );
     }
 
     #[test]
     fn split_command_never_splits() {
         let cmd = format!("/{}", "x".repeat(300));
-        assert_eq!(split_chat_message("", &cmd), vec![cmd]);
+        assert_eq!(split_chat_message("", &cmd, CHAT_LENGTH_LIMIT), vec![cmd]);
     }
 
     #[test]
     fn split_long_message() {
         let msg = "x".repeat(300);
-        let parts = split_chat_message("", &msg);
+        let parts = split_chat_message("", &msg, CHAT_LENGTH_LIMIT);
         assert_eq!(parts, vec!["x".repeat(256), "x".repeat(44)]);
     }
 
     #[test]
     fn split_boundary_exactly_limit() {
         assert_eq!(
-            split_chat_message("", &"x".repeat(256)),
+            split_chat_message("", &"x".repeat(256), CHAT_LENGTH_LIMIT),
             vec!["x".repeat(256)]
         );
         assert_eq!(
-            split_chat_message("", &"x".repeat(257)),
+            split_chat_message("", &"x".repeat(257), CHAT_LENGTH_LIMIT),
             vec!["x".repeat(256), "x".to_string()]
         );
     }
@@ -622,17 +646,51 @@ mod tests {
     #[test]
     fn split_skips_empty_lines() {
         assert_eq!(
-            split_chat_message("", "a\n\nb\n"),
+            split_chat_message("", "a\n\nb\n", CHAT_LENGTH_LIMIT),
             vec!["a".to_string(), "b".to_string()]
         );
-        assert!(split_chat_message("", "").is_empty());
+        assert!(split_chat_message("", "", CHAT_LENGTH_LIMIT).is_empty());
+    }
+
+    #[test]
+    fn split_respects_custom_chat_length_limit() {
+        // options.chatLengthLimit: a 100-char message at limit 30 splits 4x
+        let msg = "x".repeat(100);
+        let parts = split_chat_message("", &msg, 30);
+        assert_eq!(
+            parts,
+            vec![
+                "x".repeat(30),
+                "x".repeat(30),
+                "x".repeat(30),
+                "x".repeat(10)
+            ]
+        );
+        // the header counts against the custom limit too
+        let parts = split_chat_message("/tell bot ", &"y".repeat(15), 12);
+        assert_eq!(
+            parts,
+            vec![
+                format!("/tell bot {}", "y".repeat(2)),
+                format!("/tell bot {}", "y".repeat(2)),
+                format!("/tell bot {}", "y".repeat(2)),
+                format!("/tell bot {}", "y".repeat(2)),
+                format!("/tell bot {}", "y".repeat(2)),
+                format!("/tell bot {}", "y".repeat(2)),
+                format!("/tell bot {}", "y".repeat(2)),
+                "/tell bot y".to_string(),
+            ]
+        );
+        // commands still never split
+        let cmd = format!("/{}", "x".repeat(50));
+        assert_eq!(split_chat_message("", &cmd, 10), vec![cmd]);
     }
 
     #[test]
     fn split_with_header_counts_against_limit() {
         // "/tell u2bot " is 12 chars -> 244 per chunk
         let msg = "x".repeat(300);
-        let parts = split_chat_message("/tell u2bot ", &msg);
+        let parts = split_chat_message("/tell u2bot ", &msg, CHAT_LENGTH_LIMIT);
         assert_eq!(
             parts,
             vec![
@@ -801,6 +859,26 @@ mod tests {
             events.iter().any(|e| matches!(e, BotEvent::Whisper(_))),
             "whisper text should emit BotEvent::Whisper: {events:?}"
         );
+    }
+
+    #[test]
+    fn message_events_whisper_gated_by_default_chat_patterns() {
+        // options.defaultChatPatterns: false — upstream never registers the
+        // legacy whisper patterns, so no whisper event; message/messagestr
+        // still fire (they come from packet listeners, not patterns).
+        let mut shared = ChatShared {
+            default_chat_patterns: false,
+            ..ChatShared::default()
+        };
+        let events = shared.message_events(&ChatPacket::new("bob whispers: psst"));
+        assert!(
+            !events.iter().any(|e| matches!(e, BotEvent::Whisper(_))),
+            "defaultChatPatterns=false should suppress Whisper: {events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            BotEvent::MessageStr { message, .. } if message == "bob whispers: psst"
+        )));
     }
 
     #[test]

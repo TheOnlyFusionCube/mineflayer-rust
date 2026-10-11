@@ -51,30 +51,30 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.auth` | lifecycle | `BotBuilder::auth(Auth)` | ported | `Auth::{Offline, Microsoft, Account}` |
 | `options.clientToken` | lifecycle | `n/a` | wontfix | n/a — generated inside Account; no upstream hook |
 | `options.accessToken` | lifecycle | `Auth::Account(Account::with_microsoft_access_token(..))` | ported | prebuilt account passthrough |
-| `options.logErrors` | lifecycle | `BotOptions::log_errors` | pending | — |
-| `options.hideErrors` | lifecycle | `BotOptions::hide_errors` | pending | — |
+| `options.logErrors` | lifecycle | `n/a` | wontfix | no logging facade in the dep set — errors surface only as `BotEvent::Error` (upstream's `logErrors:false` state, permanently) |
+| `options.hideErrors` | lifecycle | `n/a` | wontfix | same — nothing is ever printed to console; `_warn` has no analog |
 | `options.keepAlive` | lifecycle | `n/a` | wontfix | n/a — azalea owns keepalive; `Event::KeepAlive` dropped by the bridge |
-| `options.checkTimeoutInterval` | lifecycle | `BotOptions::check_timeout_interval` | pending | — |
+| `options.checkTimeoutInterval` | lifecycle | `BotBuilder::check_timeout_interval(Duration)` | ported | keepalive watchdog in the bridge: armed/re-armed per `Event::KeepAlive` like upstream's per-keepalive `setTimeout`; on expiry emits `BotEvent::Error("client timed out after N milliseconds")` then disconnects → `End("keepAliveError")`; default 30s |
 | `options.loadInternalPlugins` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `options.storageBuilder` | lifecycle | `n/a` | wontfix | n/a — anvil provider out of scope |
 | `options.client` | lifecycle | `Bot::new(client)` | ported | doc-hidden escape hatch; no event bridge on prebuilt clients |
-| `options.brand` | lifecycle | `ClientInformation brand field` | pending | — |
+| `options.brand` | lifecycle | `BotBuilder::brand(impl Into<String>)` | ported | `minecraft:brand` custom payload sent on `Event::Login` — upstream's login-packet timing; azalea also sends `"vanilla"` during config phase, and the server keeps the last brand received, so ours wins |
 | `options.respawn` | lifecycle | `n/a` | diverges | azalea auto-respawns unconditionally; no toggle exposed |
 | `options.plugins` | lifecycle | `n/a` | wontfix | no runtime plugin loader — compile-time plugin model (same as `loadInternalPlugins`/`loadPlugin*`/`hasPlugin`) |
-| `options.physicsEnabled` | lifecycle | `BotOptions::physics_enabled` | pending | — |
-| `options.chat (settings passthrough)` | lifecycle | `BotOptions -> ClientInformation` | pending | — |
-| `options.colorsEnabled` | lifecycle | `ClientInformation::chat_colors` | pending | — |
+| `options.physicsEnabled` | lifecycle | `n/a` | wontfix | azalea's PhysicsPlugin is baked into `Client::join`'s default plugins — no disable seam; `bot.physics_enabled()` reports always-true |
+| `options.chat (settings passthrough)` | lifecycle | `BotBuilder::chat(ChatVisibility)` | ported | `'enabled'`/`'commandsOnly'`/`'disabled'` → `ChatVisibility::Full`/`System`/`Hidden`; merged into the `ClientInformation` sent on Init |
+| `options.colorsEnabled` | lifecycle | `BotBuilder::colors_enabled(bool)` | ported | → `ClientInformation::chat_colors` on Init |
 | `options.viewDistance` | lifecycle | `BotBuilder::view_distance(u8)` | ported | applied on `Event::Init` so login already carries it |
-| `options.difficulty` | lifecycle | `ClientInformation (no difficulty field upstream)` | pending | stored setting only; server-authoritative |
-| `options.skinParts` | lifecycle | `ClientInformation::model_customization` | pending | — |
-| `options.enableTextFiltering` | lifecycle | `ClientInformation::text_filtering_enabled` | pending | — |
-| `options.enableServerListing` | lifecycle | `ClientInformation::allows_listing` | pending | — |
-| `options.particleStatus` | lifecycle | `ClientInformation::particle_status` | pending | — |
-| `options.chatLengthLimit` | lifecycle | `BotOptions::chat_length_limit` | pending | — |
-| `options.defaultChatPatterns` | lifecycle | `BotOptions::default_chat_patterns` | pending | — |
-| `options.mainHand` | lifecycle | `ClientInformation::main_hand` | pending | typed-only in mineflayer |
-| `options.maxCatchupTicks` | lifecycle | `BotOptions::max_catchup_ticks` | pending | typed-only in mineflayer |
-| `options ClientOptions passthrough` | lifecycle | `JoinOpts (proxies, custom addr)` | pending | realms/profilesFolder/session/connect/agent/stream |
+| `options.difficulty` | lifecycle | `BotBuilder::difficulty(u8)` | ported | stored client-side (`MiscState.difficulty`, default 2) → `bot.settings().difficulty`; never sent, server-authoritative — same as upstream |
+| `options.skinParts` | lifecycle | `BotBuilder::skin_parts(ModelCustomization)` | ported | → `ClientInformation::model_customization` on Init |
+| `options.enableTextFiltering` | lifecycle | `BotBuilder::enable_text_filtering(bool)` | ported | → `ClientInformation::text_filtering_enabled` on Init |
+| `options.enableServerListing` | lifecycle | `BotBuilder::enable_server_listing(bool)` | diverges | upstream's initializer is `options.enableServerListing \|\| true` — the flag is dead and the packet always sends `true`; ours applies the flag, default unset = azalea's `false` |
+| `options.particleStatus` | lifecycle | `BotBuilder::particle_status(ParticleStatus)` | diverges | upstream parses the option but hardcodes `'all'` into `bot.settings` — the option is ignored, `'all'` goes on the wire; ours lands the option on the wire |
+| `options.chatLengthLimit` | lifecycle | `BotBuilder::chat_length_limit(usize)` | ported | `chat`/`whisper` split at the limit (default 256); counts Unicode scalar `chars` like the rest of this port, not upstream's UTF-16 `substring` |
+| `options.defaultChatPatterns` | lifecycle | `BotBuilder::default_chat_patterns(bool)` | diverges | `false` suppresses `BotEvent::Whisper` (the `is_whisper` heuristic standing in for upstream's deprecated default whisper patterns); `BotEvent::Chat` stays — it's the raw packet stream, already `diverges`, not a pattern product |
+| `options.mainHand` | lifecycle | `BotBuilder::main_hand(HumanoidArm)` | ported | → `ClientInformation::main_hand` on Init |
+| `options.maxCatchupTicks` | lifecycle | `n/a` | wontfix | upstream bounds its own physics catch-up loop; azalea-physics advances once per game tick — no catch-up accumulator exists to bound |
+| `options ClientOptions passthrough` | lifecycle | `BotBuilder::proxy(Proxy)` | diverges | SOCKS5 proxy via azalea's `join_with_proxy` covers `agent`; `realms`/`profilesFolder`/`session`/`stream`/`connect`-callback have no azalea join hook — those remain wontfix per-knob |
 
 Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregate — the compile-time-plugin rows above and `bot.loadPlugin`/`loadPlugins`/`hasPlugin` in lifecycle cover them; there are no per-plugin rows by design.
 

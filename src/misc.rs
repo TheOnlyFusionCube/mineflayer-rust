@@ -433,6 +433,7 @@ fn entity_position(client: &azalea::Client, id: MinecraftEntityId) -> Option<Vec
         .ok()
 }
 
+pub use azalea::entity::HumanoidArm;
 pub use azalea::protocol::common::client_information::{
     ChatVisibility, ModelCustomization, ParticleStatus,
 };
@@ -469,7 +470,7 @@ impl Default for Settings {
     /// azalea's `ClientInformation` defaults plus upstream's `difficulty: 2`.
     ///
     /// Divergence: azalea's own defaults differ from upstream's in two
-    /// fields (`view_distance` 8 vs `normal`=10; `allows_listing` false vs
+    /// fields (`view_distance` 8 vs `far`=12; `allows_listing` false vs
     /// upstream's unconditional true).
     fn default() -> Self {
         ClientInformation::default().into()
