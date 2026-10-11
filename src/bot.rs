@@ -643,6 +643,29 @@ pub enum BotEvent {
     /// (explicit `stop`, target died/despawned). No payload, like
     /// upstream.
     StoppedAttacking,
+    /// mineflayer-auto-eat `eatStart` — the bot started eating `food`
+    /// (in the offhand when `offhand`). Upstream emits the sanitized
+    /// opts; ours carries the resolved food and hand. Upstream fires it
+    /// on `bot.autoEat`; plugin events ride the shared stream here, same
+    /// as the collect/pvp variants above.
+    EatStart {
+        /// The stack being eaten.
+        food: crate::windows::Item,
+        /// Whether the offhand is doing the eating.
+        offhand: bool,
+    },
+    /// mineflayer-auto-eat `eatFail` — the eat failed; `0` is the
+    /// upstream `Error`'s message.
+    EatFail(String),
+    /// mineflayer-auto-eat `eatFinish` — the eat attempt concluded.
+    /// Upstream emits it in `finally`, so it follows `EatFail` too —
+    /// it is a "stopped eating" signal, not a success signal.
+    EatFinish {
+        /// The stack that was eaten (or attempted).
+        food: crate::windows::Item,
+        /// Whether the offhand was doing the eating.
+        offhand: bool,
+    },
 }
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
