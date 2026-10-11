@@ -306,8 +306,10 @@ impl AutoEat<'_> {
     /// like upstream. After [`BotEvent::EatStart`] the eat resolves on
     /// the consume-finish signal, fails on [`AutoEat::cancel_eat`], a
     /// superseding [`Bot::consume`], or `eating_timeout`; failures emit
-    /// [`BotEvent::EatFail`] then [`BotEvent::EatFinish`] (upstream's
-    /// catch/finally) and return `Err` unless `strict_errors` is off.
+    /// [`BotEvent::EatFail`] only when `strict_errors` is off — upstream's
+    /// emit is dead code under the default `strictErrors: true` — while
+    /// [`BotEvent::EatFinish`] fires either way (upstream's `finally`),
+    /// and the call returns `Err` under `strict_errors`.
     pub async fn eat(&self, opts: EatOpts) -> Result<()> {
         let cancel = Arc::new(AtomicBool::new(false));
         match auto_eat_state_mut(&self.bot.client, |s| {
@@ -315,7 +317,6 @@ impl AutoEat<'_> {
                 return false;
             }
             s.is_eating = true;
-            s.eat_cancel = Some(cancel.clone());
             true
         }) {
             None => return Err(Error::NotConnected),
@@ -363,7 +364,7 @@ impl AutoEat<'_> {
 
     /// Everything between the `is_eating` claim and its release:
     /// resolve the food, equip it, activate, wait, restore, report.
-    async fn run_eat(&self, opts: EatOpts, cancel: &AtomicBool) -> Result<()> {
+    async fn run_eat(&self, opts: EatOpts, cancel: &Arc<AtomicBool>) -> Result<()> {
         let bot = self.bot;
         let (offhand, equip_old, priority, timeout, strict) = auto_eat_state(&bot.client, |s| {
             (
@@ -393,16 +394,12 @@ impl AutoEat<'_> {
         } else {
             EquipDest::Hand
         };
-        let previous = if offhand {
-            bot.inventory().slot(45)
-        } else {
-            bot.held_item()
-        };
+        let previous = self.hand_item(offhand);
         let switched = previous.as_ref().is_none_or(|p| p.slot != food.slot);
         if switched {
-            bot.equip(&food, dest)
-                .await
-                .map_err(|e| Error::Operation(format!("Failed to equip: {} ({e})", food.name())))?;
+            bot.equip(&food, dest).await.map_err(|e| {
+                Error::Operation(format!("Failed to equip: {}! ({e})", food.name()))
+            })?;
         }
 
         // register the finish waiter before activating, like
@@ -414,6 +411,10 @@ impl AutoEat<'_> {
             t.eat_notify.notify_waiters();
             (t.eat_generation, t.eat_notify.clone())
         };
+        // `eat_cancel` goes live with the wait — upstream's
+        // `_rejectionBinding` only exists during `buildEatingListener`,
+        // so a `cancel_eat` before this point is a silent no-op there too
+        auto_eat_state_mut(&bot.client, |s| s.eat_cancel = Some(cancel.clone()));
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
@@ -426,16 +427,36 @@ impl AutoEat<'_> {
             offhand,
         });
 
-        let outcome = if tokio::time::timeout(timeout, notified).await.is_err() {
-            Err(Error::Timeout)
-        } else if bot.windows.lock().unwrap().eat_generation == generation {
-            Ok(())
-        } else if cancel.load(atomic::Ordering::Relaxed) {
+        let outcome = if cancel.load(atomic::Ordering::Relaxed) {
+            // cancel landed between waiter registration and here — its
+            // notify_waiters fired before `enable()` and can't be caught
             Err(Error::Operation("Eating manually canceled!".into()))
+        } else if tokio::time::timeout(timeout, notified).await.is_err() {
+            Err(Error::Operation(format!(
+                "Eating timed out with a time of {} milliseconds!",
+                timeout.as_millis()
+            )))
+        } else if bot.windows.lock().unwrap().eat_generation != generation {
+            if cancel.load(atomic::Ordering::Relaxed) {
+                Err(Error::Operation("Eating manually canceled!".into()))
+            } else {
+                Err(Error::Operation(
+                    "Eating cancelled due to calling bot.consume() again".into(),
+                ))
+            }
         } else {
-            Err(Error::Operation(
-                "Eating cancelled due to calling bot.consume() again".into(),
-            ))
+            // the wake fired: upstream's itemListener rejects when the
+            // slot's item changed type mid-eat — an empty slot is a
+            // finished stack, not a switch. (Upstream appends
+            // `\nItem: ${newItem}` — JS prints "[object Object]", so the
+            // first line carries all the information.)
+            match self.hand_item(offhand) {
+                Some(held) if held.kind() != food.kind() => Err(Error::Operation(format!(
+                    "Item switched early to: {}!",
+                    held.name()
+                ))),
+                _ => Ok(()),
+            }
         };
 
         // upstream's finally: restore the previous item first, then
@@ -453,11 +474,33 @@ impl AutoEat<'_> {
                 Ok(())
             }
             Err(e) => {
-                bot.emit_event(BotEvent::EatFail(e.to_string()));
+                // upstream's `emit('eatFail')` sits AFTER the strictErrors
+                // throw in its catch — dead code under the default
+                // `strictErrors: true`; only non-strict callers see it
+                if !strict {
+                    bot.emit_event(BotEvent::EatFail(e.to_string()));
+                }
                 bot.emit_event(BotEvent::EatFinish { food, offhand });
                 if strict { Err(e) } else { Ok(()) }
             }
         }
+    }
+
+    /// Upstream `findBestChoices(items, priority)`: the edible,
+    /// non-banned items of `items`, sorted by `priority` descending.
+    /// Ties keep the earlier slot (upstream's sort is stable).
+    pub fn find_best_choices(&self, items: &[Item], priority: FoodPriority) -> Vec<Item> {
+        // `auto_eat_state` is read-only — fall back to the real defaults
+        // when no state component was ever inserted
+        let banned = auto_eat_state(&self.bot.client, |s| s.opts.banned_food.clone())
+            .unwrap_or_else(|| AutoEatOpts::default().banned_food);
+        let mut choices: Vec<(Item, f32)> = items
+            .iter()
+            .filter(|i| !banned.iter().any(|b| b == i.name()))
+            .filter_map(|i| Self::food_data(i.kind()).map(|f| (i.clone(), priority.score(&f))))
+            .collect();
+        choices.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        choices.into_iter().map(|(item, _)| item).collect()
     }
 
     /// Upstream `normalizeFoodChoice` + the `findBestChoices` fallback:
@@ -471,40 +514,45 @@ impl AutoEat<'_> {
     ) -> Option<Item> {
         let chosen = match selection {
             Some(FoodSelection::Item(item)) => Some(item.clone()),
-            Some(FoodSelection::Kind(kind)) => self.bot.find_inventory_item(*kind),
-            Some(FoodSelection::Name(name)) => self
-                .bot
-                .inventory()
-                .inventory_items()
-                .into_iter()
-                .find(|i| i.name() == name),
+            Some(FoodSelection::Kind(kind)) => {
+                self.food_items().into_iter().find(|i| i.kind() == *kind)
+            }
+            Some(FoodSelection::Name(name)) => {
+                self.food_items().into_iter().find(|i| i.name() == name)
+            }
             None => None,
         };
         chosen.or_else(|| self.best_food(priority))
     }
 
-    /// Upstream `findBestChoices(...)[0]`: non-banned real foods in the
-    /// player-inventory region, sorted by `priority` descending; ties
-    /// keep the earlier slot (upstream's sort is stable).
-    fn best_food(&self, priority: FoodPriority) -> Option<Item> {
-        // `auto_eat_state` is read-only — fall back to the real defaults
-        // when no state component was ever inserted
-        let banned = auto_eat_state(&self.bot.client, |s| s.opts.banned_food.clone())
-            .unwrap_or_else(|| AutoEatOpts::default().banned_food);
-        let mut best: Option<(Item, f32)> = None;
-        for item in self.bot.inventory().inventory_items() {
-            let Some(food) = Self::food_data(item.kind()) else {
-                continue;
-            };
-            if banned.iter().any(|b| b == item.name()) {
-                continue;
-            }
-            let score = priority.score(&food);
-            if best.as_ref().is_none_or(|(_, s)| score > *s) {
-                best = Some((item, score));
-            }
+    /// The upstream `getAllItems` scan region for food purposes: the
+    /// player-inventory region (9..45) plus the offhand slot 45 — armor
+    /// slots can't hold food, so upstream's armor coverage adds nothing.
+    fn food_items(&self) -> Vec<Item> {
+        let inventory = self.bot.inventory();
+        let mut items = inventory.inventory_items();
+        if let Some(offhand) = inventory.slot(45) {
+            items.push(offhand);
         }
-        best.map(|(item, _)| item)
+        items
+    }
+
+    /// The item in the hand this eat uses — slot 45 for `offhand`, the
+    /// held quickbar stack otherwise.
+    fn hand_item(&self, offhand: bool) -> Option<Item> {
+        if offhand {
+            self.bot.inventory().slot(45)
+        } else {
+            self.bot.held_item()
+        }
+    }
+
+    /// `find_best_choices` over the live inventory — upstream
+    /// `findBestChoices(getAllItems())[0]`.
+    fn best_food(&self, priority: FoodPriority) -> Option<Item> {
+        self.find_best_choices(&self.food_items(), priority)
+            .into_iter()
+            .next()
     }
 }
 
@@ -728,7 +776,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eat_timeout_emits_fail_then_finish_and_errors() {
+    async fn eat_timeout_errors_and_finishes_without_fail_under_strict() {
         let bot = eating_bot(&[(36, ItemKind::Apple)]);
         let mut opts = bot.auto_eat().opts();
         opts.eating_timeout = Duration::from_millis(50);
@@ -736,11 +784,14 @@ mod tests {
 
         let mut rx = bot.events();
         let err = bot.auto_eat().eat(EatOpts::default()).await.unwrap_err();
-        assert!(matches!(err, Error::Timeout));
+        // upstream's timeout Error message, verbatim
         assert_eq!(
-            auto_eat_events(&mut rx),
-            ["eatStart", "eatFail", "eatFinish"]
+            err.to_string(),
+            "Eating timed out with a time of 50 milliseconds!"
         );
+        // strict mode: the throw precedes upstream's eatFail emit —
+        // only eatFinish (the finally) is observable
+        assert_eq!(auto_eat_events(&mut rx), ["eatStart", "eatFinish"]);
     }
 
     #[tokio::test]
@@ -775,7 +826,8 @@ mod tests {
         bot.auto_eat().cancel_eat();
         let err = eating.await.unwrap().unwrap_err();
         assert_eq!(err.to_string(), "Eating manually canceled!");
-        assert_eq!(auto_eat_events(&mut rx), ["eatFail", "eatFinish"]);
+        // strict mode suppresses eatFail; the finally's eatFinish stays
+        assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
         assert!(!bot.auto_eat().is_eating());
 
         // no eat in flight → a silent no-op
@@ -816,10 +868,9 @@ mod tests {
 
         assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
         // the attempt then fails on the scaffold (no finish packet) —
-        // fail + finish still arrive
+        // strict mode suppresses eatFail but the finally's eatFinish arrives
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let seen = auto_eat_events(&mut rx);
-        assert!(seen.contains(&"eatFail") && seen.contains(&"eatFinish"));
+        assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
     }
 
     #[tokio::test]
@@ -917,5 +968,182 @@ mod tests {
             .await
             .expect("cancelled driver kept running")
             .unwrap();
+    }
+
+    /// An `Item` like `window.slot(i)` returns — `find_best_choices`
+    /// takes caller-built lists, upstream `findBestChoices(items, p)`.
+    fn slot_item(slot: i16, kind: ItemKind) -> Item {
+        Item::of(ItemStack::new(kind, 1), slot).unwrap()
+    }
+
+    #[test]
+    fn find_best_choices_sorts_by_priority_and_skips_banned() {
+        let bot = eating_bot(&[]);
+        let items = vec![
+            slot_item(9, ItemKind::Apple),
+            slot_item(10, ItemKind::CookedBeef),
+            slot_item(11, ItemKind::RottenFlesh), // banned by default
+            slot_item(12, ItemKind::Stone),       // not a food
+            slot_item(13, ItemKind::GoldenCarrot),
+        ];
+        let kinds = |priority: FoodPriority| -> Vec<ItemKind> {
+            bot.auto_eat()
+                .find_best_choices(&items, priority)
+                .iter()
+                .map(Item::kind)
+                .collect()
+        };
+        assert_eq!(
+            kinds(FoodPriority::FoodPoints),
+            [
+                ItemKind::CookedBeef,
+                ItemKind::GoldenCarrot,
+                ItemKind::Apple
+            ]
+        );
+        // the saturation ranking flips the carrot above the beef
+        assert_eq!(
+            kinds(FoodPriority::Saturation),
+            [
+                ItemKind::GoldenCarrot,
+                ItemKind::CookedBeef,
+                ItemKind::Apple
+            ]
+        );
+        // a caller-set banned list is honored too
+        let mut opts = bot.auto_eat().opts();
+        opts.banned_food.push("cooked_beef".into());
+        bot.auto_eat().set_opts(opts);
+        assert_eq!(
+            kinds(FoodPriority::FoodPoints),
+            [ItemKind::GoldenCarrot, ItemKind::Apple]
+        );
+    }
+
+    #[test]
+    fn offhand_slot_45_is_scanned_for_food() {
+        // upstream getAllItems covers the offhand — food only in slot
+        // 45 must be reachable by the fallback and explicit selection
+        let bot = eating_bot(&[(45, ItemKind::CookedBeef)]);
+        let auto_eat = bot.auto_eat();
+        assert_eq!(
+            auto_eat
+                .best_food(FoodPriority::FoodPoints)
+                .map(|i| (i.kind(), i.slot)),
+            Some((ItemKind::CookedBeef, 45))
+        );
+        assert_eq!(
+            auto_eat
+                .resolve_food(
+                    Some(&FoodSelection::Kind(ItemKind::CookedBeef)),
+                    FoodPriority::FoodPoints
+                )
+                .map(|i| i.slot),
+            Some(45)
+        );
+        assert_eq!(
+            auto_eat
+                .resolve_food(
+                    Some(&FoodSelection::Name("cooked_beef".into())),
+                    FoodPriority::FoodPoints
+                )
+                .map(|i| i.slot),
+            Some(45)
+        );
+    }
+
+    #[tokio::test]
+    async fn eat_offhand_uses_the_offhand_stack() {
+        // the canonical upstream case: `offhand: true` + food already in
+        // the offhand → activateItem(true) with nothing to equip
+        let bot = eating_bot(&[(45, ItemKind::Apple)]);
+        let mut opts = bot.auto_eat().opts();
+        opts.eating_timeout = Duration::from_millis(50);
+        bot.auto_eat().set_opts(opts);
+
+        let mut rx = bot.events();
+        let eating = tokio::spawn({
+            let bot = bot.clone();
+            async move {
+                bot.auto_eat()
+                    .eat(EatOpts {
+                        offhand: Some(true),
+                        ..EatOpts::default()
+                    })
+                    .await
+            }
+        });
+        let offhand = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let BotEvent::EatStart { offhand, .. } = rx.recv().await.unwrap() {
+                    break offhand;
+                }
+            }
+        })
+        .await
+        .expect("no EatStart within 5s");
+        assert!(offhand);
+        // the scaffold can't finish an eat — it times out
+        eating.await.unwrap().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn held_item_type_switch_fails_the_eat() {
+        // upstream itemListener: a different-kind stack landing in the
+        // food's slot mid-eat rejects `Item switched early to: <name>!`
+        // rather than counting as the consume-finish wake
+        let bot = eating_bot(&[(36, ItemKind::Apple)]);
+        let mut opts = bot.auto_eat().opts();
+        opts.eating_timeout = Duration::from_secs(5);
+        bot.auto_eat().set_opts(opts);
+
+        let mut rx = bot.events();
+        let eating = tokio::spawn({
+            let bot = bot.clone();
+            async move { bot.auto_eat().eat(EatOpts::default()).await }
+        });
+        assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
+
+        // swap the held stack for stone and fire the consume wake
+        {
+            let mut ecs = bot.client.ecs.write();
+            let mut inv = ecs.get_mut::<Inventory>(bot.client.entity).unwrap();
+            *inv.inventory_menu.slot_mut(36).unwrap() = ItemStack::new(ItemKind::Stone, 1);
+        }
+        bot.windows.lock().unwrap().eat_notify.notify_waiters();
+
+        let err = eating.await.unwrap().unwrap_err();
+        assert_eq!(err.to_string(), "Item switched early to: stone!");
+        // strict: eatFail stays unemitted, the finally's eatFinish fires
+        assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
+    }
+
+    #[tokio::test]
+    async fn superseding_consume_reports_distinctly() {
+        // a generation bump without the cancel flag — what a second
+        // consume() does — must not be mislabeled a manual cancellation
+        let bot = eating_bot(&[(36, ItemKind::Apple)]);
+        let mut opts = bot.auto_eat().opts();
+        opts.eating_timeout = Duration::from_secs(5);
+        bot.auto_eat().set_opts(opts);
+
+        let mut rx = bot.events();
+        let eating = tokio::spawn({
+            let bot = bot.clone();
+            async move { bot.auto_eat().eat(EatOpts::default()).await }
+        });
+        assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
+
+        {
+            let mut t = bot.windows.lock().unwrap();
+            t.eat_generation += 1;
+            t.eat_notify.notify_waiters();
+        }
+        let err = eating.await.unwrap().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Eating cancelled due to calling bot.consume() again"
+        );
+        assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
     }
 }
