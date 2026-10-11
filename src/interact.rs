@@ -708,14 +708,6 @@ impl Bot {
         )
     }
 
-    /// Currently held (non-empty) item.
-    fn held_item(&self) -> Option<azalea::inventory::ItemStack> {
-        self.client
-            .get_component::<Inventory>()
-            .map(|inv| inv.held_item().clone())
-            .filter(|item| item.is_present())
-    }
-
     /// Increment the action sequence like azalea's predicted interactions
     /// (`BlockStatePredictionHandler::start_predicting`); `0` pre-spawn.
     fn next_sequence(&self) -> u32 {

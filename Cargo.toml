@@ -65,3 +65,8 @@ required-features = ["live"]
 name = "live_pathfinder"
 path = "tests/live/pathfinder.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live-inventory"
+path = "tests/live/inventory.rs"
+required-features = ["live"]
