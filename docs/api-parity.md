@@ -1,7 +1,7 @@
 # mineflayer -> mineflayer-rs API parity table
 
 Binding spec: every public API row from `docs/surveys/mineflayer-api.md`, grouped by domain.
-Status ∈ `pending` (not ported), `ported`, `diverges` (intentional semantic difference), `wontfix`.
+Status ∈ `pending` (not ported), `ported`, `diverges` (intentional semantic difference), `wontfix`, `additive` (Rust surface beyond the upstream inventory).
 
 Global divergence (standing order 11): **azalea tracks a single MC version** (crates.io azalea `0.16.0+mc26.1` -> MC `26.1`).
 Every version-selection row is `diverges` — single-version, latest-only. Noted once here, not per row.
@@ -22,12 +22,12 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `testedVersions` | module | `n/a` | diverges | azalea tracks latest MC only (standing order 11); no multi-version list |
 | `latestSupportedVersion` | module | `const MC_VERSION: &str` | diverges | single-version: equals the azalea-targeted MC version |
 | `oldestSupportedVersion` | module | `n/a` | diverges | single-version: same as latest |
-| `supportFeature(feature, version)` | module | `pub fn support_feature(name) -> bool` | diverges | no version arg — answers for the single supported MC version |
+| `supportFeature(feature, version)` | module | `n/a` | wontfix | upstream feature-support lookup has no analog; not implemented |
 | `mcdata.blocks` | module | `azalea::registry / azalea::block` | pending | re-export azalea registry |
 | `mcdata.items` | module | `azalea::registry / azalea_inventory::item` | pending | re-export azalea registry |
 | `mcdata.materials` | module | `own lookup table (dig-speed materials)` | pending | minecraft-data 'materials' have no azalea analog; tool-speed data |
 | `mcdata.recipes` | module | recipe book bridge (`c_recipe_book_add`/`remove`) | diverges | book-scoped server-unlocked recipes, not a static mcdata table; tag ingredients resolve via azalea's static item tags; azalea's `ItemStack` slot display decodes kind/count swapped — un-swapped at conversion |
-| `mcdata.instruments` | module | `enum Instrument` | pending | note-block instruments |
+| `mcdata.instruments` | module | `enum Instrument` (misc.rs, re-exported) | ported | 16 note-block instruments; `From<u8>` action-id decode; used by `NoteHeard` |
 | `mcdata.biomes` | module | `azalea::registry::data / builtin::Biome` | pending | — |
 | `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
 | `Vec3 (prismarine)` | module | `azalea::Vec3 (re-export)` | pending | azalea_core::position::Vec3 |
@@ -60,7 +60,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.client` | lifecycle | `Bot::new(client)` | ported | doc-hidden escape hatch; no event bridge on prebuilt clients |
 | `options.brand` | lifecycle | `ClientInformation brand field` | pending | — |
 | `options.respawn` | lifecycle | `n/a` | diverges | azalea auto-respawns unconditionally; no toggle exposed |
-| `options.plugins` | lifecycle | `compile-time module set` | pending | no runtime plugin loader |
+| `options.plugins` | lifecycle | `n/a` | wontfix | no runtime plugin loader — compile-time plugin model (same as `loadInternalPlugins`/`loadPlugin*`/`hasPlugin`) |
 | `options.physicsEnabled` | lifecycle | `BotOptions::physics_enabled` | pending | — |
 | `options.chat (settings passthrough)` | lifecycle | `BotOptions -> ClientInformation` | pending | — |
 | `options.colorsEnabled` | lifecycle | `ClientInformation::chat_colors` | pending | — |
@@ -76,6 +76,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.maxCatchupTicks` | lifecycle | `BotOptions::max_catchup_ticks` | pending | typed-only in mineflayer |
 | `options ClientOptions passthrough` | lifecycle | `JoinOpts (proxies, custom addr)` | pending | realms/profilesFolder/session/connect/agent/stream |
 
+Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregate — the compile-time-plugin rows above and `bot.loadPlugin`/`loadPlugins`/`hasPlugin` in lifecycle cover them; there are no per-plugin rows by design.
+
 ## Bot lifecycle & core
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
@@ -87,7 +89,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.loadPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `bot.loadPlugins(plugins)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
 | `bot.hasPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
-| `bot.supportFeature(name)` | lifecycle | `bot.support_feature(name) -> bool` | diverges | single-version semantics (standing order 11) |
+| `bot.supportFeature(name)` | lifecycle | `n/a` | wontfix | upstream feature-support lookup has no analog; not implemented |
 | `bot.username` | lifecycle | `bot.username() -> String` | ported | GameProfileComponent name; '' before login |
 | `bot.version` | lifecycle | `bot.version() -> &'static str` | diverges | returns the single supported MC version (azalea mc26.1) |
 | `bot.protocolVersion` | lifecycle | `bot.protocol_version() -> i32` | ported | protocol number of the single supported version (775) |
@@ -173,7 +175,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.dismount()` | entity | `bot.dismount()` | diverges | sends shift-press player_input (the real dismount); upstream's `jump:true` literal looks like an upstream bug |
 | `bot.moveVehicle(left, fwd)` | entity | `bot.move_vehicle(left:i8, fwd:i8)` | diverges | sends raw player_input like upstream, but doesn't integrate with azalea's PhysicsState |
 | `bot.getExplosionDamages(e,pos,r,raw)` | entity | `bot.get_explosion_damages(..) -> Option<f32>` | diverges | exposure raycasts loaded chunks (Collider shapes); armor from tracked c_update_attributes → None when unknown, like upstream's null |
-| `bot.elytraFly()` | entity | `bot.elytra_fly() -> Result<()>` | diverges | same precondition errors; elytra-equipped check deferred to inventory unit |
+| `bot.elytraFly()` | entity | `bot.elytra_fly() -> Result<()>` | diverges | same precondition errors; upstream's elytra-equipped check is absent — the server rejects the packet without one |
 | `bot._playerFromUUID(uuid)` | entity | `bot.player_by_uuid(&str) -> Option<Player>` | ported | internal upstream; exposed for parity |
 | `bot.entity` | entity | `bot.entity() -> azalea::EntityRef` | ported | azalea Client::entity() |
 | `bot.entities` | entity | `bot.entities() -> HashMap<MinecraftEntityId, EntityRef>` | ported | keyed by protocol entity id like upstream's `{[id]: Entity}` |
@@ -394,6 +396,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `ScoreBoard.add(name,value)` | misc | `scoreboard.add(name, value)` | ported | — |
 | `ScoreBoard.remove(name)` | misc | `scoreboard.remove(&str)` | ported | — |
 | `Team fields` | misc | `team.{name,display_name,friendly_fire,see_friendly_invisibles,nametag_visibility,collision_rule,color,prefix,suffix,members}` | ported | color is `ChatFormatting` (Reset = none) |
+| `Team.memberMap` | misc | `n/a` | wontfix | upstream `membersMap` (typed `memberMap` in index.d.ts) maps name→`''` — internal bookkeeping only; the key set is ported as `team.members` |
 | `Team.parseMessage` | misc | `n/a` | diverges | upstream internal helper; packet reducer decodes directly |
 | `Team.add / remove / update` | misc | `n/a` | diverges | upstream internal helpers; state mutates via packets only |
 | `Team.displayName(member)` | misc | `team.member_display_name(member) -> FormattedText` | ported | prefix + colored member + suffix |
@@ -444,9 +447,9 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.rainState` | state | `bot.rain_state() -> f32` | ported | — |
 | `bot.thunderState` | state | `bot.thunder_state() -> f32` | ported | — |
 | `bot.game.levelType` | state | `bot.game().level_type` | ported | "flat"/"default" from is_flat on login+respawn |
-| `bot.game.dimension` | state | `bot.dimension() -> Option<WorldName>` | ported | top-level `bot.dimension()`; `bot.game()` facade deferred |
+| `bot.game.dimension` | state | `bot.game().dimension` / `bot.dimension() -> Option<WorldName>` | ported | `bot.game()` facade exists (world.rs); `Game.dimension` populated via `bot.dimension()` |
 | `bot.game.difficulty` | state | `bot.game().difficulty` | ported | c_change_difficulty decoded |
-| `bot.game.gameMode` | state | `bot.game_mode() -> Option<GameMode>` | ported | top-level `bot.game_mode()`; `bot.game()` facade deferred |
+| `bot.game.gameMode` | state | `bot.game().game_mode` / `bot.game_mode() -> Option<GameMode>` | ported | `bot.game()` facade exists (world.rs); `Game.game_mode` populated via `bot.game_mode()` |
 | `bot.game.hardcore` | state | `bot.game().hardcore` | ported | from c_login |
 | `bot.game.maxPlayers` | state | `bot.game().max_players` | ported | from c_login |
 | `bot.game.serverBrand` | state | `bot.game().server_brand` | diverges | vanilla sends minecraft:brand in *configuration* phase — unreachable via Event::Packet (game packets only); stays None |
@@ -589,4 +592,21 @@ Tracked for completeness — these are third-party npm packages, not part of the
 | `mineflayer-navigate` | misc | `n/a` | wontfix | external plugin; outside port scope (see PORT-PLAN) |
 | `mineflayer-builder` | misc | `n/a` | wontfix | external plugin; outside port scope (see PORT-PLAN) |
 
-<!-- 463 rows -->
+## Additive Rust surface
+
+Public API beyond the upstream inventory — listed so the ledger stays complete; none of these has an upstream row by design.
+
+| Rust API | domain | status | notes |
+|---|---|---|---|
+| `bot.events()` | lifecycle | additive | `broadcast::Receiver<BotEvent>` subscription — the `bot.on`/`once` mechanism every event row implies |
+| `bot.equip_kind(ItemKind, EquipDest)` | inventory | additive | the `equip(itemId, dest)` arm of upstream `equip`; the `bot.equip` row names only `equip(&Item, dest)` |
+| `bot.find_inventory_item(kind)` | inventory | additive | bot-level shortcut over `bot.inventory().find_item_range`; upstream's `window.findInventoryItem` is prismarine-windows internal |
+| `bot.equipment(entity)` | entity | additive | per-entity `EquipmentSlot -> ItemStack` map; no upstream analog (named inside the `Entity` row note) |
+| `bot.known_recipe_count()` | craft | additive | recipe-book introspection; no upstream analog |
+| `EnchantmentTable::is_ready()` | inventory | additive | readiness flag behind the `enchant` gate / 'ready' event |
+| `Window` helpers | inventory | additive | `id`, `menu`, `menu_kind`, `title`, `is_open`, `slot`, `selected_item`, `player_range`, `container_range`, `container_items`, `inventory_items`, `find_item_range`, `first_empty_slot_range`, `empty_slot_count` — port helpers surfaced `pub` |
+| `Item` helpers | inventory | additive | `of`, `stack_size`, `durability_used`, `max_durability`, `custom_data` — extra accessors over the ported `Item` row |
+| `BotEvent::Packet` | lifecycle | additive | raw `ClientboundGamePacket` escape hatch; upstream analog is the internal `_client.on('packet')` |
+| `Settings.locale` | misc | additive | `bot.settings().locale`; upstream tracks locale via `ClientOptions`, not `bot.settings` |
+
+<!-- 484 rows: 474 upstream-inventory + 10 additive -->

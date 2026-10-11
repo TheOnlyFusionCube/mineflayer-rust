@@ -934,8 +934,8 @@ impl Bot {
 
     /// `bot.elytraFly()` — send start-fall-flying. Mirrors upstream's
     /// preconditions (not already flying, airborne, not in water, no
-    /// levitation). The elytra-equipped check needs the inventory surface —
-    /// deferred to that unit; the server rejects the packet without one.
+    /// levitation). Upstream's elytra-equipped check is intentionally
+    /// absent; the server rejects the packet without one.
     pub fn elytra_fly(&self) -> Result<()> {
         let me = self.entity();
         if me
