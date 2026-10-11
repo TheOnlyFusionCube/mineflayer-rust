@@ -47,7 +47,7 @@ const DEFAULT_BANNED: &[&str] = &[
 /// registers per [`ItemKind`]. `nutrition` is upstream's `foodPoints`;
 /// `saturation` is in points, so `effectiveQuality` is
 /// `nutrition + saturation` and `saturationRatio` is
-/// `saturation / (2 * nutrition)`, matching minecraft-data.
+/// `saturation / nutrition`, matching minecraft-data.
 pub type FoodData = Food;
 
 /// Upstream `FoodPriority` — the `foodsByName` field the best-food sort
@@ -61,7 +61,8 @@ pub enum FoodPriority {
     Saturation,
     /// `effectiveQuality` — `nutrition + saturation`.
     EffectiveQuality,
-    /// `saturationRatio` — `saturation / (2 * nutrition)`.
+    /// `saturationRatio` — `saturation / nutrition` (minecraft-data's
+    /// `saturation / foodPoints`).
     SaturationRatio,
 }
 
@@ -73,7 +74,7 @@ impl FoodPriority {
             FoodPriority::FoodPoints => nutrition,
             FoodPriority::Saturation => food.saturation,
             FoodPriority::EffectiveQuality => nutrition + food.saturation,
-            FoodPriority::SaturationRatio => food.saturation / (2. * nutrition),
+            FoodPriority::SaturationRatio => food.saturation / nutrition,
         }
     }
 }
@@ -425,6 +426,7 @@ impl AutoEat<'_> {
         bot.emit_event(BotEvent::EatStart {
             food: food.clone(),
             offhand,
+            equip_old_item: equip_old,
         });
 
         let outcome = if cancel.load(atomic::Ordering::Relaxed) {
@@ -470,7 +472,11 @@ impl AutoEat<'_> {
 
         match outcome {
             Ok(()) => {
-                bot.emit_event(BotEvent::EatFinish { food, offhand });
+                bot.emit_event(BotEvent::EatFinish {
+                    food,
+                    offhand,
+                    equip_old_item: equip_old,
+                });
                 Ok(())
             }
             Err(e) => {
@@ -480,7 +486,11 @@ impl AutoEat<'_> {
                 if !strict {
                     bot.emit_event(BotEvent::EatFail(e.to_string()));
                 }
-                bot.emit_event(BotEvent::EatFinish { food, offhand });
+                bot.emit_event(BotEvent::EatFinish {
+                    food,
+                    offhand,
+                    equip_old_item: equip_old,
+                });
                 if strict { Err(e) } else { Ok(()) }
             }
         }
@@ -706,6 +716,13 @@ mod tests {
             FoodPriority::SaturationRatio.score(&carrot)
                 > FoodPriority::SaturationRatio.score(&beef)
         );
+        // literal mcdata `saturationRatio` values (saturation/foodPoints):
+        // cooked beef 12.8/8 = 1.6, golden carrot 14.4/6 = 2.4
+        assert!(
+            (FoodPriority::SaturationRatio.score(&beef) - 1.6).abs() < 0.001,
+            "beef ratio must be saturation/nutrition, not halved"
+        );
+        assert!((FoodPriority::SaturationRatio.score(&carrot) - 2.4).abs() < 0.001);
 
         // non-foods have no entry, like `name in foodsByName` upstream
         assert!(AutoEat::food_data(ItemKind::Stone).is_none());

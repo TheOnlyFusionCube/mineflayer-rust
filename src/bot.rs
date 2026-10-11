@@ -679,6 +679,10 @@ pub enum BotEvent {
         food: crate::windows::Item,
         /// Whether the offhand is doing the eating.
         offhand: bool,
+        /// Whether the previously held item is re-equipped after the eat
+        /// (upstream's sanitized `equipOldItem` — resolved from
+        /// `EatOpts.equip_old_item` or `opts.returnToLastItem`).
+        equip_old_item: bool,
     },
     /// mineflayer-auto-eat `eatFail` — the eat failed; `0` is the
     /// upstream `Error`'s message.
@@ -691,6 +695,9 @@ pub enum BotEvent {
         food: crate::windows::Item,
         /// Whether the offhand was doing the eating.
         offhand: bool,
+        /// Whether the previously held item was re-equipped (upstream's
+        /// sanitized `equipOldItem`).
+        equip_old_item: bool,
     },
     /// `connect` — the connection is live. Upstream fires on raw socket
     /// connect (pre-login); azalea surfaces no socket-level event, so this
