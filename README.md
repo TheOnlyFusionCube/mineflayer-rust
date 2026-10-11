@@ -12,7 +12,7 @@ mineflayer's names and semantics wherever Rust idiom allows.
 `Auth::{Offline, Microsoft, Account}`, view distance. `connect()` returns a
 cheap-cloneable `Bot` running on its own thread. `bot.events()` is
 `bot.on(...)`: a broadcast stream of `BotEvent` (`Spawn`, `Chat`, `End`,
-`EntitySpawn`, `WindowUpdateSlot`, ~80 variants). Domain methods live in
+`EntitySpawn`, `WindowUpdateSlot`, 110+ variants). Domain methods live in
 `impl Bot` blocks per module, mirroring mineflayer's docs structure:
 
 | Module | Covers |

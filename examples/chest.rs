@@ -9,6 +9,7 @@
 //! cargo run --example chest -- <host> <port> [<name>]
 //! ```
 
+use azalea::registry::builtin::BlockKind;
 use mineflayer::{Bot, BotEvent, FindBlocksOpts, Item, Window};
 
 #[tokio::main]
@@ -54,8 +55,11 @@ async fn main() {
                     }
                     ["close"] => {
                         if let Some(open) = &chest {
+                            // `close()` emits `WindowClose` once; leave
+                            // `chest` set so the event arm prints "chest
+                            // closed" and clears it — same ordering as
+                            // upstream's close listener.
                             open.close();
-                            chest = None;
                         }
                     }
                     ["withdraw", amount, name] => {
@@ -109,10 +113,15 @@ async fn main() {
 /// chat its contents. Returns the window so the caller can route
 /// follow-up commands to it.
 async fn watch_chest(bot: &Bot) -> Option<Window> {
+    // Upstream matches resolved block ids (`blocksByName[name].id`) — the
+    // kind set is the equivalent here. (`Block::name()` is namespaced, so
+    // a name-string match never fires.)
     let block = bot.find_block(
-        FindBlocksOpts::new(|block: &mineflayer::Block| {
-            matches!(block.name(), "chest" | "ender_chest" | "trapped_chest")
-        })
+        FindBlocksOpts::new([
+            BlockKind::Chest,
+            BlockKind::EnderChest,
+            BlockKind::TrappedChest,
+        ])
         .max_distance(6.0),
     );
     let Some(block) = block else {
