@@ -41,12 +41,16 @@ pub(crate) struct BridgeDeps {
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
 /// azalea's event channel closes (disconnect/shutdown) or when the last
 /// `Bot` handle drops (all `alive` senders gone → `changed()` errors).
+/// `shutdown` is held for its drop: the task's end resolves `changed()`
+/// on every `Bot::shutdown` receiver, retiring the tick-driven driver
+/// tasks whose `TickBroadcast` sender outlives the connection.
 pub(crate) fn spawn(
     client: azalea::Client,
     mut rx: UnboundedReceiver<Event>,
     events: broadcast::Sender<BotEvent>,
     view_distance: Option<u8>,
     mut alive: watch::Receiver<()>,
+    shutdown: watch::Sender<()>,
     deps: BridgeDeps,
 ) {
     tokio::spawn(async move {
@@ -133,7 +137,12 @@ pub(crate) fn spawn(
             }
         }
         // azalea stopped feeding events or all `Bot` handles are gone —
-        // shut the client down so the ECS runner doesn't leak.
+        // shut the client down so the ECS runner doesn't leak. Dropping
+        // the shutdown sender retires driver tasks parked on
+        // `ticks.recv()` — that broadcast's sender lives in the World,
+        // which their own `Client` handle keeps alive, so the channel
+        // never closes on its own.
+        drop(shutdown);
         client.exit();
     });
 }

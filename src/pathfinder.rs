@@ -56,7 +56,7 @@ use azalea::{
     registry::builtin::BlockKind,
     world::ChunkStorage,
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::{Bot, BotEvent, Error, Result};
 
@@ -585,7 +585,14 @@ impl Pathfinder<'_> {
                         cancel_watcher(f);
                         f.watcher_cancel = Some(cancel.clone());
                     });
-                    dynamic_watcher(client.clone(), azalea_goal, movements, cancel, issue_gen);
+                    dynamic_watcher(
+                        client.clone(),
+                        azalea_goal,
+                        movements,
+                        cancel,
+                        self.bot.shutdown.clone(),
+                        issue_gen,
+                    );
                 }
             }
         }
@@ -710,10 +717,12 @@ fn stop_pathfinding_patched(client: &azalea::Client, force: bool) {
 /// Ends silently when the facade goal is gone or its generation moved on
 /// — a non-dynamic follow ends once the bridge reports `goal_reached`,
 /// and `stop()`/`set_goal`/`set_movements` retire it through the cancel
-/// flag and `goal_gen`. The entity leaving the world mirrors upstream's
-/// `isValid()` failure: the driver clears the facade goal, stops
-/// pathfinding, and reports `path_stop` itself (the ECS goal may never
-/// have been installed, so the diff can't see it).
+/// flag and `goal_gen`. Disconnect retires it through `Bot::shutdown`
+/// (the tick channel alone never closes while the driver holds a
+/// `Client`). The entity leaving the world mirrors upstream's `isValid()`
+/// failure: the driver clears the facade goal, stops pathfinding, and
+/// reports `path_stop` itself (the ECS goal may never have been
+/// installed, so the diff can't see it).
 fn follow_driver(
     client: azalea::Client,
     entity: EntityRef,
@@ -725,9 +734,23 @@ fn follow_driver(
 ) {
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
+        let mut shutdown = bot.shutdown.clone();
+        // mark the initial value seen so only the sender's drop resolves
+        let _ = shutdown.borrow_and_update();
         let mut last_target: Option<BlockPos> = None;
         let mut despawned = false;
-        while ticks.recv().await.is_ok() && !cancel.load(atomic::Ordering::Relaxed) {
+        loop {
+            tokio::select! {
+                r = ticks.recv() => {
+                    if r.is_err() {
+                        break;
+                    }
+                }
+                _ = shutdown.changed() => return,
+            }
+            if cancel.load(atomic::Ordering::Relaxed) {
+                break;
+            }
             if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
                 // reached (non-dynamic), stopped, or replaced — whoever
                 // cleared or superseded it already reported the outcome;
@@ -777,17 +800,31 @@ fn follow_driver(
 /// upstream's "dynamic goals never complete" semantics, which azalea's
 /// goal-clears-on-success can't express on its own. `goal_gen` gates the
 /// re-issue so a watcher can't write a stale `GotoEvent` over a goal
-/// `set_goal`/`set_movements` installed after it spawned.
+/// `set_goal`/`set_movements` installed after it spawned. Disconnect
+/// retires it through `Bot::shutdown`, like [`follow_driver`].
 fn dynamic_watcher(
     client: azalea::Client,
     goal: Arc<dyn AzaleaGoal>,
     movements: Movements,
     cancel: Arc<AtomicBool>,
+    mut shutdown: watch::Receiver<()>,
     issue_gen: u64,
 ) {
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
-        while ticks.recv().await.is_ok() && !cancel.load(atomic::Ordering::Relaxed) {
+        let _ = shutdown.borrow_and_update();
+        loop {
+            tokio::select! {
+                r = ticks.recv() => {
+                    if r.is_err() {
+                        break;
+                    }
+                }
+                _ = shutdown.changed() => return,
+            }
+            if cancel.load(atomic::Ordering::Relaxed) {
+                break;
+            }
             if !client.is_goto_target_reached() {
                 continue;
             }

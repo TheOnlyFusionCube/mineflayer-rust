@@ -56,6 +56,18 @@ pub struct Bot {
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
+    /// The bridge's shutdown signal: its sender lives in the bridge task
+    /// and drops when the bridge exits (disconnect, or every `Bot`
+    /// handle gone), resolving `changed()` for every receiver. The
+    /// tick-driven driver tasks (`pathfinder` follow/dynamic watchers,
+    /// `pvp::drive`) select on it — their `TickBroadcast` receiver can
+    /// never report `Closed` because the sender is a World resource kept
+    /// alive by the `Client` handle the driver itself holds.
+    pub(crate) shutdown: watch::Receiver<()>,
+    /// Scaffold bots ([`Bot::new`]) have no bridge to own the shutdown
+    /// sender; keeping it here leaves `shutdown` open — a wrapped client
+    /// is never "ended" from our side, matching pre-signal behavior.
+    _shutdown_tx: Option<watch::Sender<()>>,
     /// Chat-domain state shared with the bridge (pattern registry, tablist
     /// header/footer, `tab_complete` correlation) — see `chat::ChatShared`.
     pub(crate) chat: Arc<Mutex<ChatShared>>,
@@ -834,6 +846,7 @@ impl BotBuilder {
         let quit_reason = Arc::new(Mutex::new(None));
         let chat = Arc::new(Mutex::new(ChatShared::default()));
         let (alive, alive_rx) = watch::channel(());
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
         let world_state = Arc::new(RwLock::new(WorldState::default()));
         let world_alive = alive_rx.clone();
         let entities = Arc::new(std::sync::RwLock::new(
@@ -850,6 +863,7 @@ impl BotBuilder {
             events.clone(),
             view_distance,
             alive_rx,
+            shutdown_tx,
             bridge::BridgeDeps {
                 quit_reason: quit_reason.clone(),
                 chat: chat.clone(),
@@ -871,6 +885,8 @@ impl BotBuilder {
             events,
             quit_reason,
             _alive: alive,
+            shutdown: shutdown_rx,
+            _shutdown_tx: None,
             chat,
             world_state,
             entities,
@@ -896,11 +912,14 @@ impl Bot {
     pub fn new(client: azalea::Client) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (alive, _) = watch::channel(());
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
         Self {
             client,
             events: events.clone(),
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
+            shutdown: shutdown_rx,
+            _shutdown_tx: Some(shutdown_tx),
             chat: Arc::new(Mutex::new(ChatShared::default())),
             world_state: Arc::new(RwLock::new(WorldState::default())),
             entities: Arc::new(std::sync::RwLock::new(

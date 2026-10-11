@@ -5,8 +5,8 @@
 //! mechanism `pvp`'s upstream `GoalFollow(target, reach)` uses) and
 //! spawns a per-tick driver: while the target is loaded and alive, the
 //! bot looks at it and swings whenever it's within reach and the attack
-//! cooldown is ready. `stop()` — or the target dying/despawning — ends
-//! the loop, clears the follow goal, and emits
+//! cooldown is ready. `stop()`, the target dying/despawning, or
+//! disconnect ends the loop, clears the follow goal, and emits
 //! [`BotEvent::StoppedAttacking`] exactly once (whoever ends the loop
 //! owns the report).
 
@@ -126,7 +126,12 @@ impl Pvp<'_> {
             bot.pathfinder().stop();
             return Err(Error::NotConnected);
         }
-        tokio::spawn(drive(bot.clone(), entity.clone(), cancel));
+        tokio::spawn(drive(
+            bot.clone(),
+            entity.clone(),
+            cancel,
+            bot.shutdown.clone(),
+        ));
         Ok(())
     }
 
@@ -156,16 +161,35 @@ impl Pvp<'_> {
 }
 
 /// The attack loop: one iteration per game tick. Owns the
-/// `StoppedAttacking` report only when it ends on its own (target gone —
-/// `stop()` and `attack`-retargets already reported or made the loop
-/// stale); a stale or cancelled driver exits silently so the event can
-/// never double-fire.
-async fn drive(bot: Bot, entity: EntityRef, cancel: Arc<AtomicBool>) {
+/// `StoppedAttacking` report only when it ends on its own (target gone,
+/// or disconnect — `stop()` and `attack`-retargets already reported or
+/// made the loop stale); a stale or cancelled driver exits silently so
+/// the event can never double-fire.
+///
+/// `shutdown` is the disconnect signal: the `TickBroadcast` sender is a
+/// World resource kept alive by the `Client` the driver holds, so
+/// `ticks.recv()` can never observe `Closed` — without this arm the loop
+/// would park forever after the bridge exits.
+async fn drive(
+    bot: Bot,
+    entity: EntityRef,
+    cancel: Arc<AtomicBool>,
+    mut shutdown: tokio::sync::watch::Receiver<()>,
+) {
     let mut ticks = bot.client.get_tick_broadcaster();
+    let _ = shutdown.borrow_and_update();
     loop {
-        match ticks.recv().await {
-            Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        tokio::select! {
+            r = ticks.recv() => {
+                match r {
+                    Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+            _ = shutdown.changed() => {
+                report_end_if_ours(&bot, &cancel);
+                return;
+            }
         }
         if cancel.load(atomic::Ordering::Relaxed) {
             return;
@@ -187,21 +211,7 @@ async fn drive(bot: Bot, entity: EntityRef, cancel: Arc<AtomicBool>) {
             _ => false,
         };
         if gone {
-            // report only if the state is still ours: a stop()/retarget
-            // that beat us here already owns the outcome
-            let ended = pvp_state_mut(&bot.client, |s| {
-                let mine = s.cancel.as_ref().is_some_and(|c| Arc::ptr_eq(c, &cancel));
-                if mine {
-                    s.cancel = None;
-                    s.target.take()
-                } else {
-                    None
-                }
-            });
-            if let Some(target) = ended.flatten() {
-                stop_follow_if_ours(&bot, &target);
-                bot.emit_event(BotEvent::StoppedAttacking);
-            }
+            report_end_if_ours(&bot, &cancel);
             return;
         }
         let Some(target_pos) = target.0 else {
@@ -214,6 +224,26 @@ async fn drive(bot: Bot, entity: EntityRef, cancel: Arc<AtomicBool>) {
         {
             bot.attack(&entity, true);
         }
+    }
+}
+
+/// Report the loop's end only when the state is still ours: clear the
+/// target, release the follow goal, and emit `StoppedAttacking`. A
+/// `stop()`/retarget that beat the driver here already owns the outcome,
+/// so a stale driver exits silently.
+fn report_end_if_ours(bot: &Bot, cancel: &Arc<AtomicBool>) {
+    let ended = pvp_state_mut(&bot.client, |s| {
+        let mine = s.cancel.as_ref().is_some_and(|c| Arc::ptr_eq(c, cancel));
+        if mine {
+            s.cancel = None;
+            s.target.take()
+        } else {
+            None
+        }
+    });
+    if let Some(target) = ended.flatten() {
+        stop_follow_if_ours(bot, &target);
+        bot.emit_event(BotEvent::StoppedAttacking);
     }
 }
 
@@ -234,6 +264,24 @@ mod tests {
             WorldName(Identifier::from("minecraft:overworld")),
             Position::new(Vec3::new(0., 64., 0.)),
         )))
+    }
+
+    /// A bot whose ECS carries a `TickBroadcast` — the driver's
+    /// `get_tick_broadcaster()` parks instead of panicking (no systems
+    /// run, so nothing ever sends), matching how it waits on a live
+    /// connection.
+    fn tick_bot() -> Bot {
+        let mut app = azalea::app::App::new();
+        app.add_plugins(azalea::tick_broadcast::TickBroadcastPlugin);
+        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let entity = ecs
+            .write()
+            .spawn((
+                WorldName(Identifier::from("minecraft:overworld")),
+                Position::new(Vec3::new(0., 64., 0.)),
+            ))
+            .id();
+        Bot::new(azalea::Client::new(entity, ecs))
     }
 
     /// Spawn an attackable-looking entity (positioned, so the driver
@@ -307,5 +355,34 @@ mod tests {
             Err(Error::NotConnected)
         ));
         assert!(bot.pvp().target().is_none());
+    }
+
+    /// Disconnect retires the driver: the tick channel can't close on its
+    /// own (the driver's `Client` keeps the `TickBroadcast` sender alive),
+    /// so the shutdown sender dropping — what the bridge does on exit —
+    /// is the only signal. Dropping it plays the bridge's exit.
+    #[tokio::test]
+    async fn disconnect_ends_the_loop_and_reports() {
+        let bot = tick_bot();
+        let mut rx = bot.events();
+        let target = spawn_target(&bot, 5., 0.);
+        let cancel = Arc::new(AtomicBool::new(false));
+        pvp_state_mut(&bot.client, |s| {
+            s.cancel = Some(cancel.clone());
+            s.target = Some(target.clone());
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let driver = tokio::spawn(drive(bot.clone(), target.clone(), cancel, shutdown_rx));
+        // parked on ticks like a live connection — target still recorded
+        assert_eq!(bot.pvp().target().map(|t| t.id()), Some(target.id()));
+
+        drop(shutdown_tx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver)
+            .await
+            .expect("driver outlived the connection")
+            .unwrap();
+        assert!(bot.pvp().target().is_none());
+        assert!(saw_stopped_attacking(&mut rx));
     }
 }
