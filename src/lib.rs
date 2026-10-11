@@ -87,9 +87,9 @@ pub use vec3::Vec3Ext;
 
 // — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp, -auto-eat —
 pub use auto_eat::{AutoEat, AutoEatOpts, EatOpts, FoodData, FoodPriority, FoodSelection};
-pub use collect::{CollectBlock, CollectTarget, Collected};
-pub use pvp::Pvp;
-pub use tool::Tool;
+pub use collect::{CollectBlock, CollectOpts, CollectTarget, Collected, ItemFilter};
+pub use pvp::{AttackRate, Pvp};
+pub use tool::{EquipOpts, Tool};
 
 #[cfg(test)]
 pub(crate) mod test_util {
