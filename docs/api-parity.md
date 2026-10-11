@@ -345,9 +345,9 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot._setSlot (internal)` | inventory | `windows::observe_event` | ported | folded into the bridge-side tracker (slot snapshots, old/new events, azalea-gap patches) |
 | `bot._syncWindow (internal)` | inventory | `azalea ContainerHandleRef::click` | ported | azalea tracks state_id internally |
 | `bot._ensureHasSentCarriedItem (internal)` | inventory | `azalea container_click packet` | ported | click packets carry the cursor stack |
-| `event confirmTransaction (internal)` | inventory | `internal` | pending | window transaction plumbing |
-| `event setSlot:{windowId} (internal)` | inventory | `internal` | pending | — |
-| `event setWindowItems:{windowId} (internal)` | inventory | `internal` | pending | — |
+| `event confirmTransaction (internal)` | inventory | — | diverges | no `transaction` wire on mc26 — the packet was removed in 1.17 (upstream's own handler is dead code on `transactionPacketExists`-false versions); click rejects surface as corrective `container_set_slot`/`set_content` resyncs → `WindowUpdateSlot`/`SetWindowItems` |
+| `event setSlot:{windowId} (internal)` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | fires on every upstream `_setSlot` path (resolved `set_slot`, `set_player_inventory`→0, `lastClosedWindow` remap→0) with a superset payload (adds the slot index) |
+| `event setWindowItems:{windowId} (internal)` | inventory | `BotEvent::SetWindowItems{window_id}` | ported | per resolved `container_set_content`, after the per-slot updates + `heldItemChanged`, before `windowOpen` on first fill; not emitted for early-buffered or `lastClosedWindow`-remapped content, matching upstream |
 
 ## Crafting / recipes
 
