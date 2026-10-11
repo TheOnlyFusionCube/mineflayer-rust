@@ -19,11 +19,20 @@
 
 use azalea::Vec3;
 
-/// `euclideanMod(numerator, denominator)` — node-vec3's standalone helper:
-/// a `%` that always lands in `0..denominator`. `f64::rem_euclid` matches it
-/// exactly, including the sign of `denominator`.
+/// `euclideanMod(numerator, denominator)` — node-vec3's helper, ported
+/// literally (`n % d`, plus `d` when the remainder went negative; JS and
+/// Rust `%` both keep the dividend's sign). For `d > 0` this is
+/// `f64::rem_euclid`; for `d < 0` it returns the raw remainder, matching
+/// upstream's quirk rather than `rem_euclid`'s divisor-signed result
+/// (`euclideanMod(19, -16) = 3`, not -13). Upstream only ever divides by
+/// positive constants (`Location`'s 16).
 pub fn euclidean_mod(numerator: f64, denominator: f64) -> f64 {
-    numerator.rem_euclid(denominator)
+    let result = numerator % denominator;
+    if result < 0. {
+        result + denominator
+    } else {
+        result
+    }
 }
 
 /// node-vec3 `Vec3` methods on azalea's [`Vec3`]. Non-mutating methods take
@@ -46,7 +55,9 @@ pub trait Vec3Ext {
     fn floored(self) -> Vec3;
     /// `v.floor()` — `floored` in place.
     fn floor(&mut self);
-    /// `v.rounded()` — component-wise `round`.
+    /// `v.rounded()` — component-wise JS `Math.round`: halves round toward
+    /// +∞ (`Math.round(-1.5) === -1`), NOT Rust's `f64::round` (which gives
+    /// -2 — halves away from zero).
     fn rounded(self) -> Vec3;
     /// `v.round()` — `rounded` in place.
     fn round(&mut self);
@@ -59,9 +70,12 @@ pub trait Vec3Ext {
     fn volume(self) -> f64;
     /// `v.norm()` — the Euclidean length (azalea calls it `length`).
     fn norm(self) -> f64;
-    /// `v.unit()` — `v / norm()`; the zero vector returns itself. (azalea's
-    /// inherent `normalize` is the same method under the name upstream
-    /// gives the mutating variant.)
+    /// `v.unit()` — `scaled(1 / norm)` like upstream (multiply by the
+    /// reciprocal — `v(0,3,4).unit().y` is `0.6000000000000001`, matching
+    /// upstream bit-for-bit); the zero vector returns itself. Upstream's
+    /// mutating `normalize` divides per component instead; azalea's
+    /// inherent `normalize` does the same division but non-mutating (and
+    /// returns `ZERO` under a 1e-5 length threshold upstream lacks).
     fn unit(self) -> Vec3;
     /// `v.angleTo(other)` — radians between the two vectors.
     fn angle_to(self, other: Vec3) -> f64;
@@ -128,9 +142,9 @@ impl Vec3Ext for Vec3 {
     }
     fn rounded(self) -> Vec3 {
         Vec3 {
-            x: self.x.round(),
-            y: self.y.round(),
-            z: self.z.round(),
+            x: (self.x + 0.5).floor(),
+            y: (self.y + 0.5).floor(),
+            z: (self.z + 0.5).floor(),
         }
     }
     fn round(&mut self) {
@@ -157,10 +171,15 @@ impl Vec3Ext for Vec3 {
         self.length()
     }
     fn unit(self) -> Vec3 {
-        // upstream `unit()` divides each component (`v.x /= norm`); don't
-        // use `scaled(1/norm)` — `3/5` and `3*(1/5)` differ by 1 ulp.
+        // upstream `unit()` is `scaled(1 / norm)` — multiply by the
+        // reciprocal, not per-component division (`normalize()` divides,
+        // which differs by up to 1 ulp).
         let norm = self.norm();
-        if norm != 0. { self / norm } else { self }
+        if norm != 0. {
+            self.scaled(1. / norm)
+        } else {
+            self
+        }
     }
     fn angle_to(self, other: Vec3) -> f64 {
         (self.dot(other) / (self.norm() * other.norm())).acos()
@@ -224,11 +243,13 @@ mod tests {
         assert_eq!(a.minus(v(1., 1., 1.)), v(0., 1., 2.));
         assert_eq!(a.scaled(2.), v(2., 4., 6.));
         assert_eq!(v(1.7, -1.7, 0.5).floored(), v(1., -2., 0.));
-        assert_eq!(v(1.5, -1.5, 0.4).rounded(), v(2., -2., 0.));
+        // Math.round rounds halves toward +∞: -1.5 -> -1 (not Rust's -2)
+        assert_eq!(v(1.5, -1.5, 0.4).rounded(), v(2., -1., 0.));
         assert_eq!(v(-1., 2., -3.).abs(), v(1., 2., 3.));
         assert_eq!(v(2., 3., 4.).volume(), 24.);
         assert_eq!(v(3., 4., 0.).norm(), 5.);
-        assert_eq!(v(0., 3., 4.).unit(), v(0., 0.6, 0.8));
+        // upstream unit() = scaled(1/norm): 3 * (1/5) = 0.6000000000000001
+        assert_eq!(v(0., 3., 4.).unit(), v(0., 0.6000000000000001, 0.8));
         assert_eq!(v(0., 0., 0.).unit(), v(0., 0., 0.));
         assert_eq!(v(1., 2., 3.).manhattan_distance_to(v(4., 0., 3.)), 5.);
         assert_eq!(a.to_array(), [1., 2., 3.]);
@@ -247,6 +268,10 @@ mod tests {
     fn modulus_and_euclidean_mod_wrap_negatives() {
         // node-vec3 euclideanMod: -19 % 16 -> 13 (result + denominator)
         assert_eq!(euclidean_mod(-19., 16.), 13.);
+        // negative denominator keeps the dividend's sign (upstream quirk;
+        // f64::rem_euclid would give -13/-3 here)
+        assert_eq!(euclidean_mod(19., -16.), 3.);
+        assert_eq!(euclidean_mod(-19., -16.), -19.);
         assert_eq!(v(-19., 33., -1.).modulus(v(16., 16., 16.)), v(13., 1., 15.));
         // used by world::Location on negative chunk coords
         assert_eq!(v(-18.2, 70., 20.5).floored(), v(-19., 70., 20.));
