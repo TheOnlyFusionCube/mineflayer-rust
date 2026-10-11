@@ -101,7 +101,7 @@ async fn misc_domains() {
     assert_eq!(settings.main_hand, HumanoidArm::Right);
     // …and set_settings merges — only the fields we set change
     bot.set_settings(mineflayer::Settings {
-        view_distance: 6,
+        view_distance: 6.into(),
         main_hand: HumanoidArm::Left,
         ..bot.settings()
     })
@@ -113,7 +113,7 @@ async fn misc_domains() {
     // and the invalid view distance is rejected like upstream
     assert!(
         bot.set_settings(mineflayer::Settings {
-            view_distance: 0,
+            view_distance: 0.into(),
             ..bot.settings()
         })
         .is_err()

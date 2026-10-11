@@ -64,7 +64,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.physicsEnabled` | lifecycle | `n/a` | wontfix | azalea's PhysicsPlugin is baked into `Client::join`'s default plugins — no disable seam; `bot.physics_enabled()` reports always-true |
 | `options.chat (settings passthrough)` | lifecycle | `BotBuilder::chat(ChatVisibility)` | ported | `'enabled'`/`'commandsOnly'`/`'disabled'` → `ChatVisibility::Full`/`System`/`Hidden`; merged into the `ClientInformation` sent on Init |
 | `options.colorsEnabled` | lifecycle | `BotBuilder::colors_enabled(bool)` | ported | → `ClientInformation::chat_colors` on Init |
-| `options.viewDistance` | lifecycle | `BotBuilder::view_distance(u8)` | ported | applied on `Event::Init` so login already carries it |
+| `options.viewDistance` | lifecycle | `BotBuilder::view_distance(impl Into<ViewDistance>)` | ported | applied on `Event::Init` so login already carries it; `ViewDistance` covers upstream's `'far'`/`'normal'`/`'short'`/`'tiny'` presets (12/10/8/6) plus raw counts |
 | `options.difficulty` | lifecycle | `BotBuilder::difficulty(u8)` | ported | stored client-side (`MiscState.difficulty`, default 2) → `bot.settings().difficulty`; never sent, server-authoritative — same as upstream |
 | `options.skinParts` | lifecycle | `BotBuilder::skin_parts(ModelCustomization)` | ported | → `ClientInformation::model_customization` on Init |
 | `options.enableTextFiltering` | lifecycle | `BotBuilder::enable_text_filtering(bool)` | ported | → `ClientInformation::text_filtering_enabled` on Init |
@@ -503,10 +503,10 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | ported | merge via `Settings { field, ..bot.settings() }`; rejects view_distance == 0 |
+| `bot.setSettings(options)` | misc | `bot.set_settings(Settings)` | ported | merge via `Settings { field, ..bot.settings() }`; rejects `view_distance` 0; `ViewDistance` presets cover upstream's string aliases |
 | `bot.settings.chat` | misc | `bot.settings().chat_visibility` | ported | `ChatVisibility` enum |
 | `bot.settings.colorsEnabled` | misc | `bot.settings().chat_colors` | ported | — |
-| `bot.settings.viewDistance` | misc | `bot.settings().view_distance` | diverges | chunks; azalea default is 8, upstream default `'far'` is 12 |
+| `bot.settings.viewDistance` | misc | `bot.settings().view_distance: ViewDistance` | diverges | `Far`/`Normal`/`Short`/`Tiny` presets + `Chunks(u8)` cover upstream's `number\|'far'\|'normal'\|'short'\|'tiny'` type (string parse via `FromStr`); read-back reports `Chunks` (upstream keeps the string you set); azalea default is 8, upstream default `'far'` is 12 |
 | `bot.settings.difficulty` | misc | `bot.settings().difficulty` | ported | client-side store, default 2 |
 | `bot.settings.skinParts` | misc | `bot.settings().model_customization` | ported | `ModelCustomization` flag struct |
 | `bot.settings.enableTextFiltering` | misc | `bot.settings().text_filtering_enabled` | ported | — |

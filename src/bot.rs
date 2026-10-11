@@ -35,7 +35,10 @@ use tokio::sync::{broadcast, watch};
 use crate::{
     Error, Result, bridge,
     chat::{ChatPatternMatch, ChatShared, MessagePosition},
-    misc::{ChatVisibility, Instrument, ModelCustomization, Particle, ParticleStatus, TitleKind},
+    misc::{
+        ChatVisibility, Instrument, ModelCustomization, Particle, ParticleStatus, TitleKind,
+        ViewDistance,
+    },
     scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team},
     world::{Block, WorldState},
 };
@@ -850,9 +853,11 @@ impl BotBuilder {
         self.auth = Some(auth);
         self
     }
-    /// `options.viewDistance`, in chunks.
-    pub fn view_distance(mut self, view_distance: u8) -> Self {
-        self.view_distance = Some(view_distance);
+    /// `options.viewDistance` — a chunk count or an upstream preset
+    /// ([`ViewDistance::Far`]/[`ViewDistance::Normal`]/
+    /// [`ViewDistance::Short`]/[`ViewDistance::Tiny`] → 12/10/8/6).
+    pub fn view_distance(mut self, view_distance: impl Into<ViewDistance>) -> Self {
+        self.view_distance = Some(view_distance.into().chunks());
         self
     }
 
@@ -1334,6 +1339,8 @@ mod tests {
         assert_eq!(b.port, 25566);
         assert_eq!(b.username, "x");
         assert_eq!(b.view_distance, Some(4));
+        // upstream's named presets resolve to their chunk counts
+        assert_eq!(b.view_distance(ViewDistance::Far).view_distance, Some(12));
     }
 
     #[test]
