@@ -384,16 +384,17 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
 | `bot.scoreboards` | misc | `bot.scoreboards() -> HashMap<String,ScoreBoard>` | ported | cloned snapshot; reset each login |
-| `bot.scoreboard` | misc | `bot.scoreboard(ScoreboardSlot) -> Option<ScoreBoard>` | diverges | slot-enum accessor instead of a slot-keyed map |
+| `bot.scoreboard` | misc | `bot.scoreboard(ScoreboardSlot) -> Option<ScoreBoard>` | diverges | slot-enum accessor instead of a slot-keyed map; bindings store objective names (upstream stores the board objects), and removing an objective clears every slot bound to it — upstream clears only the first, leaving stale bindings there |
 | `bot.teams` | misc | `bot.teams() -> HashMap<String,Team>` | ported | cloned snapshot |
 | `bot.teamMap` | misc | `bot.team_map() -> HashMap<String,Team>` | ported | cloned snapshot |
 | `bot.bossBars (undoc)` | misc | `bot.boss_bars() -> Vec<BossBar>` | ported | — |
 | `ScoreBoard.name` | misc | `scoreboard.name` (field) | ported | — |
 | `ScoreBoard.title` | misc | `scoreboard.title` (field) | ported | `FormattedText`, not pre-rendered |
 | `ScoreBoard.itemsMap` | misc | `scoreboard.items_map() -> &HashMap` | ported | — |
-| `ScoreBoard.items` | misc | `scoreboard.items() -> Vec<&ScoreItem>` | ported | name-sorted like upstream |
+| `ScoreBoard.items` | misc | `scoreboard.items() -> Vec<&ScoreItem>` | ported | descending score like upstream |
+| `ScoreItem fields` | misc | `item.{name,value,display}` | diverges | `value` is `i32` — the wire is a signed VarInt (azalea decodes `u32`; un-wrapped at the boundary so negative scores don't wrap to ~4.29e9); the `displayName` getter is `item.display_name(&bot.team_map())` — team-styled via `Team::member_display_name`, plain name off a team |
 | `ScoreBoard.setTitle(t)` | misc | `scoreboard.set_title(FormattedText)` | ported | client-side only, like upstream |
-| `ScoreBoard.add(name,value)` | misc | `scoreboard.add(name, value)` | ported | — |
+| `ScoreBoard.add(name,value)` | misc | `scoreboard.add(name, value: i32)` | ported | signed score, matching the wire |
 | `ScoreBoard.remove(name)` | misc | `scoreboard.remove(&str)` | ported | — |
 | `Team fields` | misc | `team.{name,display_name,friendly_fire,see_friendly_invisibles,nametag_visibility,collision_rule,color,prefix,suffix,members}` | ported | color is `ChatFormatting` (Reset = none) |
 | `Team.memberMap` | misc | `n/a` | wontfix | upstream `membersMap` (typed `memberMap` in index.d.ts) maps name→`''` — internal bookkeeping only; the key set is ported as `team.members` |
@@ -402,11 +403,11 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Team.displayName(member)` | misc | `team.member_display_name(member) -> FormattedText` | ported | prefix + colored member + suffix |
 | `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog}` | ported | `entity_uuid` is the bar uuid string; `flags` folded into the three bools |
 | `event('scoreboardCreated')` | misc | `BotEvent::ScoreboardCreated(sb)` | ported | — |
-| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | ported | carries the removed board — upstream emits before deleting, same object |
+| `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | diverges | skipped for objectives the client never saw — upstream emits unconditionally (payload may be `undefined`); same tradeoff as `teamRemoved` |
 | `event('scoreboardTitleChanged')` | misc | `BotEvent::ScoreboardTitleChanged(sb)` | ported | — |
 | `event('scoreUpdated')` | misc | `BotEvent::ScoreUpdated{scoreboard,item}` | ported | — |
 | `event('scoreRemoved')` | misc | `BotEvent::ScoreRemoved{scoreboard,item}` | diverges | no scan-all-boards fallback when the named objective is absent, and nothing emitted when the owner is missing (upstream emits `undefined` item) |
-| `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,scoreboard}` | ported | — |
+| `event('scoreboardPosition')` | misc | `BotEvent::ScoreboardPosition{slot,scoreboard,previous_board}` | ported | carries the replaced objective like upstream's `previousBoard` arg (`None` for empty/dangling slots); like upstream, unknown objectives neither emit nor bind the slot |
 | `event('teamCreated')` | misc | `BotEvent::TeamCreated(team)` | ported | — |
 | `event('teamRemoved')` | misc | `BotEvent::TeamRemoved(team)` | diverges | carries the removed team; upstream emits `undefined` |
 | `event('teamUpdated')` | misc | `BotEvent::TeamUpdated(team)` | ported | — |

@@ -227,6 +227,9 @@ pub enum BotEvent {
         slot: ScoreboardSlot,
         /// The objective now shown in that slot.
         scoreboard: ScoreBoard,
+        /// The objective this slot showed before (`None` for an empty or
+        /// dangling slot) — upstream's `previousBoard` argument.
+        previous_board: Option<ScoreBoard>,
     },
     /// `teamCreated` — a team was added (already populated with members).
     TeamCreated(Team),
