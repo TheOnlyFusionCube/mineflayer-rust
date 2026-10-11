@@ -74,6 +74,11 @@ pub(crate) fn spawn(
                     // right after the raw `Packet`/`Spawn` they came from.
                     let movement_events =
                         crate::movement::bridge_events(&client, &mut state.movement, &event);
+                    let pathfinder_events = crate::pathfinder::bridge_events(
+                        &client,
+                        &mut state.pathfinder,
+                        &event,
+                    );
                     let derived = entity::observe_event(&entities, &client, &event);
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
@@ -85,6 +90,9 @@ pub(crate) fn spawn(
                         crate::misc::after_event(&client, &bot_event, &events);
                     }
                     for bot_event in movement_events {
+                        let _ = events.send(bot_event);
+                    }
+                    for bot_event in pathfinder_events {
                         let _ = events.send(bot_event);
                     }
                     for bot_event in derived {
@@ -115,6 +123,8 @@ struct BridgeState {
     /// Chat-domain state shared with `Bot` (pattern registry, tablist,
     /// `tab_complete` correlation).
     chat: Arc<Mutex<ChatShared>>,
+    /// Pathfinder component-diff state for the goal/path events (U7).
+    pathfinder: crate::pathfinder::PathTracker,
 }
 
 /// Translate one azalea event into zero or more `BotEvent`s, in emission
