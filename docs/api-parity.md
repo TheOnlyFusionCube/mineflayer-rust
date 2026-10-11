@@ -341,12 +341,12 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `villager event 'ready'` | inventory | `BotEvent::VillagerReady{window_id}` | diverges | bot-level, once per window on first merchant_offers |
 | `event('windowOpen')` | inventory | `BotEvent::WindowOpen(Window)` | ported | emitted on first `container_set_content` after `open_screen`, upstream's `setWindowItems` gate |
 | `event('windowClose')` | inventory | `BotEvent::WindowClose(Window)` | ported | client + server closes, once each |
-| `event('heldItemChanged')` | inventory | `BotEvent::HeldItemChanged(Option<Item>)` | ported | emitted on set_held_slot / inventory updateSlot / setQuickBarSlot like upstream |
+| `event('heldItemChanged')` | inventory | `BotEvent::HeldItemChanged(Option<Item>)` | ported | emitted wherever upstream's `updateHeldItem()` runs — set_held_slot, every resolved `set_slot`/`window_items` incl. pending windows and `lastClosedWindow` remaps, setQuickBarSlot |
 | `bot._setSlot (internal)` | inventory | `windows::observe_event` | ported | folded into the bridge-side tracker (slot snapshots, old/new events, azalea-gap patches) |
 | `bot._syncWindow (internal)` | inventory | `azalea ContainerHandleRef::click` | ported | azalea tracks state_id internally |
 | `bot._ensureHasSentCarriedItem (internal)` | inventory | `azalea container_click packet` | ported | click packets carry the cursor stack |
 | `event confirmTransaction (internal)` | inventory | — | diverges | no `transaction` wire on mc26 — the packet was removed in 1.17 (upstream's own handler is dead code on `transactionPacketExists`-false versions); click rejects surface as corrective `container_set_slot`/`set_content` resyncs → `WindowUpdateSlot`/`SetWindowItems` |
-| `event setSlot:{windowId} (internal)` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | fires on every upstream `_setSlot` path (resolved `set_slot`, `set_player_inventory`→0, `lastClosedWindow` remap→0) with a superset payload (adds the slot index) |
+| `event setSlot:{windowId} (internal)` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | fires on every upstream `_setSlot` path (resolved `set_slot` incl. announced-but-unfilled windows, `set_player_inventory`→0, `lastClosedWindow` remap→0) with a superset payload (adds the slot index) |
 | `event setWindowItems:{windowId} (internal)` | inventory | `BotEvent::SetWindowItems{window_id}` | ported | per resolved `container_set_content`, after the per-slot updates + `heldItemChanged`, before `windowOpen` on first fill; not emitted for early-buffered or `lastClosedWindow`-remapped content, matching upstream |
 
 ## Crafting / recipes
