@@ -264,7 +264,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.equip(item, dest)` | inventory | `bot.equip(&item, EquipDest).await -> Result<()>` | ported | `EquipDest` enum; hand = quickbar select / first empty / rotating fallback slot like upstream |
 | `bot.unequip(dest)` | inventory | `bot.unequip(dest).await` | ported | hand → empty quickbar slot/`equipEmpty`; others require closed window like upstream |
 | `bot.tossStack(item)` | inventory | `bot.toss_stack(&item).await` | ported | pickup + outside click + window close, upstream order |
-| `bot.toss(type, meta, count)` | inventory | `bot.toss(kind, metadata, Option<count>, nbt).await` | ported | metadata = `damage` component; `count: None` moves all matching like upstream `null` |
+| `bot.toss(type, meta, count)` | inventory | `bot.toss(kind, metadata, Option<count>, nbt).await` | ported | metadata = `damage` component; `count: None` = 1 like upstream `count ?? 1` |
 | `bot.setQuickBarSlot(slot)` | inventory | `bot.set_quick_bar_slot(u8)` | ported | 0..=8 validated; emits `heldItemChanged`; azalea `set_selected_hotbar_slot` + tracker override for the component-write lag |
 | `bot.getEquipmentDestSlot(dest)` | inventory | `bot.equipment_dest_slot(dest) -> u16` | ported | head/torso/legs/feet = 5..8, off-hand 45, hand = 36 + quickBarSlot |
 | `bot.consume()` | inventory | `bot.consume().await` | ported | `ALWAYS_CONSUMABLES` + "Food is full" guard; finishes on status 9 / matching cooldown / held type-or-count change; 2.5s `CONSUME_TIMEOUT`; re-entry cancels the earlier call |
@@ -272,16 +272,16 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.deactivateItem()` | inventory | `bot.deactivate_item()` | ported | `s_player_action` ReleaseUseItem + clears `usingHeldItem` |
 | `bot.simpleClick.leftMouse(slot)` | inventory | `bot.simple_click_left(slot).await` | ported | — |
 | `bot.simpleClick.rightMouse(slot)` | inventory | `bot.simple_click_right(slot).await` | ported | — |
-| `bot.clickWindow(slot,btn,mode)` | inventory | `bot.click_window(slot: i32, btn, mode).await` | ported | modes 0–4 → `ClickOperation`; -999 outside; modes 5/6 (quick-craft) error; crafting-region clicks await the result resync like `waitForWindowUpdate` |
+| `bot.clickWindow(slot,btn,mode)` | inventory | `bot.click_window(slot: i32, btn, mode).await` | ported | modes 0–4 → `ClickOperation` (3 = middle/clone click); -999 outside; modes 5/6 (quick-craft/pickup-all) error; crafting-region clicks await the result resync like `waitForWindowUpdate` |
 | `bot.putSelectedItemRange(..)` | inventory | `bot.put_selected_item_range(start, end, &window, reserved).await` | ported | merge not-full → first empty → reserved → toss leftover |
 | `bot.putAway(slot)` | inventory | `bot.put_away(slot).await` | ported | shift-click when there's room; else pickup + place; awaits `updateSlot` for the slot |
 | `bot.closeWindow(window)` | inventory | `bot.close_window(&window)` / `window.close()` | ported | `copyInventory` of the player region + `container_close`; idempotent; `windowClose` once |
-| `bot.transfer(options)` | inventory | `bot.transfer(TransferOpts).await` | ported | `TransferOpts { window, kind, metadata, nbt, count, source_start/end, dest_start/end }`; dest -999 drops; left-click bulk / right-click per-item + half-stack shortcut; leftovers restored via putSelectedItemRange |
-| `bot.openBlock(block, dir, cursor)` | inventory | `bot.open_block(&block).await -> Result<Window>` | diverges | `block_interact` + `windowOpen` wait; azalea fabricates the block-face hit — no `direction`/`cursorPos` params |
-| `bot.openEntity(entity, Class?)` | inventory | `bot.open_entity(&EntityRef).await -> Result<Window>` | ported | `entity.interact()` + `windowOpen` wait (5s timeout) |
+| `bot.transfer(options)` | inventory | `bot.transfer(TransferOpts).await` | ported | `TransferOpts { window, kind, metadata, nbt, count, source_start/end, dest_start/end }`; `count: None` = 1 (`count ?? 1`); dest -999 drops; left-click bulk / right-click per-item + half-stack shortcut; leftovers restored via putSelectedItemRange |
+| `bot.openBlock(block, dir, cursor)` | inventory | `bot.open_block(&block).await -> Result<Window>` | diverges | `look_at(block center)` + `block_interact` + `windowOpen` wait; azalea fabricates the block-face hit — no `direction`/`cursorPos` params |
+| `bot.openEntity(entity, Class?)` | inventory | `bot.open_entity(&EntityRef).await -> Result<Window>` | ported | `look_at(entity)` + `entity.interact()` + `windowOpen` wait (5s timeout) |
 | `bot.moveSlotItem(src, dst)` | inventory | `bot.move_slot_item(src, dst).await` | ported | clicks `src` back when the swap leaves a stack on the cursor |
 | `bot.updateHeldItem()` | inventory | `bot.update_held_item()` | ported | re-emits `heldItemChanged` |
-| `bot.openContainer(b\|e, ..)` | inventory | `bot.open_container(impl Into<ContainerTarget>).await` | ported | `ContainerTarget::Block|Entity`; upstream allowed-name precheck + container menu-kind check (generic_9x*/generic_3x3/hopper/shulker_box) |
+| `bot.openContainer(b\|e, ..)` | inventory | `bot.open_container(impl Into<ContainerTarget>).await` | ported | `ContainerTarget::Block|Entity`; upstream allowed-name precheck + container menu-kind check (generic_9x*/generic_3x3/hopper/shulker_box); on mismatch we close the window then error — upstream throws leaving it open |
 | `bot.openChest(..) (dep)` | inventory | `bot.open_chest(..)` — alias of `open_container` | ported | identical to upstream (one shared function) |
 | `bot.openFurnace(block)` | inventory | `bot.open_furnace(b).await -> Furnace` | pending | — |
 | `bot.openDispenser(..) (dep)` | inventory | `bot.open_dispenser(..)` — alias of `open_container` | ported | identical to upstream (one shared function) |
@@ -292,7 +292,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.writeBook(slot, pages)` | inventory | `bot.write_book(slot, pages).await` | pending | s_edit_book exists upstream |
 | `bot.signBook(slot,pages,author,title) (undoc)` | inventory | `bot.sign_book(..).await` | pending | — |
 | `bot.setCommandBlock(pos, cmd, opts)` | inventory | `bot.set_command_block(..)` | pending | — |
-| `bot.inventory` | inventory | `bot.inventory() -> Window` | ported | id-0 player window; fresh handle per call, live ECS reads |
+| `bot.inventory` | inventory | `bot.inventory() -> Window` | ported | id-0 player window; reads `inventory_menu` directly so it stays live while a container is open (azalea's handle gating would return `None`) |
 | `bot.quickBarSlot` | inventory | `bot.quick_bar_slot() -> u8` | ported | — |
 | `bot.heldItem` | inventory | `bot.held_item() -> Option<Item>` | ported | — |
 | `bot.usingHeldItem` | inventory | `bot.using_held_item() -> bool` | ported | — |
@@ -300,14 +300,14 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.QUICK_BAR_START (undoc)` | inventory | `const QUICK_BAR_START: usize` | ported | = 36 |
 | `Window.items()` | inventory | `window.items() -> Vec<Item>` | ported | — |
 | `Window.slots` | inventory | `window.slots() -> Option<Vec<ItemStack>>` | ported | live menu clone; `None` when closed |
-| `Window.deposit(type,meta,count,nbt)` | inventory | `window.deposit(..).await` | ported | player → container region via `transfer` |
-| `Window.withdraw(type,meta,count,nbt)` | inventory | `window.withdraw(..).await` | ported | container → player region; errors on full inventory like upstream |
+| `Window.deposit(type,meta,count,nbt)` | inventory | `window.deposit(..).await` | ported | player → container region via `transfer`; `count: None` = 1 |
+| `Window.withdraw(type,meta,count,nbt)` | inventory | `window.withdraw(..).await` | ported | container → player region; `count: None` = 1; errors on full inventory like upstream |
 | `Window.close()` | inventory | `window.close()` (sync) | ported | copyInventory + close packet + `WindowClose`; idempotent |
 | `Chest / Container class` | inventory | `type Chest = Window` | ported | upstream adds no surface over Window; `deposit`/`withdraw`/`close` shared |
 | `Dispenser class` | inventory | `type Dispenser = Window` | ported | same as Chest |
 | `window event 'open'` | inventory | `BotEvent::WindowOpen(Window)` | ported | window-level events are bot-level here (windows aren't emitter objects) |
 | `window event 'close'` | inventory | `BotEvent::WindowClose(Window)` | ported | — |
-| `window event 'updateSlot'` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | — |
+| `window event 'updateSlot'` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | also emitted for `set_slot` container_id -2 (player-inventory applies upstream never saw — azalea applies them, so reporting is strictly truer) |
 | `Furnace class` | inventory | `struct Furnace` | pending | — |
 | `Furnace.fuel` | inventory | `furnace.fuel() -> f32` | pending | — |
 | `Furnace.progress` | inventory | `furnace.progress() -> f32` | pending | — |

@@ -15,7 +15,9 @@ use azalea::{
     entity::LookDirection,
     inventory::{
         DataComponentPatch,
-        operations::{ClickOperation, PickupClick, QuickMoveClick, SwapClick, ThrowClick},
+        operations::{
+            ClickOperation, CloneClick, PickupClick, QuickMoveClick, SwapClick, ThrowClick,
+        },
     },
     protocol::packets::game::{
         s_player_action::{self, ServerboundPlayerAction},
@@ -168,7 +170,8 @@ pub struct TransferOpts {
     pub metadata: Option<i32>,
     /// Required component patch (upstream `nbt`); `None` = any.
     pub nbt: Option<DataComponentPatch>,
-    /// How many items to move; `None` = 1 (upstream `count ?? 1`).
+    /// How many items to move; `None` = 1 (upstream `count ?? 1` — see
+    /// [`TransferOpts::effective_count`]).
     pub count: Option<i32>,
     /// Source range start (absolute window slot).
     pub source_start: i32,
@@ -178,6 +181,15 @@ pub struct TransferOpts {
     pub dest_start: i32,
     /// Destination range end, exclusive — defaults to `dest_start + 1`.
     pub dest_end: Option<i32>,
+}
+
+impl TransferOpts {
+    /// The resolved move count: `count ?? 1` like upstream
+    /// (`inventory.js`: `count === undefined || count === null ? 1 :
+    /// count`). `None` moves ONE item, not the whole stock.
+    pub fn effective_count(&self) -> i32 {
+        self.count.unwrap_or(1)
+    }
 }
 
 /// `(mouseButton, mode)` → the azalea click operation, upstream's
@@ -201,14 +213,17 @@ pub(crate) fn click_operation(slot: u16, mouse_button: u8, mode: u8) -> Result<C
             target_slot: mouse_button,
         }
         .into(),
-        3 => ThrowClick::All { slot }.into(),
+        // mode 3 is middle-click/clone; upstream passes `mode` through
+        // to the wire raw (the mouse_button is unused by click_type 3)
+        3 => CloneClick { slot }.into(),
         4 => match mouse_button {
             0 => ThrowClick::Single { slot }.into(),
             1 => ThrowClick::All { slot }.into(),
             b => return Err(Error::Operation(format!("invalid mouse button {b}"))),
         },
-        // mode 5 (quick-craft drag) is a multi-packet gesture upstream
-        // sends raw; nothing in the ported API emits it.
+        // modes 5 (quick-craft drag) and 6 (pickup-all double click)
+        // are multi-packet gestures upstream sends raw; nothing in the
+        // ported API emits them.
         5 | 6 => {
             return Err(Error::Operation(format!("unsupported mouse mode {mode}")));
         }
@@ -302,10 +317,10 @@ impl Bot {
     ///
     /// Modes are upstream's: 0 normal click, 1 shift-click, 2 hotbar
     /// swap (`mouse_button` = hotbar index 0-8, or 40 for the off-hand
-    /// key), 3 middle/clone (upstream's modeMap maps 3 to drop-all),
-    /// 4 drop (`mouse_button` 0 = single, 1 = stack). Modes 5
-    /// (quick-craft drag) and 6 error — upstream asserts `mode <= 6` but
-    /// nothing in this port emits those gestures.
+    /// key), 3 middle/clone click (`mouse_button` unused by the wire
+    /// type), 4 drop (`mouse_button` 0 = single, 1 = stack). Modes 5
+    /// (quick-craft drag) and 6 (pickup-all) error — upstream asserts
+    /// `mode <= 6` but nothing in this port emits those gestures.
     ///
     /// `slot` may be `-999` to click outside (drop the cursor stack;
     /// `mouse_button` 0 = whole stack, 1 = single).
@@ -347,7 +362,11 @@ impl Bot {
 
         let item = window.slot(i32::from(slot));
         let player = window.player_range();
+        // result slots (upstream `slot === window.craftingResultSlot`
+        // plus the villager trade output) must not be put away via
+        // shift-click — that's a craft/trade action, not a store
         let is_result_slot = (window.id() == 0 && slot == 0)
+            || (window.menu_kind() == Some(MenuKind::Crafting) && slot == 0)
             || (window.menu_kind() == Some(MenuKind::Merchant) && slot == 2);
         let room = item.as_ref().is_some_and(|item| {
             let slots = window.slots().unwrap_or_default();
@@ -394,8 +413,8 @@ impl Bot {
     }
 
     /// `bot.toss(itemType, metadata, count)` — drop `count` items of
-    /// `kind` from the player-inventory region to the ground; `None`
-    /// moves every matching item (upstream `count === null`).
+    /// `kind` from the player-inventory region to the ground; `None` =
+    /// 1 item (upstream `count ?? 1`).
     pub async fn toss(
         &self,
         kind: ItemKind,
@@ -634,10 +653,20 @@ impl Bot {
         let (generation, notify) = {
             let mut t = self.windows.lock().unwrap();
             t.eat_generation += 1;
+            // resolve a superseded consume() immediately, like upstream's
+            // eatingTask.cancel — it wakes here and fails the generation
+            // check below
+            t.eat_notify.notify_waiters();
             (t.eat_generation, t.eat_notify.clone())
         };
+        // register the waiter before activate_item so a finish packet
+        // that lands between the use_item write and the await can't be
+        // missed (upstream creates the eat task before activating)
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         self.activate_item(false).await;
-        if tokio::time::timeout(Duration::from_millis(2500), notify.notified())
+        if tokio::time::timeout(Duration::from_millis(2500), notified)
             .await
             .is_err()
         {
@@ -652,28 +681,47 @@ impl Bot {
         }
     }
 
-    /// `bot.openBlock(block)` — right-click a container block and wait
-    /// for the server's `open_screen` + slot data; resolves with the
-    /// opened [`Window`]. The upstream `direction`/`cursorPos` hit-result
+    /// `bot.openBlock(block)` — look at the block (upstream
+    /// `activateBlock`'s `lookAt`), right-click it, and wait for the
+    /// server's `open_screen` + slot data; resolves with the opened
+    /// [`Window`]. The upstream `direction`/`cursorPos` hit-result
     /// parameters have no azalea equivalent (azalea fabricates the
     /// block-face hit from `force_block`).
     pub async fn open_block(&self, block: &Block) -> Result<Window> {
         let mut rx = self.events();
+        self.look_at(block.pos.center(), false).await?;
         self.client.block_interact(block.pos);
         self.await_window_open(&mut rx).await
     }
 
-    /// `bot.openEntity(entity)` — right-click a container-bearing entity
-    /// (chest minecart, llama, …) and wait for the window.
+    /// `bot.openEntity(entity)` — look at the entity, right-click a
+    /// container-bearing entity (chest minecart, llama, …), and wait
+    /// for the window.
     pub async fn open_entity(&self, entity: &azalea::EntityRef) -> Result<Window> {
         let mut rx = self.events();
+        // upstream activateEntity's lookAt aims at the entity's
+        // position (feet); half-height approximates the body's center
+        if let Some(pos) = entity
+            .get_component::<azalea::entity::Position>()
+            .map(|p| **p)
+        {
+            let mid = entity
+                .get_component::<azalea::entity::dimensions::EntityDimensions>()
+                .map(|d| f64::from(d.height) / 2.)
+                .unwrap_or(0.5);
+            self.look_at(pos + azalea::Vec3::new(0., mid, 0.), false)
+                .await?;
+        }
         entity.interact();
         self.await_window_open(&mut rx).await
     }
 
     /// `bot.openContainer`/`bot.openChest`/`bot.openDispenser` — open a
     /// block or entity and verify the resulting window is a container
-    /// kind (upstream `matchWindowType`); errors and closes otherwise.
+    /// kind (upstream `matchWindowType`). On a menu-kind mismatch this
+    /// closes the window before erroring — upstream throws and leaves
+    /// it open; closing is the safer default and is noted in
+    /// `docs/api-parity.md`.
     pub async fn open_container(&self, target: impl Into<ContainerTarget>) -> Result<Window> {
         let window = match target.into() {
             ContainerTarget::Block { pos, name } => {
@@ -683,14 +731,11 @@ impl Bot {
                     ));
                 }
                 let mut rx = self.events();
+                self.look_at(pos.center(), false).await?;
                 self.client.block_interact(pos);
                 self.await_window_open(&mut rx).await?
             }
-            ContainerTarget::Entity(entity) => {
-                let mut rx = self.events();
-                entity.interact();
-                self.await_window_open(&mut rx).await?
-            }
+            ContainerTarget::Entity(entity) => self.open_entity(&entity).await?,
         };
         match window.menu_kind() {
             Some(kind) if is_container_menu(kind) => Ok(window),
@@ -853,13 +898,10 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
         .window
         .clone()
         .ok_or_else(|| Error::Operation("transfer requires a window".into()))?;
+    let mut count = options.effective_count();
     let kind = options.kind;
     let metadata = options.metadata;
     let nbt = options.nbt;
-    // upstream `count === null` means "move every matching item"; a
-    // saturating sentinel behaves identically since the loop exits on
-    // `count == 0` or by exhausting the source range.
-    let mut count = options.count.unwrap_or(i32::MAX);
     let source = options.source_start..options.source_end.unwrap_or(options.source_start + 1);
     let dest_start = options.dest_start;
     let dest_end = options.dest_end.unwrap_or(dest_start + 1);
@@ -992,10 +1034,7 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azalea::inventory::{
-        components::Damage,
-        operations::{CloneClick, PickupAllClick, QuickCraftClick},
-    };
+    use azalea::inventory::{components::Damage, operations::CloneClick};
 
     #[test]
     fn player_inventory_slot_to_window_mapping() {
@@ -1048,11 +1087,10 @@ mod tests {
                 target_slot: 4
             })
         ));
-        // mode 3: middle/clone — upstream's modeMap maps button 2 →
-        // drop-all for parity with what clickWindow callers send
+        // mode 3: middle/clone click — the true click_type 3
         assert!(matches!(
             click_operation(10, 0, 3).unwrap(),
-            Throw(ThrowClick::All { slot: 10 })
+            Clone(CloneClick { slot: 10 })
         ));
         // mode 4: drop — button 0 single, 1 all
         assert!(matches!(
@@ -1068,18 +1106,30 @@ mod tests {
         assert!(click_operation(10, 0, 5).is_err());
         assert!(click_operation(10, 0, 6).is_err());
         assert!(click_operation(10, 0, 7).is_err());
-        // keep Clone/QuickCraft/PickupAll genuinely unreachable from the
-        // public mapping (documents the coverage boundary)
-        use azalea::inventory::operations::{QuickCraftKind, QuickCraftStatus};
-        let _ = CloneClick { slot: 0 };
-        let _ = QuickCraftClick {
-            kind: QuickCraftKind::Left,
-            status: QuickCraftStatus::Start,
+        // QuickCraft/PickupAll stay unreachable from the public mapping
+        // — documenting the coverage boundary, no test value needed.
+    }
+
+    #[test]
+    fn transfer_count_defaults_to_one() {
+        // upstream `count ?? 1` — None moves ONE item, not all matching
+        let opts = TransferOpts {
+            window: None,
+            kind: ItemKind::Stone,
+            metadata: None,
+            nbt: None,
+            count: None,
+            source_start: 9,
+            source_end: Some(45),
+            dest_start: 0,
+            dest_end: Some(9),
         };
-        let _ = PickupAllClick {
-            slot: 0,
-            reversed: false,
+        assert_eq!(opts.effective_count(), 1);
+        let opts = TransferOpts {
+            count: Some(7),
+            ..opts
         };
+        assert_eq!(opts.effective_count(), 7);
     }
 
     #[test]

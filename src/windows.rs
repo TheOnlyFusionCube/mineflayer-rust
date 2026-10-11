@@ -310,15 +310,17 @@ impl Window {
 
     /// The live [`Menu`], or `None` if the window is closed (the menu is
     /// a clone of ECS state; writes to it do nothing — use clicks).
+    /// Always resolves for id 0 — see [`menu_for_id`].
     pub fn menu(&self) -> Option<Menu> {
-        self.shared.handle.menu()
+        let inv = self.shared.client.get_component::<Inventory>()?;
+        menu_for_id(&inv, self.shared.id)
     }
 
     /// `window.slots` — every slot in the window (container region then
     /// player region), `None` if closed. [`Window::slot`] is cheaper for
     /// single reads.
     pub fn slots(&self) -> Option<Vec<ItemStack>> {
-        self.shared.handle.slots()
+        Some(self.menu()?.slots())
     }
 
     /// The [`Item`] at absolute slot `i`, `None` when empty/out of
@@ -425,7 +427,7 @@ impl Window {
     /// `window.deposit(itemType, metadata, count, nbt)` — move matching
     /// items from the player region into the container region. Uses
     /// [`Bot::transfer`](crate::Bot::transfer) click semantics; `None`
-    /// count moves every matching item (upstream `null`).
+    /// count moves 1 item (upstream `count ?? 1`).
     pub async fn deposit(
         &self,
         kind: ItemKind,
@@ -450,7 +452,7 @@ impl Window {
     /// `window.withdraw(itemType, metadata, count, nbt)` — move matching
     /// items from the container region into the player region. Errors
     /// like upstream when the inventory is already full; `None` count
-    /// moves every matching item (upstream `null`).
+    /// moves 1 item (upstream `count ?? 1`).
     pub async fn withdraw(
         &self,
         kind: ItemKind,
@@ -515,6 +517,9 @@ impl Window {
         self.shared.handle.close();
         if let Some(tracker) = self.shared.tracker.upgrade() {
             let mut t = tracker.lock().unwrap();
+            // drop the slot snapshot — a reused window id must not see
+            // this window's contents as `old` in WindowUpdateSlot
+            t.slots.remove(&self.shared.id);
             if let Some(current) = &t.current
                 && Arc::ptr_eq(current, &self.shared)
             {
@@ -541,6 +546,22 @@ impl Window {
 pub type Chest = Window;
 /// `bot.openDispenser` returns the same generic container.
 pub type Dispenser = Window;
+
+/// Resolve the live [`Menu`] for a window id. Id 0 always reads
+/// `inventory_menu` — azalea's `ContainerHandleRef` accessors gate on
+/// `inv.id == self.id`, which blinds the player window while a container
+/// is open (upstream keeps `bot.inventory` live during open windows via
+/// the id-0 packet writes our observer patches into `inventory_menu`).
+pub(crate) fn menu_for_id(inv: &Inventory, id: i32) -> Option<Menu> {
+    if id == 0 {
+        return Some(inv.inventory_menu.clone());
+    }
+    if inv.id == id {
+        inv.container_menu.clone()
+    } else {
+        None
+    }
+}
 
 /// First item in `slots[range]` matching the transfer predicate.
 pub(crate) fn find_item_in(
@@ -792,17 +813,19 @@ pub(crate) fn observe_event(
         }
         ClientboundGamePacket::ContainerSetContent(p) => set_content_events(tracker, client, p),
         ClientboundGamePacket::ContainerSetSlot(p) => set_slot_events(tracker, client, p),
-        ClientboundGamePacket::ContainerClose(_) => {
+        ClientboundGamePacket::ContainerClose(p) => {
             let mut t = tracker.lock().unwrap();
             // the server may close a pending window before content ever
-            // arrived — drop it either way
-            t.pending = None;
+            // arrived — drop it only if the close names the same id
+            t.pending.take_if(|w| w.id == p.container_id);
             let Some(shared) = t.current.take() else {
                 // server acking our own close() — already emitted
                 return Vec::new();
             };
             shared.closed.store(true, Ordering::SeqCst);
-            t.last_closed = Some((shared.id, shared.player_start, shared.len));
+            // `last_closed` is only seeded on *client* close (upstream
+            // sets it in closeWindow); a server close of this id would
+            // otherwise misroute early items of a same-id successor
             t.slots.remove(&shared.id);
             vec![BotEvent::WindowClose(Window {
                 shared: shared.clone(),
@@ -884,6 +907,11 @@ pub(crate) fn observe_event(
             t.early_items = None;
             t.last_closed = None;
             t.slots.clear();
+            // the override only bridges set_selected_hotbar_slot's
+            // tick-late component write — a fresh server-side player makes
+            // any stale value wrong (upstream keeps `quickBarSlot`, and the
+            // ECS slot still reports it via the fallback path)
+            t.selected_hotbar = None;
             let mut out = Vec::new();
             if matches!(&**packet, ClientboundGamePacket::Login(_))
                 && let Some(shared) = t.current.take()
@@ -1117,4 +1145,39 @@ fn snapshot_set(
     }
     let old = std::mem::replace(&mut slots[slot], new);
     Item::of(old, slot as i16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The C2 regression: `bot.inventory()` (id 0) must resolve the
+    /// player menu even while a container is open — azalea's
+    /// `ContainerHandleRef` gates on `inv.id == self.id`, which would
+    /// return `None` for every id-0 read during an open window.
+    #[test]
+    fn menu_for_id_resolves_player_menu_while_container_open() {
+        let inv = Inventory {
+            // a container is open under window id 5
+            id: 5,
+            container_menu: Some(Menu::from_kind(MenuKind::Generic9x3)),
+            ..Inventory::default()
+        };
+        // id 0 still resolves to the 46-slot player menu
+        let menu = menu_for_id(&inv, 0).unwrap();
+        assert_eq!(menu.len(), Menu::Player(Default::default()).len());
+        assert_eq!(menu.len(), 46);
+        // the open container resolves by its id
+        assert_eq!(menu_for_id(&inv, 5).unwrap().len(), 27 + 36);
+        // an unrelated id doesn't
+        assert!(menu_for_id(&inv, 6).is_none());
+        // and once the container is closed, its id goes blind again
+        let closed = Inventory {
+            id: 0,
+            container_menu: None,
+            ..Inventory::default()
+        };
+        assert!(menu_for_id(&closed, 0).is_some());
+        assert!(menu_for_id(&closed, 5).is_none());
+    }
 }
