@@ -189,6 +189,10 @@ pub struct TabList {
 /// `.json` — the parsed component). `Display`/`to_ansi`/`to_html` render it;
 /// translatable components resolve through the bundled en_us strings
 /// (azalea-language), the same default upstream's `toString()` uses.
+///
+/// [`ChatMessage::parse`] fails on `score`/`selector`/`keybind`/`nbt`/
+/// `object` components — azalea's deserializer doesn't support them yet
+/// (prismarine-chat does).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChatMessage {
     /// The parsed component (upstream's `.json`).
@@ -990,6 +994,19 @@ mod tests {
         assert_eq!(msg.with().map(|a| a.len()), Some(2));
         assert_eq!(msg.to_string(), "<faye> hello");
         assert!(msg.text().is_none());
+
+        // documented gap: azalea's deserializer rejects score/selector/
+        // keybind/nbt/object components (prismarine-chat accepts them)
+        for json in [
+            r#"{"score":{"name":"a","objective":"b"}}"#,
+            r#"{"selector":"@a"}"#,
+            r#"{"keybind":"key.jump"}"#,
+        ] {
+            assert!(
+                ChatMessage::parse(json).is_err(),
+                "{json} should fail to parse"
+            );
+        }
     }
 
     #[test]

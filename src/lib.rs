@@ -37,6 +37,7 @@ pub mod pvp;
 pub mod scoreboard;
 pub mod state;
 pub mod tool;
+pub mod vec3;
 pub mod window_types;
 pub mod windows;
 pub mod world;
@@ -79,6 +80,7 @@ pub use world::{
 };
 
 pub use interact::{DigAbortReason, DigFace, ForceLook};
+pub use vec3::Vec3Ext;
 
 // — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp —
 pub use collect::{CollectBlock, CollectTarget, Collected};
