@@ -32,7 +32,6 @@ pub use chat::{
     ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
-pub use interact::{DigAbortReason, DigFace, ForceLook};
 pub use misc::{
     ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
     TitleKind,
@@ -42,3 +41,5 @@ pub use world::{
     Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
     Game, Time, WorldRef,
 };
+
+pub use interact::{DigAbortReason, DigFace, ForceLook};

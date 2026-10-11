@@ -364,8 +364,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `bot.stopDigging()` | interact | `bot.stop_digging()` | ported | `StopMiningBlockEvent` → AbortDestroyBlock + `MiningQueued` drop |
 | `bot.digTime(block)` | interact | `bot.dig_time(block) -> Option<Duration>` | diverges | `None` = upstream `Infinity`; azalea `get_mine_progress`, `ceil(1/p)` ticks → ms |
 | `bot.canDigBlock(block)` | interact | `bot.can_dig_block(block) -> bool` | ported | diggable && eye-to-center ≤ 5.1 |
-| `bot.placeBlock(ref, faceVec)` | interact | `bot.place_block(block, face).await -> Result<Block>` | diverges | same blockUpdate ack→dest gate and "still unchanged" refusal; bounded 5s wait (upstream waits forever) |
-| `bot.placeEntity(ref, faceVec)` | interact | `bot.place_entity(..).await -> Result<EntityRef>` | diverges | EntitySpawn correlation within maxDistance (bat 4 / boat 3 / else 2), 5s timeout; boat also sends use_item |
+| `bot.placeBlock(ref, faceVec)` | interact | `bot.place_block(block, face).await -> Result<Block>` | ported | same blockUpdate ack→dest gate, "still unchanged" refusal, and 5s bound as upstream (`onceWithCleanup(timeout: 5000)`) |
+| `bot.placeEntity(ref, faceVec)` | interact | `bot.place_entity(..).await -> Result<EntityRef>` | ported | EntitySpawn correlation within maxDistance (bat 4 / boat 3 / else 2), boat sends use_item; same 5s bound as upstream |
 | `bot.activateBlock(b, dir, cursor)` | interact | `bot.activate_block(b, dir, cursor).await` | ported | raw `ServerboundUseItemOn` — cursor hits the wire (azalea `block_interact` re-raycasts instead) |
 | `bot._nextSequence (internal)` | interact | `Bot::next_sequence()` (private) | ported | `BlockStatePredictionHandler::start_predicting` |
 | `bot.targetDigBlock (undoc)` | interact | `bot.target_dig_block() -> Option<Block>` | ported | azalea `Mining`/`MiningQueued` pos |

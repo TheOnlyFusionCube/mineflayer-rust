@@ -60,8 +60,8 @@ const DIG_FINISH_GRACE: Duration = Duration::from_secs(10);
 /// `diggingTask` rejection message, identical to upstream's.
 const DIG_ABORTED: &str = "Digging aborted";
 
-/// Upstream waits on `blockUpdate:{dest}` with no timeout; we surface a
-/// bounded wait instead so `place_block` can't hang on a silent server.
+/// Upstream's own bound: `placeBlock` uses `onceWithCleanup(timeout: 5000)`
+/// and `placeEntity` a `setTimeout(5000)` before rejecting.
 const PLACE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `bot.dig`'s `forceLook` argument (`lib/plugins/digging.js`).
@@ -159,6 +159,19 @@ pub(crate) struct InteractShared {
     last_dig_time: Option<Instant>,
 }
 
+impl InteractShared {
+    /// Mark the in-flight dig generation aborted — called for every
+    /// `stop_digging`, including the `start_mining`→`MiningQueued` window
+    /// where no mining component exists yet (upstream sets `targetDigBlock`
+    /// synchronously inside `dig()`, so a stop can never be swallowed).
+    fn abort_current(&mut self) {
+        if self.dig_seq > self.aborted_seq {
+            self.aborted_seq = self.dig_seq;
+            self.last_dig_time = Some(Instant::now());
+        }
+    }
+}
+
 /// Upstream `vectorToDirection` (place_block.js / inventory.js
 /// `activateBlock`): y→z→x precedence, `None` when nothing is non-zero.
 fn face_direction(v: Vec3) -> Option<Direction> {
@@ -244,8 +257,11 @@ impl Bot {
                 block.name()
             )));
         };
+        // azalea `unwrap`s HitResultComponent when handling the start
+        // event — missing means the pick systems haven't initialized yet,
+        // not that we're offline
         if self.client.get_component::<HitResultComponent>().is_none() {
-            return Err(Error::NotConnected);
+            return Err(Error::Operation("bot isn't fully spawned yet".to_string()));
         }
         let force = force_look == ForceLook::Force;
         if force_look != ForceLook::Ignore {
@@ -321,8 +337,13 @@ impl Bot {
             if Instant::now() >= deadline {
                 break Some(DigAbortReason::Timeout);
             }
-            if ticks.recv().await.is_err() {
-                break Some(DigAbortReason::Interrupted);
+            match ticks.recv().await {
+                // capacity-1 broadcast — a scheduling stall loses ticks,
+                // not the dig; only a dead channel interrupts
+                Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Closed) => {
+                    break Some(DigAbortReason::Interrupted);
+                }
             }
         };
 
@@ -359,19 +380,22 @@ impl Bot {
     /// `bot.stopDigging()` — abort the in-flight dig. The pending `dig`
     /// future emits `diggingAborted` and rejects, exactly like upstream.
     ///
-    /// Uses azalea's `StopMiningBlockEvent` (→ `AbortDestroyBlock` packet)
-    /// and drops a stale `MiningQueued`; digging with no target is a no-op.
+    /// Stamps the dig generation even when no `Mining`/`MiningQueued`
+    /// exists yet (a stop in the `start_mining` window still aborts the
+    /// pending `dig`), then sends azalea's `StopMiningBlockEvent` (→
+    /// `AbortDestroyBlock` packet) and drops a stale `MiningQueued`.
     pub fn stop_digging(&self) {
         let entity = self.client.entity;
         let mut ecs = self.client.ecs.write();
         let mining = ecs.get::<Mining>(entity).is_some();
         let queued = ecs.get::<MiningQueued>(entity).is_some();
+        // stamp before the early return: a stop landing in the
+        // `start_mining`→`MiningQueued` window must not be swallowed
+        if let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) {
+            shared.abort_current();
+        }
         if !mining && !queued {
             return;
-        }
-        if let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) {
-            shared.aborted_seq = shared.dig_seq;
-            shared.last_dig_time = Some(Instant::now());
         }
         if queued {
             ecs.entity_mut(entity).remove::<MiningQueued>();
@@ -846,6 +870,25 @@ mod tests {
         assert!(within_dig_reach(below_eye(5.09), feet));
         assert!(!within_dig_reach(below_eye(5.11), feet));
         assert!(!within_dig_reach(below_eye(5.2), feet));
+    }
+
+    #[test]
+    fn abort_stamps_generation_without_mining_components() {
+        // the start_mining→MiningQueued window: dig_seq is bumped but no
+        // mining component exists yet — an abort must still land so the
+        // pending `dig` sees it
+        let mut shared = InteractShared {
+            dig_seq: 3,
+            ..Default::default()
+        };
+        shared.abort_current();
+        assert_eq!(shared.aborted_seq, 3);
+        assert!(shared.last_dig_time.is_some());
+        // no un-aborted generation → idempotent no-op
+        let stamped = shared.last_dig_time;
+        shared.abort_current();
+        assert_eq!(shared.aborted_seq, 3);
+        assert_eq!(shared.last_dig_time, stamped);
     }
 
     #[test]
