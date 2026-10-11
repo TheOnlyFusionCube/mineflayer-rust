@@ -564,7 +564,15 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `pvp.attack(target) / .stop()` | pathfinder | `bot.pvp().attack(&entity)` / `.stop()` / `.target()` | ported | dynamic `Goal::Follow` + per-tick driver: looks at target, swings in 3.0 range when attack cooldown is ready; retarget on a second `attack()`; ends on stop/target death/despawn |
 | `event('stoppedAttacking')` | pathfinder | `BotEvent::StoppedAttacking` | ported | emitted exactly once per attack run — by `stop()` or by the driver when the target dies/despawns; never on retarget |
 | `tool.equipForBlock etc.` | pathfinder | `bot.tool().equip_for_block(&block)` / `.best_tool_for(&block)` / `.equip_for_entity(&entity)` | diverges | wraps azalea's `best_tool_in_hotbar_for_block` — hotbar-only (upstream scans the full inventory); `best_tool_for` returns `None` when the bare hand wins; `equip_for_entity` is a generic max-`attack_damage` hotbar pick — no entity-aware weapon scoring exists on either side |
-| `autoEat.*` | pathfinder | `bot.auto_eat()` | pending | U12 stretch — skipped |
+| `autoEat.*` | pathfinder | `bot.auto_eat()` | ported | `AutoEat` facade over the U12 driver pattern: `enable_auto()`/`disable_auto()` toggle a per-tick monitor (`bot.food() < min_hunger || bot.health() < min_health` → one `eat()`), `eat(opts)`/`cancel_eat()`/`is_eating()`/`enabled()`/`opts()`/`set_opts()` mirror `EatUtil`; food data comes from azalea's `Food` default component (`AutoEat::food_data` covers `foodsByName`); upstream's per-plugin event emitter becomes `BotEvent::EatStart`/`EatFinish`/`EatFail` — note the brief's "`eatSuccess`" is upstream `eatFinish` (fires after `eatFail` too, from `finally`). Upstream's `eat` leaks `_eating` on an equip-failure throw; ours releases `is_eating` on every path |
+| `autoEat.opts` fields | pathfinder | `AutoEatOpts` | ported | all of `IEatUtilOpts`: `priority` (`foodPoints`/`saturation`/`effectiveQuality`/`saturationRatio` → `FoodPriority`), `min_hunger` 15, `min_health` 14, `banned_food` (upstream's 5 defaults), `return_to_last_item`, `offhand`, `eating_timeout` 3 s, `strict_errors` |
+| `autoEat.eat(opts)` | pathfinder | `bot.auto_eat().eat(EatOpts)` | ported | `EatOpts` = `{food: Option<FoodSelection(Item|ItemKind|name)>, offhand, equip_old_item, priority}`; auto-pick sorts inventory-region foods by the chosen priority (stable, first slot wins ties); explicit selections bypass `banned_food` like upstream's `normalizeFoodChoice`; numeric-id selection has no azalea analog — `ItemKind` covers it |
+| `autoEat.enableAuto()/disableAuto()` | pathfinder | `.enable_auto()` / `.disable_auto()` | ported | spawns/retires the tick driver (selects on `bot.shutdown`, tolerates `Lagged`, exits on `Closed`/shutdown); an in-flight eat finishes normally on disable |
+| `autoEat.cancelEat()` | pathfinder | `.cancel_eat()` | ported | fails the in-flight eat with `Eating manually canceled!` and deactivates the item; no-op when idle |
+| `autoEat.isEating` / `.enabled` | pathfinder | `.is_eating()` / `.enabled()` | ported | |
+| `autoEat.foods / foodsArray / foodsByName` | pathfinder | `AutoEat::food_data(kind) -> Option<FoodData>` | diverges | per-kind lookup instead of registry tables — same source data (vanilla `food` component: `nutrition`, `saturation`, `can_always_eat`); enumerate by mapping over `ItemKind` if a list is needed |
+| `autoEat.setOpts` | pathfinder | `.set_opts(AutoEatOpts)` | ported | whole-struct replace; read `opts()`, edit fields, write back for the upstream partial-merge form |
+| `autoEat` events `eatStart`/`eatFinish`/`eatFail` | pathfinder | `BotEvent::EatStart{food, offhand}` / `EatFinish{food, offhand}` / `EatFail(String)` | diverges | emitted on the shared `BotEvent` stream (upstream fires them on the `bot.autoEat` emitter); `EatFail` carries the error message, not the `Error` object; `EatFinish` fires after `EatFail` like upstream's `finally` |
 
 ## External plugin ecosystem (out of scope)
 
@@ -609,4 +617,4 @@ Public API beyond the upstream inventory — listed so the ledger stays complete
 | `BotEvent::Packet` | lifecycle | additive | raw `ClientboundGamePacket` escape hatch; upstream analog is the internal `_client.on('packet')` |
 | `Settings.locale` | misc | additive | `bot.settings().locale`; upstream tracks locale via `ClientOptions`, not `bot.settings` |
 
-<!-- 484 rows: 474 upstream-inventory + 10 additive -->
+<!-- 492 rows: 482 upstream-inventory + 10 additive -->
