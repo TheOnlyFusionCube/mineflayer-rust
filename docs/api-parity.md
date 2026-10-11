@@ -313,6 +313,8 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Furnace class` | inventory | `struct Furnace` (Deref → Window) | ported | — |
 | `Furnace.fuel` | inventory | `furnace.fuel() -> f32` | ported | `fuelSeconds()`/`progressSeconds()` too; 0 until the data slots arrive like upstream's null guards |
 | `Furnace.progress` | inventory | `furnace.progress() -> f32` | ported | — |
+| `Furnace.totalFuel` | inventory | `furnace.total_fuel() -> Option<i32>` | ported | raw server-reported burn ticks; `total_fuel_seconds()` too; `None` until the data slot arrives like upstream's `null` |
+| `Furnace.totalProgress` | inventory | `furnace.total_progress() -> Option<i32>` | ported | raw smelt ticks; `total_progress_seconds()` too |
 | `Furnace.takeInput()` | inventory | `furnace.take_input().await -> Item` | ported | — |
 | `Furnace.takeFuel()` | inventory | `furnace.take_fuel().await` | ported | — |
 | `Furnace.takeOutput()` | inventory | `furnace.take_output().await` | ported | — |

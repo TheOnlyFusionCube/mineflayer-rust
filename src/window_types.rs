@@ -421,6 +421,37 @@ impl Furnace {
         self.data_map().map(|d| furnace_ratios(&d).3).unwrap_or(0.)
     }
 
+    /// `furnace.totalFuel` — ticks the current fuel item burns for, as
+    /// the server last reported (`None` until the data slot arrives,
+    /// like upstream's `null`).
+    pub fn total_fuel(&self) -> Option<i32> {
+        self.data(FUEL_TOTAL).map(i32::from)
+    }
+
+    /// `furnace.totalFuelSeconds` — `totalFuel` in seconds.
+    pub fn total_fuel_seconds(&self) -> Option<f32> {
+        self.total_fuel().map(|t| t as f32 * 0.05)
+    }
+
+    /// `furnace.totalProgress` — ticks one smelt takes, as the server
+    /// last reported (`None` until the data slot arrives).
+    pub fn total_progress(&self) -> Option<i32> {
+        self.data(COOK_TOTAL).map(i32::from)
+    }
+
+    /// `furnace.totalProgressSeconds` — `totalProgress` in seconds.
+    pub fn total_progress_seconds(&self) -> Option<f32> {
+        self.total_progress().map(|t| t as f32 * 0.05)
+    }
+
+    fn data(&self, property: u16) -> Option<i16> {
+        self.bot
+            .window_data
+            .lock()
+            .unwrap()
+            .data(self.window.id(), property)
+    }
+
     fn data_map(&self) -> Option<HashMap<u16, i16>> {
         self.bot
             .window_data
@@ -1511,6 +1542,14 @@ mod tests {
         )));
         // the value is readable through the tracker
         assert_eq!(tracker.lock().unwrap().data(4, ANVIL_COST), Some(9));
+        // the totals (`furnace.totalFuel`/`totalProgress`) ride the same
+        // retention — a total-only update leaves the current value alone
+        observe_event(&tracker, &set_data(3, FUEL_TOTAL, 1600));
+        observe_event(&tracker, &set_data(3, COOK_TOTAL, 200));
+        let t = tracker.lock().unwrap();
+        assert_eq!(t.data(3, FUEL_TOTAL), Some(1600));
+        assert_eq!(t.data(3, COOK_TOTAL), Some(200));
+        assert_eq!(t.data(3, FUEL_LEFT), Some(40));
     }
 
     #[test]
