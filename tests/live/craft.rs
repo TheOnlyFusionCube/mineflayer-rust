@@ -278,7 +278,7 @@ async fn recipe_book_and_craft() {
         break;
     }
     if !crafted_table {
-        eprintln!("no diggable log within 48 blocks — end-to-end craft skipped");
+        eprintln!("SKIP: no diggable log within 48 blocks — end-to-end craft NOT exercised");
     }
 
     bot.quit(None);

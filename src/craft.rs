@@ -128,7 +128,11 @@ pub struct Recipe {
     /// container-item remainders like buckets. The server's displays
     /// don't carry this (`WithRemainder` wraps the input instead) and
     /// `craft` clears whatever the grid actually holds, so this is
-    /// only populated by hand-built recipes.
+    /// only populated by hand-built recipes. Note [`Recipe::new`]
+    /// computes `delta` once — setting `out_shape` afterwards does
+    /// NOT fold upstream's `+1` remainder entries into `delta`, and
+    /// upstream's `normalizeMetadata` wildcard rule (metadata ≥32767
+    /// → null) is not ported.
     pub out_shape: Option<Vec<Vec<Option<Ingredient>>>>,
     /// Shapeless ingredient list (upstream `ingredients`). `None` for
     /// shaped recipes.
@@ -232,6 +236,10 @@ fn add_delta(delta: &mut Vec<DeltaEntry>, any_of: Vec<RecipeItem>, count: i32) {
 }
 
 /// Take one unit of any kind the ingredient accepts from `counts`.
+/// Greedy over `any_of` order — two demand slots sharing an
+/// alternative under scarcity can falsely fail (bipartite matching
+/// would be exact; upstream never needed it with single-kind deltas
+/// and it's rare for vanilla tag ingredients).
 fn consume_one(counts: &mut HashMap<(ItemKind, Option<i32>), i64>, ing: &Ingredient) -> bool {
     for want in &ing.any_of {
         let key = counts
@@ -413,10 +421,20 @@ fn slot_display_result(d: &SlotDisplayData) -> Option<RecipeResult> {
     }
 }
 
-/// azalea's `ItemStack` codec reads `count` then `kind`, but mc26's
-/// `ItemStack` slot displays write `kind` then `count` — the decoded
-/// pair arrives swapped (`Stone×333` for `crafting_table×1`). Recover
-/// by treating the decoded count as the real kind id.
+/// azalea 0.16's `ItemStack` codec reads `count` then `kind`
+/// (`azalea-inventory/src/slot.rs:226-239`, `impl AzBuf for ItemStack`),
+/// but mc26's `ItemStack` slot displays serialize `ItemStackTemplate`
+/// `(item, count, components)` item-first — the decoded pair arrives
+/// swapped (`Stone×333` for `crafting_table×1`). Recover by treating
+/// the decoded count as the real kind id.
+///
+/// Removal condition: this is a confirmed upstream decode bug. When
+/// azalea fixes `ItemStackSlotDisplay` (a dedicated template codec
+/// reading item-first), the pinning test
+/// `item_stack_slot_display_codec_order` fails — delete this un-swap
+/// and read `d.kind`/`d.count` directly. The `from_u32` fallback can
+/// never fire under a fixed codec (counts 1..=99 always map to a
+/// valid kind), so without the test this corrupts silently.
 fn displayed_stack(stack: &azalea::inventory::ItemStack) -> (ItemKind, i32) {
     let Some(d) = stack.as_present() else {
         return (ItemKind::Air, 0);
@@ -696,10 +714,14 @@ fn item_tag(id: &Identifier) -> Option<&'static RegistryTag<ItemKind>> {
 // Bot surface — recipesFor/recipesAll/craft.
 // ---------------------------------------------------------------------------
 
-/// `(kind, damage)` → item count over the player-inventory region.
+/// `(kind, damage)` → item count over the whole inventory window —
+/// upstream `requirementsMetForRecipe` uses `bot.inventory.count`,
+/// which counts every slot (crafting grid 1-4, armor 5-8, main 9-44,
+/// offhand 45, and a mid-craft result in slot 0), not just the player
+/// region.
 fn inventory_counts(window: &Window) -> HashMap<(ItemKind, Option<i32>), i64> {
     let mut counts = HashMap::new();
-    for item in window.inventory_items() {
+    for item in window.items() {
         *counts.entry((item.kind(), item.metadata())).or_insert(0) += i64::from(item.count());
     }
     counts
@@ -948,11 +970,14 @@ fn unused_recipe_slots(recipe: &Recipe, w: usize, h: usize) -> Vec<i32> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use azalea::{
+        buf::AzBuf,
         inventory::ItemStack,
         protocol::{
             common::recipe::{
-                Ingredient as WireIngredient, ShapedCraftingRecipeDisplay,
+                Ingredient as WireIngredient, ItemStackSlotDisplay, ShapedCraftingRecipeDisplay,
                 ShapelessCraftingRecipeDisplay, SlotDisplayData,
             },
             packets::game::{
@@ -1223,6 +1248,32 @@ mod tests {
             }),
             Some(vec![tag_ingredient("minecraft:planks"); 4]),
         )
+    }
+
+    /// Pins the azalea codec order [`displayed_stack`] compensates for.
+    /// The mc26 `ItemStackSlotDisplay` wire carries `ItemStackTemplate`
+    /// item-first: `[kind VarInt][count VarInt][patch]`. azalea 0.16
+    /// decodes through the container `ItemStack` codec (count-first) —
+    /// a `crafting_table×1` template therefore decodes as `Stone×333`.
+    /// When azalea fixes the decode this test fails: delete the un-swap.
+    #[test]
+    fn item_stack_slot_display_codec_order() {
+        // crafting_table kind id 333 → VarInt 0xCD 0x02; count 1;
+        // empty DataComponentPatch (two VarInt zeros)
+        let wire: &[u8] = &[0xCD, 0x02, 0x01, 0x00, 0x00];
+        let display = ItemStackSlotDisplay::azalea_read(&mut Cursor::new(wire)).unwrap();
+        let d = display.stack.as_present().expect("non-empty stack");
+        assert_eq!(
+            (d.count, d.kind),
+            (333, ItemKind::Stone),
+            "azalea's ItemStackSlotDisplay decode changed — remove \
+             displayed_stack's un-swap and read kind/count directly"
+        );
+        // …and the un-swap it exists for still recovers the real pair
+        assert_eq!(
+            displayed_stack(&display.stack),
+            (ItemKind::CraftingTable, 1)
+        );
     }
 
     #[test]
