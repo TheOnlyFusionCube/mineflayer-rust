@@ -500,7 +500,56 @@ pub enum BotEvent {
     /// `entityPlaced` (undocumented upstream) — the entity a
     /// [`Bot::place_entity`] spawned.
     EntityPlaced(azalea::EntityRef),
+    /// `goal_updated` — `pathfinder.set_goal` installed a new goal
+    /// (upstream emits `(goal, dynamic)`).
+    GoalUpdated {
+        /// The goal that was installed.
+        goal: crate::pathfinder::Goal,
+        /// The `set_goal` `dynamic` argument it was installed with.
+        dynamic: bool,
+    },
+    /// `path_update` — a new path was found, or a calculation finished
+    /// (azalea also ends a failed calculation this way, matching
+    /// upstream's per-result `path_update`; `path` is empty then).
+    /// `is_partial` mirrors upstream's `r.partial` flag.
+    PathUpdate {
+        /// The path node list (empty while no path is executing).
+        path: Vec<BlockPos>,
+        /// Whether the path only gets partway to the goal.
+        is_partial: bool,
+    },
+    /// `goal_reached` — the current goal's success check holds.
+    /// Suppressed for `dynamic` goals, like upstream; `goal` is the
+    /// reached goal (upstream emits `(goal)`).
+    GoalReached {
+        /// The goal whose success check now holds.
+        goal: crate::pathfinder::Goal,
+    },
+    /// `path_stop` — the goal was abandoned without reaching. Upstream
+    /// emits no payload; `goal` is the facade goal that was cleared, if
+    /// one was set.
+    PathStop {
+        /// The abandoned goal, if one was set.
+        goal: Option<crate::pathfinder::Goal>,
+    },
+    /// `path_reset` — the path was restarted mid-flight. `reason` is
+    /// `goal_updated` or `movements_updated`, the two upstream call sites
+    /// the facade can observe. azalea's internal repaths (stuck, block
+    /// change, chunk load, …) surface as `path_update` instead — see
+    /// api-parity.md.
+    PathReset {
+        /// Which `set_goal`/`set_movements` call caused the reset.
+        reason: &'static str,
+    },
 }
+
+/// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
+/// emits several thousand events a second (one `Packet` per clientbound
+/// packet plus per-entity domain events), so 256 overflowed mid-burst
+/// and lagged subscribers silently missed events; 8192 holds a
+/// multi-second flood without the multi-MB upfront ring a much larger
+/// capacity would allocate per `Bot`.
+const EVENT_CHANNEL_CAPACITY: usize = 8192;
 
 /// `createBot(options)` analog. Defaults match upstream:
 /// `localhost:25565`, username `Player`, offline auth.
@@ -691,7 +740,7 @@ impl BotBuilder {
             .entity_mut(client.entity)
             .insert(crate::interact::InteractShared::default());
 
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let quit_reason = Arc::new(Mutex::new(None));
         let chat = Arc::new(Mutex::new(ChatShared::default()));
         let (alive, alive_rx) = watch::channel(());
@@ -744,7 +793,7 @@ impl Bot {
     /// silent stream. Prefer [`Bot::builder`].
     #[doc(hidden)]
     pub fn new(client: azalea::Client) -> Self {
-        let (events, _) = broadcast::channel(256);
+        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (alive, _) = watch::channel(());
         Self {
             client,

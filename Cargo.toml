@@ -60,3 +60,8 @@ required-features = ["live"]
 name = "live_interact"
 path = "tests/live/interact.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live_pathfinder"
+path = "tests/live/pathfinder.rs"
+required-features = ["live"]
