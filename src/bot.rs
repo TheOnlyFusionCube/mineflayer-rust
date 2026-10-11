@@ -613,6 +613,24 @@ pub enum BotEvent {
         /// Protocol window id of the merchant window.
         window_id: i32,
     },
+    // — ecosystem plugins (U12): collectBlock / pvp progress events.
+    // Emitted by the plugin methods themselves (no upstream packet
+    // source — mineflayer-collectblock emits nothing; ours surfaces the
+    // progress the single-await API can't otherwise report). —
+    /// `collect` targeted a matching block (before walking to it).
+    CollectBlockFound(Block),
+    /// `collect` broke a target block.
+    Collected(Block),
+    /// `collect` finished — `collected` is how many blocks were broken
+    /// (short of the requested count when the search exhausted early).
+    CollectDone {
+        /// Blocks broken by the completed `collect` call.
+        collected: usize,
+    },
+    /// mineflayer-pvp `stoppedAttacking` — the attack loop ended
+    /// (explicit `stop`, target died/despawned). No payload, like
+    /// upstream.
+    StoppedAttacking,
 }
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world

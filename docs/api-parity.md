@@ -557,11 +557,11 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `event('goal_updated')` | pathfinder | `BotEvent::GoalUpdated{goal, dynamic}` | ported | emitted synchronously by `set_goal`, payload like upstream's `(goal, dynamic)` |
 | `event('path_stop')` | pathfinder | `BotEvent::PathStop{goal}` | ported | `stop()`, a follow goal going invalid, or azalea clearing the goal without reaching (world change, internal stop); `goal` carries the abandoned facade goal (`Some`) — upstream emits no payload |
 | `event('path_reset')` | pathfinder | `BotEvent::PathReset{reason}` | diverges | only `goal_updated`/`movements_updated` reasons are observable; azalea's internal repaths (stuck, block change, chunk load, dig error, …) surface as `path_update` and can't be told apart |
-| `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(b).await` | pending | U12; find+goto+dig loop |
-| `pvp.attack(target) / .stop()` | pathfinder | `bot.pvp().attack(e) / stop()` | pending | U12 |
-| `event('stoppedAttacking')` | pathfinder | `BotEvent::StoppedAttacking` | pending | U12 |
-| `tool.equipForBlock etc.` | pathfinder | `bot.tool() over azalea auto_tool` | pending | U12 |
-| `autoEat.*` | pathfinder | `bot.auto_eat()` | pending | U12 stretch |
+| `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(target).await -> Result<Collected>` | ported | `CollectTarget` accepts Block/BlockPos/BlockKind/kind-list/predicate + `.count()/.max_distance()/.point()`; find→goto→dig loop re-searches per iteration + bounded drop vacuum; emits `CollectBlockFound`/`Collected`/`CollectDone` (upstream emits none); partial hauls resolve `Ok` — compare `collected.blocks.len()` to the asked count |
+| `pvp.attack(target) / .stop()` | pathfinder | `bot.pvp().attack(&entity)` / `.stop()` / `.target()` | ported | dynamic `Goal::Follow` + per-tick driver: looks at target, swings in 3.0 range when attack cooldown is ready; retarget on a second `attack()`; ends on stop/target death/despawn |
+| `event('stoppedAttacking')` | pathfinder | `BotEvent::StoppedAttacking` | ported | emitted exactly once per attack run — by `stop()` or by the driver when the target dies/despawns; never on retarget |
+| `tool.equipForBlock etc.` | pathfinder | `bot.tool().equip_for_block(&block)` / `.best_tool_for(&block)` / `.equip_for_entity(&entity)` | diverges | wraps azalea's `best_tool_in_hotbar_for_block` — hotbar-only (upstream scans the full inventory); `best_tool_for` returns `None` when the bare hand wins; `equip_for_entity` is a generic max-`attack_damage` hotbar pick — no entity-aware weapon scoring exists on either side |
+| `autoEat.*` | pathfinder | `bot.auto_eat()` | pending | U12 stretch — skipped |
 
 ## External plugin ecosystem (out of scope)
 

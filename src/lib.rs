@@ -12,6 +12,7 @@ mod bridge;
 mod error;
 
 pub mod chat;
+pub mod collect;
 pub mod craft;
 pub mod entity;
 pub mod interact;
@@ -19,8 +20,10 @@ pub mod inventory;
 pub mod misc;
 pub mod movement;
 pub mod pathfinder;
+pub mod pvp;
 pub mod scoreboard;
 pub mod state;
+pub mod tool;
 pub mod window_types;
 pub mod windows;
 pub mod world;
@@ -59,6 +62,11 @@ pub use world::{
 
 pub use interact::{DigAbortReason, DigFace, ForceLook};
 
+// — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp —
+pub use collect::{CollectBlock, CollectTarget, Collected};
+pub use pvp::Pvp;
+pub use tool::Tool;
+
 #[cfg(test)]
 pub(crate) mod test_util {
     /// A `Client` whose own entity is already despawned — the state packets
@@ -74,6 +82,17 @@ pub(crate) mod test_util {
             ecs.despawn(entity);
             entity
         };
+        azalea::Client::new(entity, ecs)
+    }
+
+    /// A `Client` whose own entity is alive and carries `bundle` — for
+    /// tests that need components present (plugin state, pathfinder
+    /// facade, inventory). No systems run, so ECS events are queued but
+    /// never processed and tick broadcasters may not exist.
+    pub(crate) fn live_entity_client(bundle: impl azalea::ecs::bundle::Bundle) -> azalea::Client {
+        let mut app = azalea::app::App::new();
+        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let entity = ecs.write().spawn(bundle).id();
         azalea::Client::new(entity, ecs)
     }
 }

@@ -80,3 +80,8 @@ required-features = ["live"]
 name = "live-craft"
 path = "tests/live/craft.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live_plugins"
+path = "tests/live/plugins.rs"
+required-features = ["live"]
