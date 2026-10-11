@@ -66,6 +66,10 @@ pub struct Bot {
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links), shared with the bridge task — see `entity::EntityTracker`.
     pub(crate) entities: Arc<std::sync::RwLock<crate::entity::EntityTracker>>,
+    /// Inventory/window-domain state (current window, slot snapshots,
+    /// eat/use bookkeeping), shared with the bridge task — see
+    /// `windows::WindowTracker`.
+    pub(crate) windows: Arc<Mutex<crate::windows::WindowTracker>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -480,6 +484,33 @@ pub enum BotEvent {
         /// The vehicle we were riding.
         vehicle: Option<azalea::EntityRef>,
     },
+    // — inventory/windows domain —
+    /// `windowOpen` — the server opened a non-inventory window and its
+    /// slot data arrived (upstream's `setWindowItems` gate).
+    WindowOpen(crate::windows::Window),
+    /// `windowClose` — the window was closed by us or the server. The
+    /// payload is the window that closed (upstream emits it too — note
+    /// upstream's payload can be `null` on some paths; ours never is).
+    WindowClose(crate::windows::Window),
+    /// `window.updateSlot` — a slot in a window changed. `window_id` is
+    /// the protocol window id (0 = player inventory); `old` is the
+    /// previously tracked contents (`None` if the slot was empty or
+    /// never seen).
+    WindowUpdateSlot {
+        /// Protocol window id (0 = the player inventory).
+        window_id: i32,
+        /// Absolute slot index in the window.
+        slot: u16,
+        /// Previous contents (`None` = was empty/unknown).
+        old: Option<crate::windows::Item>,
+        /// New contents (`None` = now empty).
+        new: Option<crate::windows::Item>,
+    },
+    /// `heldItemChanged` — the held item changed, or the quickbar
+    /// selection moved (upstream also emits it unconditionally from
+    /// `updateHeldItem`, so listeners should diff on kind+count like
+    /// upstream's eat listener does).
+    HeldItemChanged(Option<crate::windows::Item>),
 }
 
 /// `createBot(options)` analog. Defaults match upstream:
@@ -673,6 +704,9 @@ impl BotBuilder {
         let entities = Arc::new(std::sync::RwLock::new(
             crate::entity::EntityTracker::default(),
         ));
+        let windows = Arc::new(Mutex::new(crate::windows::WindowTracker::new(
+            events.clone(),
+        )));
         bridge::spawn(
             client.clone(),
             rx,
@@ -683,6 +717,7 @@ impl BotBuilder {
                 quit_reason: quit_reason.clone(),
                 chat: chat.clone(),
                 entities: entities.clone(),
+                windows: windows.clone(),
             },
         );
         crate::world::spawn_packet_bridge(
@@ -700,6 +735,7 @@ impl BotBuilder {
             chat,
             world_state,
             entities,
+            windows,
         })
     }
 }
@@ -721,7 +757,7 @@ impl Bot {
         let (alive, _) = watch::channel(());
         Self {
             client,
-            events,
+            events: events.clone(),
             quit_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
             chat: Arc::new(Mutex::new(ChatShared::default())),
@@ -729,6 +765,7 @@ impl Bot {
             entities: Arc::new(std::sync::RwLock::new(
                 crate::entity::EntityTracker::default(),
             )),
+            windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(events))),
         }
     }
 

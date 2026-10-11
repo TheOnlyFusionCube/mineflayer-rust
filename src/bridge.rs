@@ -29,6 +29,8 @@ pub(crate) struct BridgeDeps {
     pub chat: Arc<Mutex<ChatShared>>,
     /// Entity-domain packet decode state — see [`entity::EntityTracker`].
     pub entities: Arc<std::sync::RwLock<entity::EntityTracker>>,
+    /// Inventory/window-domain state — see `windows::WindowTracker`.
+    pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
 }
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
@@ -47,6 +49,7 @@ pub(crate) fn spawn(
             quit_reason,
             chat,
             entities,
+            windows,
         } = deps;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
@@ -75,6 +78,12 @@ pub(crate) fn spawn(
                     let movement_events =
                         crate::movement::bridge_events(&client, &mut state.movement, &event);
                     let derived = entity::observe_event(&entities, &client, &event);
+                    // window domain: open/close/slot/held bookkeeping and
+                    // the ECS patches for pieces azalea drops (its
+                    // observer must run *inside* this event loop so ECS
+                    // writes land between ticks).
+                    let window_events =
+                        crate::windows::observe_event(&windows, &client, &event);
                     for bot_event in translate(&mut state, &quit_reason, event) {
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
@@ -88,6 +97,9 @@ pub(crate) fn spawn(
                         let _ = events.send(bot_event);
                     }
                     for bot_event in derived {
+                        let _ = events.send(bot_event);
+                    }
+                    for bot_event in window_events {
                         let _ = events.send(bot_event);
                     }
                 }

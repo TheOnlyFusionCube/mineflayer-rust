@@ -32,11 +32,19 @@ pub use chat::{
     ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
+// ItemKind/MenuKind/DataComponentPatch appear in the public inventory API
+// (toss/transfer/deposit/Window::menu_kind) — re-exported like `BlockPos`.
+pub use azalea::{
+    inventory::{DataComponentPatch, ItemStack},
+    registry::builtin::{ItemKind, MenuKind},
+};
+pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
 pub use misc::{
     ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,
     TitleKind,
 };
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
+pub use windows::{Chest, Dispenser, Item, Window};
 pub use world::{
     Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
     Game, Time, WorldRef,

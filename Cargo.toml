@@ -55,3 +55,8 @@ required-features = ["live"]
 name = "live-entity"
 path = "tests/live/entity.rs"
 required-features = ["live"]
+
+[[test]]
+name = "live-inventory"
+path = "tests/live/inventory.rs"
+required-features = ["live"]
