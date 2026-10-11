@@ -38,6 +38,7 @@ pub use azalea::{
     inventory::{DataComponentPatch, ItemStack},
     registry::builtin::{ItemKind, MenuKind},
 };
+pub use craft::{DeltaEntry, Ingredient, Recipe, RecipeItem, RecipeResult};
 pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
 pub use misc::{
     ChatVisibility, Creative, Instrument, ModelCustomization, Particle, ParticleStatus, Settings,

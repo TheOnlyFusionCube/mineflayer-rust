@@ -70,6 +70,10 @@ pub struct Bot {
     /// eat/use bookkeeping), shared with the bridge task — see
     /// `windows::WindowTracker`.
     pub(crate) windows: Arc<Mutex<crate::windows::WindowTracker>>,
+    /// Recipe-book state (unlocked recipes from `c_recipe_book_add`/
+    /// `c_recipe_book_remove`), shared with the bridge task — see
+    /// `craft::RecipeBook`.
+    pub(crate) recipes: Arc<Mutex<crate::craft::RecipeBook>>,
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -783,6 +787,7 @@ impl BotBuilder {
         let windows = Arc::new(Mutex::new(crate::windows::WindowTracker::new(
             events.clone(),
         )));
+        let recipes = Arc::new(Mutex::new(crate::craft::RecipeBook::default()));
         bridge::spawn(
             client.clone(),
             rx,
@@ -794,6 +799,7 @@ impl BotBuilder {
                 chat: chat.clone(),
                 entities: entities.clone(),
                 windows: windows.clone(),
+                recipes: recipes.clone(),
             },
         );
         crate::world::spawn_packet_bridge(
@@ -812,6 +818,7 @@ impl BotBuilder {
             world_state,
             entities,
             windows,
+            recipes,
         })
     }
 }
@@ -842,6 +849,7 @@ impl Bot {
                 crate::entity::EntityTracker::default(),
             )),
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(events))),
+            recipes: Arc::new(Mutex::new(crate::craft::RecipeBook::default())),
         }
     }
 

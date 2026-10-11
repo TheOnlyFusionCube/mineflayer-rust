@@ -26,7 +26,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `mcdata.blocks` | module | `azalea::registry / azalea::block` | pending | re-export azalea registry |
 | `mcdata.items` | module | `azalea::registry / azalea_inventory::item` | pending | re-export azalea registry |
 | `mcdata.materials` | module | `own lookup table (dig-speed materials)` | pending | minecraft-data 'materials' have no azalea analog; tool-speed data |
-| `mcdata.recipes` | module | `recipe registry (custom over c_update_recipes)` | pending | tier-2 packet bridge stores recipes |
+| `mcdata.recipes` | module | recipe book bridge (`c_recipe_book_add`/`remove`) | diverges | book-scoped server-unlocked recipes, not a static mcdata table; tag ingredients resolve via azalea's static item tags; azalea's `ItemStack` slot display decodes kind/count swapped — un-swapped at conversion |
 | `mcdata.instruments` | module | `enum Instrument` | pending | note-block instruments |
 | `mcdata.biomes` | module | `azalea::registry::data / builtin::Biome` | pending | — |
 | `mcdata.entities` | module | `azalea::registry::builtin::EntityKind` | pending | — |
@@ -35,7 +35,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `Block (prismarine-block)` | module | `mineflayer::world::Block { pos, state, world }` | diverges | name/kind/state_id/bounding_box/diggable/property/behavior ported; no blockEntity/getSignText (azalea has no block-entity storage — U11) |
 | `Biome (prismarine-biome)` | module | `azalea::registry Biome` | pending | — |
 | `Item (prismarine-item)` | module | `mineflayer::Item { stack, slot }` | ported | kind/name/display_name/count/metadata/durability/component_patch + same_item; empty stack → `None` like upstream `null`; slot -1 = cursor |
-| `Recipe (prismarine-recipe)` | module | `own Recipe type` | pending | — |
+| `Recipe (prismarine-recipe)` | module | `craft::Recipe` (+ `Ingredient`/`RecipeItem`/`RecipeResult`/`DeltaEntry`) | diverges | fields ported; ingredients model tag alternatives as `any_of` sets instead of per-kind recipe expansion |
 | `ChatMessage (prismarine-chat)` | module | `azalea::chat::FormattedText wrapper` | pending | mc26.1: azalea::chat is azalea_client::plugins::chat |
 | `Window (prismarine-windows)` | module | `mineflayer::Window` (Arc over `ContainerHandleRef`) | ported | cheap cloneable shared handle + explicit idempotent `close()` like upstream; `ContainerHandle` drop-close intentionally not used; see Window classes |
 
@@ -351,10 +351,10 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.recipesFor(type,meta,min,table)` | craft | `bot.recipes_for(..) -> Vec<Recipe>` | pending | craftable with current inventory |
-| `bot.recipesAll(type,meta,table)` | craft | `bot.recipes_all(..) -> Vec<Recipe>` | pending | — |
-| `bot.craft(recipe, count?, table?)` | craft | `bot.craft(recipe, n, table).await` | pending | s_place_recipe packet exists upstream |
-| `Recipe class` | craft | `struct Recipe` | pending | prismarine-recipe analog |
+| `bot.recipesFor(type,meta,min,table)` | craft | `bot.recipes_for(kind, metadata, min, table) -> Vec<Recipe>` | diverges | filter semantics ported (result/metadata/minResultCount/table + inventory-delta simulation), but the recipe source is the server's recipe book (`c_recipe_book_add/remove`), not a static data table — only unlocked recipes are listed |
+| `bot.recipesAll(type,meta,table)` | craft | `bot.recipes_all(kind, metadata, table) -> Vec<Recipe>` | diverges | same book-scoped source as `recipes_for`; ignores inventory, respects the table requirement |
+| `bot.craft(recipe, count?, table?)` | craft | `bot.craft(&recipe, count, table).await` | ported | same book-free click engine as upstream craft.js: pick stack → right-click one per cell → putMaterialsAway → take slot 0 → clear grid; no `s_place_recipe`; `count` None → 1; table recipes error without a table `Block`; table window via `open_block` |
+| `Recipe class` | craft | `struct Recipe` | diverges | `result`/`inShape`/`outShape`/`ingredients`/`delta`/`requiresTable` ported; ingredient cells generalize upstream's `RecipeItem` to `Ingredient{any_of}` alternative sets (vanilla `#tag` ingredients), resolved via azalea's static item tags; `out_shape` not populated by the book source |
 
 ## Block interaction (dig / place / activate)
 
