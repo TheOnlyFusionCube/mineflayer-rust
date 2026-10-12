@@ -118,11 +118,14 @@ impl WorldRef {
             },
             |p| p.to_block_pos_floor(),
         );
-        let max_distance = opts.max_distance.unwrap_or(DEFAULT_MAX_DISTANCE);
-        let count = opts.count.unwrap_or(DEFAULT_COUNT);
-        if count == 0 {
-            return vec![];
-        }
+        // upstream's `options.maxDistance || 16` / `options.count || 1`
+        // coerce falsy: `0` (and `NaN`) take the default just like an
+        // unset option does.
+        let max_distance = opts
+            .max_distance
+            .filter(|d| *d != 0. && !d.is_nan())
+            .unwrap_or(DEFAULT_MAX_DISTANCE);
+        let count = opts.count.filter(|c| *c != 0).unwrap_or(DEFAULT_COUNT);
         with_world(&self.client, |w| match &opts.matching {
             BlockMatcher::States(states) => find_states(w, point, states, max_distance, count),
             BlockMatcher::Predicate(pred) => find_matching(
@@ -292,15 +295,16 @@ where
 }
 
 /// `findBlocks` options — defaults: `point` = bot position (floored),
-/// `max_distance` = 16, `count` = 1.
+/// `max_distance` = 16, `count` = 1. Upstream's `||` defaults coerce
+/// falsy, so `0` (and `NaN` for `max_distance`) take the default too.
 pub struct FindBlocksOpts {
     /// Which blocks to match.
     pub matching: BlockMatcher,
     /// Center of the search; defaults to the bot's position (floored).
     pub point: Option<Vec3>,
-    /// Euclidean distance bound; default 16.
+    /// Euclidean distance bound; default 16 (also for `0.`/`NaN`).
     pub max_distance: Option<f64>,
-    /// Maximum results (closest-first); default 1.
+    /// Maximum results (closest-first); default 1 (also for `0`).
     pub count: Option<usize>,
 }
 
@@ -449,9 +453,44 @@ pub(crate) struct WorldState {
     pub max_players: Option<i32>,
     pub is_flat: Option<bool>,
     pub server_brand: Option<String>,
+    /// `BlockState` last *reported* per updated position — the
+    /// `blockUpdate` `oldBlock` source of truth. The bridge decodes
+    /// `Event::Packet` only after azalea's `Update` pass finished (its
+    /// `run_schedule_loop` holds the ECS write guard across the whole
+    /// pass, and both `packet_listener` and
+    /// `handle_block_update_event` run inside it — the async receiver
+    /// can't interleave mid-pass), so the live world already shows the
+    /// new state when we read `old`. Positions never seen updated fall
+    /// back to that post-apply read (they report `old == new` — the
+    /// best available without shadowing every loaded block). Cleared
+    /// on login/respawn (dimension change), bounded by
+    /// [`MAX_TRACKED_UPDATES`].
+    last_block_updates: HashMap<BlockPos, BlockState>,
 }
 
+/// Bound on [`WorldState::last_block_updates`] — generous enough for a
+/// busy redstone world; a full map clears wholesale on the next *new*
+/// position (already-tracked positions keep their history — see
+/// [`WorldState::update_and_old`]).
+const MAX_TRACKED_UPDATES: usize = 1 << 16;
+
 impl WorldState {
+    /// Record `new_state` as `pos`'s last-known state and return the
+    /// previously recorded one — the `blockUpdate` `oldBlock` source of
+    /// truth (see the field doc for why the live world can't answer).
+    /// `None` means we never saw this position updated; the caller
+    /// falls back to the post-apply world read.
+    fn update_and_old(&mut self, pos: BlockPos, new_state: BlockState) -> Option<BlockState> {
+        // Only a *new* position can grow the map — re-updates to a
+        // tracked position must keep their history even at capacity.
+        if self.last_block_updates.len() >= MAX_TRACKED_UPDATES
+            && !self.last_block_updates.contains_key(&pos)
+        {
+            self.last_block_updates.clear();
+        }
+        self.last_block_updates.insert(pos, new_state)
+    }
+
     /// Vanilla clock tick: `partial_tick += rate; total_ticks += floor`.
     fn tick_clocks(&mut self) {
         for clock in self.clocks.values_mut() {
@@ -981,14 +1020,31 @@ fn decode_packet(
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
     match packet {
-        ClientboundGamePacket::BlockUpdate(p) => {
-            vec![block_update_event(client, lids, p.pos, p.block_state)]
+        ClientboundGamePacket::BlockUpdate(p) => vec![block_update_event(
+            client,
+            &mut state.write().unwrap(),
+            lids,
+            p.pos,
+            p.block_state,
+        )],
+        ClientboundGamePacket::SectionBlocksUpdate(p) => {
+            let mut out = Vec::with_capacity(p.states.len());
+            // one write guard across the batch — every entry updates the
+            // tracker, so sequential updates to the same position see the
+            // section's own earlier state as `old` (matching the packet
+            // order the server applied them in).
+            let mut state = state.write().unwrap();
+            for s in &p.states {
+                out.push(block_update_event(
+                    client,
+                    &mut state,
+                    lids,
+                    p.section_pos + s.pos,
+                    s.state,
+                ));
+            }
+            out
         }
-        ClientboundGamePacket::SectionBlocksUpdate(p) => p
-            .states
-            .iter()
-            .map(|s| block_update_event(client, lids, p.section_pos + s.pos, s.state))
-            .collect(),
         ClientboundGamePacket::ForgetLevelChunk(p) => vec![BotEvent::ChunkUnload(p.pos)],
         ClientboundGamePacket::SetTime(p) => {
             {
@@ -1017,11 +1073,16 @@ fn decode_packet(
                 state.hardcore = Some(p.hardcore);
                 state.max_players = Some(p.max_players);
                 state.is_flat = Some(p.common.is_flat);
+                // a new world means the tracked states describe stale
+                // positions — drop them rather than report them as `old`
+                state.last_block_updates.clear();
             }
             vec![BotEvent::GameStateChanged]
         }
         ClientboundGamePacket::Respawn(p) => {
-            state.write().unwrap().is_flat = Some(p.common.is_flat);
+            let mut state = state.write().unwrap();
+            state.is_flat = Some(p.common.is_flat);
+            state.last_block_updates.clear();
             vec![BotEvent::GameStateChanged]
         }
         ClientboundGamePacket::SetDefaultSpawnPosition(p) => {
@@ -1064,14 +1125,22 @@ fn decode_packet(
 
 fn block_update_event(
     client: &azalea::Client,
+    state: &mut WorldState,
     lids: &mut LidCounts,
     pos: BlockPos,
     new_state: BlockState,
 ) -> BotEvent {
-    // Azalea applies the update to the world itself on the next tick, so
-    // a read here still observes the old state — same snapshot mineflayer
-    // reports as `oldBlock`.
-    let old = with_world(client, |w| w.get_block_state(pos)).flatten();
+    // azalea's `handle_block_update_event` drains the queued updates in
+    // the same `Update` pass that emits `Event::Packet`, and the async
+    // bridge can't observe mid-pass (`run_schedule_loop` only yields
+    // between iterations), so the live world already reports `new_state`
+    // here. `oldBlock` therefore comes from our own update history;
+    // positions with no history fall back to the post-apply read —
+    // `old == new` for a first update, the best available without
+    // shadowing every loaded block.
+    let old = state
+        .update_and_old(pos, new_state)
+        .or_else(|| with_world(client, |w| w.get_block_state(pos)).flatten());
     if old.map(|s| s.as_block_kind()) != Some(new_state.as_block_kind()) {
         // upstream drops the lid count when the block type changes.
         lids.0.remove(&pos);
@@ -1592,6 +1661,124 @@ mod tests {
         assert!((clock.partial_tick - 0.9).abs() < f32::EPSILON);
         // non-packet events decode to nothing
         assert!(observe_event(&state, &client, &mut lids, &Event::Login).is_empty());
+    }
+
+    /// C2: `handle_block_update_event` applies the update inside the
+    /// same `Update` pass that emits `Event::Packet`, and the bridge
+    /// can't observe mid-pass — so a live world read can't supply
+    /// `oldBlock`. The tracked update history must: a re-updated
+    /// position reports its last-reported state even though the world
+    /// already shows the new one.
+    #[test]
+    fn block_update_old_comes_from_update_history() {
+        use azalea::protocol::packets::game::c_block_update::ClientboundBlockUpdate;
+
+        let client = crate::test_util::live_entity_client(());
+        let (world, _partial) = test_world();
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(world));
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(WorldHolder::new(client.entity, shared.clone()));
+
+        let state = RwLock::new(WorldState::default());
+        let mut lids = LidCounts::default();
+        let pos = BlockPos::new(1, 64, 1);
+        let dirt = BlockState::from(BlockKind::Dirt);
+        let packet = |block_state| {
+            Event::Packet(Arc::new(ClientboundGamePacket::BlockUpdate(
+                ClientboundBlockUpdate { pos, block_state },
+            )))
+        };
+
+        // Simulate azalea's real ordering: `handle_block_update_event`
+        // already wrote the new state into the world when this packet's
+        // `Event::Packet` is decoded.
+        shared.write().chunks.set_block_state(pos, stone());
+        let out = observe_event(&state, &client, &mut lids, &packet(stone()));
+        // A never-before-updated position has no history — the only
+        // answer available is the post-apply read, which echoes the new
+        // state back as `old` (the documented limit).
+        assert!(matches!(
+            &out[..],
+            [BotEvent::BlockUpdate {
+                old: Some(old),
+                new
+            }] if old.state == stone() && new.state == stone()
+        ));
+
+        // Second update: history wins over the post-apply read — `old`
+        // is stone even though the world already shows dirt.
+        shared.write().chunks.set_block_state(pos, dirt);
+        let out = observe_event(&state, &client, &mut lids, &packet(dirt));
+        assert!(matches!(
+            &out[..],
+            [BotEvent::BlockUpdate {
+                old: Some(old),
+                new
+            }] if old.state == stone() && new.state == dirt
+        ));
+    }
+
+    /// The tracking bound clears wholesale at the cap — the next update
+    /// reports its post-apply read again instead of a stale state.
+    #[test]
+    fn update_history_is_bounded() {
+        let mut state = WorldState::default();
+        for x in 0..MAX_TRACKED_UPDATES as i32 {
+            assert!(
+                state
+                    .update_and_old(BlockPos::new(x, 0, 0), stone())
+                    .is_none()
+            );
+        }
+        // at capacity: re-updating a *tracked* position still returns
+        // its predecessor — hot positions aren't flushed wholesale
+        let pos = BlockPos::new(5, 0, 0);
+        assert_eq!(
+            state.update_and_old(pos, BlockState::from(BlockKind::Dirt)),
+            Some(stone())
+        );
+        // a *new* position at capacity clears wholesale and records
+        // fresh — it reports `None` (no history) again
+        let fresh = BlockPos::new(MAX_TRACKED_UPDATES as i32, 0, 0);
+        assert!(state.update_and_old(fresh, stone()).is_none());
+        assert!(state.last_block_updates.len() <= MAX_TRACKED_UPDATES);
+    }
+
+    /// `findBlocks`' `||` coercion: `maxDistance: 0`/`count: 0` are falsy
+    /// upstream and take the default just like an unset option.
+    #[test]
+    fn find_blocks_falsy_defaults() {
+        let client = crate::test_util::live_entity_client(());
+        let (world, _partial) = test_world();
+        world
+            .chunks
+            .set_block_state(BlockPos { x: 10, y: 0, z: 0 }, stone());
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(world));
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(WorldHolder::new(client.entity, shared));
+        let world = WorldRef::new(client);
+
+        // `max_distance: 0` upstream falls back to 16 — far enough to
+        // see the stone 10 blocks out; `count: 0` falls back to 1.
+        let mut opts = FindBlocksOpts::new(BlockKind::Stone);
+        opts.max_distance = Some(0.);
+        opts.count = Some(0);
+        assert_eq!(
+            world.find_blocks(&opts),
+            vec![BlockPos { x: 10, y: 0, z: 0 }]
+        );
+        // NaN is falsy too; a nonzero override still wins.
+        opts.max_distance = Some(f64::NAN);
+        opts.count = Some(5);
+        assert_eq!(world.find_blocks(&opts).len(), 1);
+        opts.max_distance = Some(4.);
+        assert!(world.find_blocks(&opts).is_empty());
     }
 
     #[test]

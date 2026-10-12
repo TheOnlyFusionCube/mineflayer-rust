@@ -2017,6 +2017,7 @@ dependencies = [
  "azalea",
  "azalea-chat",
  "futures",
+ "parking_lot",
  "regex",
  "serde",
  "serde_json",
