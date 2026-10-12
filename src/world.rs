@@ -463,8 +463,8 @@ pub(crate) struct WorldState {
     /// new state when we read `old`. Positions never seen updated fall
     /// back to that post-apply read (they report `old == new` — the
     /// best available without shadowing every loaded block). Cleared
-    /// on login/respawn (dimension change), bounded by
-    /// [`MAX_TRACKED_UPDATES`].
+    /// on login/respawn (dimension change) and per-position on chunk
+    /// unload, bounded by [`MAX_TRACKED_UPDATES`].
     last_block_updates: HashMap<BlockPos, BlockState>,
 }
 
@@ -1045,7 +1045,18 @@ fn decode_packet(
             }
             out
         }
-        ClientboundGamePacket::ForgetLevelChunk(p) => vec![BotEvent::ChunkUnload(p.pos)],
+        ClientboundGamePacket::ForgetLevelChunk(p) => {
+            // A tracked position whose chunk unloads mustn't keep its
+            // history — after a reload the world knows the real state,
+            // and reporting the stale pre-unload value as `old` is worse
+            // than the `old == new` fallback.
+            state
+                .write()
+                .unwrap()
+                .last_block_updates
+                .retain(|pos, _| pos.x >> 4 != p.pos.x || pos.z >> 4 != p.pos.z);
+            vec![BotEvent::ChunkUnload(p.pos)]
+        }
         ClientboundGamePacket::SetTime(p) => {
             {
                 let mut state = state.write().unwrap();
@@ -1615,6 +1626,13 @@ mod tests {
         // out of packet order and `Lagged` silently dropped them. Running
         // inside the bridge's event loop makes the emission synchronous —
         // this sequence is asserted in the order the packets arrived.
+        // Seed one tracked update inside the unloaded chunk and one
+        // outside: the unload drops only the inside entry.
+        {
+            let mut s = state.write().unwrap();
+            s.update_and_old(BlockPos::new(48 + 5, 64, 64 + 2), stone()); // chunk (3,4)
+            s.update_and_old(BlockPos::new(0, 64, 0), stone()); // chunk (0,0)
+        }
         let out = observe_event(
             &state,
             &client,
@@ -1626,6 +1644,14 @@ mod tests {
             )),
         );
         assert!(matches!(&out[..], [BotEvent::ChunkUnload(_)]));
+        {
+            let s = state.read().unwrap();
+            assert!(
+                !s.last_block_updates
+                    .contains_key(&BlockPos::new(53, 64, 66))
+            );
+            assert!(s.last_block_updates.contains_key(&BlockPos::new(0, 64, 0)));
+        }
         let out = observe_event(
             &state,
             &client,

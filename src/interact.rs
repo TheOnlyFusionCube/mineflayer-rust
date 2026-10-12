@@ -105,7 +105,7 @@ pub enum PlaceHalf {
 /// Upstream's public `placeBlock`/`placeEntity` don't expose it; the
 /// internal `_genericPlace`/`_*WithOptions` calls do — the `_opts`
 /// variants are the same surface.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct PlaceOpts {
     /// `options.offhand` — place with the off-hand item (`hand: 1` on the
     /// wire), erroring `must be holding an item in the off-hand to place`
@@ -123,10 +123,27 @@ pub struct PlaceOpts {
     /// `options.swingArm` — the hand to swing after the packet; `None`
     /// is upstream's falsy and sends no swing.
     pub swing_arm: Option<InteractionHand>,
-    /// `options.showHand` — accepted for signature parity; it has no
-    /// wire meaning in this protocol (the `bot.swingArm` row in
-    /// api-parity.md). Spawn-egg places set it `false` upstream.
+    /// `options.showHand` — `false` makes the swing packet carry the
+    /// wire default `hand: 0` (main) regardless of `swing_arm`, like
+    /// upstream `swingArm(arm, false)` omitting the `hand` field.
+    /// `place_entity_opts` sets it for spawn eggs like upstream.
     pub show_hand: bool,
+}
+
+impl Default for PlaceOpts {
+    /// Upstream `swingArm(arm, showHand = true)` — an unset option shows
+    /// the hand, so `Default` can't be derived (`bool` would give the
+    /// suppressing value).
+    fn default() -> Self {
+        Self {
+            offhand: false,
+            half: None,
+            delta: None,
+            force_look: ForceLook::default(),
+            swing_arm: None,
+            show_hand: true,
+        }
+    }
 }
 
 /// Why a [`Bot::dig`] future rejected — the `diggingAborted` payload.
@@ -283,6 +300,19 @@ fn place_cursor(face_vector: Vec3, opts: &PlaceOpts) -> Vec3 {
         cursor = delta;
     }
     cursor
+}
+
+/// The `swingArm`/`showHand` pair upstream passes to `bot.swingArm`
+/// after the `use_item_on` packet — kept together because `show_hand:
+/// false` changes which hand the packet reports (wire default `0` =
+/// main), not whether it swings.
+#[derive(Clone, Copy)]
+struct SwingArm {
+    /// The hand to animate (`swingArm`).
+    hand: InteractionHand,
+    /// `showHand` — `false` sends `hand: 0` like upstream's omitted
+    /// `hand` field.
+    show: bool,
 }
 
 /// Per-tick mine progress → the `digTime` contract: `∞` for unbreakable
@@ -611,15 +641,11 @@ impl Bot {
             .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
         let old_block = self.block_at(dest);
         let old_kind = old_block.as_ref().map(|b| b.kind());
-        let held_name = self
-            .held_item()
-            .map(|h| h.name().to_string())
-            .unwrap_or_else(|| "block".to_string());
         let mut rx = self.events();
         self.generic_place(reference_block.pos, face_vector, opts)
             .await?;
         let new_block = self
-            .wait_place_result(reference_block.pos, dest, old_kind, &held_name, &mut rx)
+            .wait_place_result(reference_block.pos, dest, old_kind, &mut rx)
             .await?;
         self.emit_event(BotEvent::BlockPlaced {
             old: old_block,
@@ -660,7 +686,11 @@ impl Bot {
         let held = self.held_item().ok_or_else(|| {
             Error::Operation("must be holding an item to place an entity".to_string())
         })?;
-        let item_name = held.kind().to_str();
+        // `Item::name()` is un-namespaced like upstream's `heldItem.name`
+        // (`ItemKind::to_str()` is `minecraft:<id>` — feeding it here made
+        // `end_crystal`/`armor_stand` unplaceable: the literal compare
+        // never matched the prefix).
+        let item_name = held.name();
         let Some(expected) = PlacedEntity::from_item(item_name) else {
             return Err(Error::Operation(format!(
                 "Cannot place entity using {item_name}"
@@ -682,6 +712,11 @@ impl Bot {
             } else {
                 InteractionHand::MainHand
             });
+        }
+        // upstream: `if (type === 'spawn_egg') options.showHand = false`
+        // — a spawn-egg place suppresses the hand on the swing packet.
+        if item_name.ends_with("_spawn_egg") {
+            opts.show_hand = false;
         }
         let mut rx = self.events();
         let hand = self
@@ -764,7 +799,10 @@ impl Bot {
             cursor,
             InteractionHand::MainHand,
             ForceLook::Look,
-            Some(InteractionHand::MainHand),
+            Some(SwingArm {
+                hand: InteractionHand::MainHand,
+                show: true,
+            }),
         )
         .await
     }
@@ -894,6 +932,10 @@ impl Bot {
     /// `pos`/`direction`/`cursor`/`hand`, then swing if asked — the
     /// ordering upstream's "The swing must follow use_item_on" comment
     /// enforces.
+    /// `show_hand` mirrors upstream `swingArm(arm, showHand)`: `false`
+    /// omits `hand` from `arm_animation`, which serializes to the wire
+    /// default `hand: 0` — a *main-hand* animation regardless of the
+    /// requested arm (the spawn-egg case upstream uses it for).
     async fn use_item_on(
         &self,
         pos: BlockPos,
@@ -901,7 +943,7 @@ impl Bot {
         cursor: Vec3,
         hand: InteractionHand,
         force_look: ForceLook,
-        swing_arm: Option<InteractionHand>,
+        swing_arm: Option<SwingArm>,
     ) -> Result<()> {
         let location = Vec3 {
             x: pos.x as f64 + cursor.x,
@@ -924,8 +966,14 @@ impl Bot {
             },
             seq,
         });
-        if let Some(arm) = swing_arm {
-            self.swing_arm(arm);
+        if let Some(swing) = swing_arm {
+            // `showHand: false` sends the wire default `hand: 0` —
+            // upstream's packet literally omits the field.
+            self.swing_arm(if swing.show {
+                swing.hand
+            } else {
+                InteractionHand::MainHand
+            });
         }
         Ok(())
     }
@@ -972,7 +1020,10 @@ impl Bot {
             cursor,
             hand,
             opts.force_look,
-            opts.swing_arm,
+            opts.swing_arm.map(|hand| SwingArm {
+                hand,
+                show: opts.show_hand,
+            }),
         )
         .await?;
         Ok(hand)
@@ -987,7 +1038,6 @@ impl Bot {
         reference: BlockPos,
         dest: BlockPos,
         old_kind: Option<azalea::registry::builtin::BlockKind>,
-        held_name: &str,
         rx: &mut broadcast::Receiver<BotEvent>,
     ) -> Result<Block> {
         let mut acked = false;
@@ -1000,6 +1050,13 @@ impl Bot {
                     Ok(BotEvent::BlockUpdate { old, new }) if new.pos == dest => {
                         if old.is_none() || old.map(|o| o.kind()) != Some(new.kind()) || acked {
                             if Some(new.kind()) == old_kind {
+                                // upstream reads `bot.heldItem?.name` at
+                                // throw time — a mid-wait switch names
+                                // the current item, not the placed one.
+                                let held_name = self
+                                    .held_item()
+                                    .map(|h| h.name().to_string())
+                                    .unwrap_or_else(|| "block".to_string());
                                 return Err(Error::Operation(format!(
                                     "Server refused to place {held_name} at {dest}: \
                                      the block is still {}",
@@ -1134,6 +1191,36 @@ mod tests {
             err.to_string().contains("must be holding an item to place"),
             "unexpected error: {err}"
         );
+    }
+
+    /// `place_entity`'s item-name contract: `from_item` compares
+    /// upstream's bare `heldItem.name` literals — feeding it
+    /// `ItemKind::to_str()` (`"minecraft:<id>"`) made `end_crystal`/
+    /// `armor_stand` unplaceable. Pin the `Item::name()` strip and the
+    /// four types upstream supports.
+    #[test]
+    fn placed_entity_uses_unnamespaced_item_name() {
+        use azalea::{inventory::ItemStack, registry::builtin::ItemKind};
+
+        let item = crate::windows::Item {
+            stack: ItemStack::new(ItemKind::EndCrystal, 1),
+            slot: 36,
+        };
+        // `kind().to_str()` is namespaced — the bug — `name()` is the
+        // bare literal upstream's `heldItem.name` produces.
+        assert_eq!(item.kind().to_str(), "minecraft:end_crystal");
+        assert_eq!(item.name(), "end_crystal");
+
+        for (name, expected) in [
+            ("end_crystal", "end_crystal"),
+            ("armor_stand", "armor_stand"),
+            ("oak_boat", "boat"),
+            ("zombie_spawn_egg", "zombie"),
+        ] {
+            assert_eq!(PlacedEntity::from_item(name).unwrap().expected, expected);
+        }
+        assert!(PlacedEntity::from_item("minecraft:end_crystal").is_none());
+        assert!(PlacedEntity::from_item("dirt").is_none());
     }
 
     /// `place_entity`'s swing default: unset `swingArm` follows the

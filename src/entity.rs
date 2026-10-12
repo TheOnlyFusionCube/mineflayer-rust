@@ -978,10 +978,14 @@ impl Bot {
     /// `bot.activateEntity(entity)` — right-click an entity (use item /
     /// talk to villager / board minecart). Looks at `entity.position + 1`
     /// first, like upstream's `lookAt(entity.position.offset(0, 1, 0))`.
+    /// Errors on a positionless entity like upstream's throw on
+    /// `entity.position.offset` — and, like upstream, sends nothing.
     pub async fn activate_entity(&self, entity: &EntityRef) -> Result<()> {
-        if let Some(pos) = entity.get_component::<Position>().map(|p| **p) {
-            self.look_at(pos.up(1.), false).await?;
-        }
+        let pos = entity
+            .get_component::<Position>()
+            .map(|p| **p)
+            .ok_or_else(|| Error::Operation("entity has no position".to_string()))?;
+        self.look_at(pos.up(1.), false).await?;
         self.client.entity_interact(entity.id());
         Ok(())
     }
