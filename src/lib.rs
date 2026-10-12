@@ -70,7 +70,7 @@ pub use misc::{
     ChatVisibility, Creative, HumanoidArm, Instrument, ModelCustomization, Particle,
     ParticleStatus, Settings, TitleKind, ViewDistance,
 };
-pub use pathfinder::{Goal, Movements, Pathfinder};
+pub use pathfinder::{Goal, Movements, PathError, PathResult, PathStatus, Pathfinder};
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
 pub use window_types::{
     Anvil, CommandBlockMode, CommandBlockOpts, EnchantmentOption, EnchantmentTable,
