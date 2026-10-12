@@ -28,11 +28,17 @@
 //! - upstream's `thinkTimeout` bounds one A* end-to-end, but azalea
 //!   splits the search into a fresh `max_timeout` per repath, so the
 //!   budget is tracked cumulatively per goal issue — partial progress
-//!   can't keep a `goto` pending forever (upstream's `timeout`).
+//!   can't keep a `goto` pending forever (upstream's `timeout`). The
+//!   reject is promise-level like upstream's: the facade goal is the
+//!   surviving `stateGoal` and stays installed (watchers and partial
+//!   paths keep running); only `last_failure` records the outcome so a
+//!   pending `goto` can settle.
 //!
-//! - `path_update` — a path was installed, or a calculation finished
-//!   (azalea clears `is_calculating` for every result, failures included,
-//!   matching upstream's per-result `path_update`).
+//! - `path_update` — a path was installed, a repath result merged
+//!   mid-run (the executing path grows — consumption only shrinks), or
+//!   a calculation finished (azalea clears `is_calculating` for every
+//!   result, failures included, matching upstream's per-result
+//!   `path_update`).
 //! - `goal_reached` — azalea cleared the goal while its success check
 //!   holds (suppressed for `dynamic` goals, like upstream).
 //! - `path_stop` — the goal was abandoned without reaching (emitted by
@@ -313,8 +319,12 @@ impl Goal {
 /// one doesn't count as a replacement (upstream compares by object
 /// identity; a value type's closest honest analog is equality, so this
 /// errs toward *not* rejecting where upstream's identity check
-/// wouldn't). [`Goal::Follow`] compares the target's ECS id — the
-/// `Client` inside an `EntityRef` isn't part of the goal's meaning.
+/// wouldn't — including a freshly-constructed equal goal, which
+/// upstream's `!==` WOULD reject; a real residual for callers like
+/// collectBlock that rebuild goals per iteration). `dynamic` is not
+/// part of the identity — upstream compares only the goal object.
+/// [`Goal::Follow`] compares the target's ECS id — the `Client` inside
+/// an `EntityRef` isn't part of the goal's meaning.
 fn same_goal(a: &Goal, b: &Goal) -> bool {
     match (a, b) {
         (
@@ -737,19 +747,19 @@ impl Pathfinder<'_> {
                         Ok(BotEvent::GoalReached { .. }) => return Ok(()),
                         Ok(BotEvent::PathUpdate { status, .. }) => {
                             // a terminal update settles this goto only
-                            // when the bridge recorded OUR failure — goal
-                            // cleared, `set_gen` still ours, and
-                            // `last_failure` carrying the same outcome.
-                            // Otherwise it's stale (a previous goal's
-                            // update, or an aborted calc's `noPath`
-                            // report racing a `path_stop`) — skip it.
+                            // when the bridge recorded OUR failure —
+                            // `set_gen` still ours and `last_failure`
+                            // carrying the same outcome. The facade goal
+                            // may still be installed (a `Timeout` leaves
+                            // upstream's `stateGoal` running) or already
+                            // cleared (`NoPath`); anything else is stale
+                            // (a previous goal's update, or an aborted
+                            // calc's `noPath` report) — skip it.
                             if matches!(status, PathStatus::NoPath | PathStatus::Timeout)
                                 && let Some(err) = facade(&client, |f| {
-                                    if f.goal.is_none() && f.set_gen == my_gen {
-                                        f.last_failure
-                                    } else {
-                                        None
-                                    }
+                                    (f.set_gen == my_gen)
+                                        .then_some(f.last_failure)
+                                        .flatten()
                                 })
                                 .flatten()
                             {
@@ -779,8 +789,11 @@ impl Pathfinder<'_> {
                         return Err(Error::NotConnected);
                     }
                     // a Lagged tick still means time passed — poll anyway.
-                    // the facade goal is cleared on reach/stop/failure, so
-                    // resolve from state, lagged events or not
+                    // resolve from state, lagged events or not: the
+                    // facade goal is cleared on reach/stop/`NoPath`, but a
+                    // `Timeout` leaves the goal installed (upstream's
+                    // surviving `stateGoal`) with only `last_failure`
+                    // recording the outcome
                     match facade(&client, |f| {
                         (f.set_gen, f.goal.is_some(), f.last_failure)
                     }) {
@@ -789,11 +802,16 @@ impl Pathfinder<'_> {
                         Some((set_gen, _, _)) if set_gen != my_gen => {
                             return Err(PathError::GoalChanged.into());
                         }
-                        Some((_, false, failed)) => {
+                        // a recorded failure rejects whether the goal is
+                        // still installed (Timeout) or cleared (NoPath)
+                        Some((_, _, Some(failed))) => {
+                            return Err(failed.into());
+                        }
+                        Some((_, false, _)) => {
                             return if probe.is_end(&client, client.position()) {
                                 Ok(())
                             } else {
-                                Err(failed.unwrap_or(PathError::PathStopped).into())
+                                Err(PathError::PathStopped.into())
                             };
                         }
                         _ => {}
@@ -828,16 +846,18 @@ impl Pathfinder<'_> {
         // then `goal_reached`, and stop the in-flight path (upstream's
         // resetPath also cleared it).
         let satisfied = !dynamic && goal.is_end(&client, client.position());
-        if satisfied {
-            stop_pathfinding_patched(&client, false);
-        }
+        // the facade write lands BEFORE the ECS patch — same interleave
+        // argument as `stop()` (N-3): an ownerless installed goal is
+        // silent, an ownerless clear edge is a phantom `NoPath`
         let set_gen = facade_mut(&client, |f| {
             cancel_watcher(f);
             // `newGoal !== goal` — upstream's identity check wouldn't
             // reject a goto when the identical goal is re-issued, so an
-            // equal goal+dynamic doesn't bump `set_gen` (the re-path
-            // below still happens; only the replacement flag is deduped)
-            let same = f.goal.as_ref().is_some_and(|g| same_goal(g, &goal)) && f.dynamic == dynamic;
+            // equal goal doesn't bump `set_gen` (the re-path below still
+            // happens; only the replacement flag is deduped). `dynamic`
+            // isn't part of the identity — upstream compares only the
+            // goal object (N-5).
+            let same = f.goal.as_ref().is_some_and(|g| same_goal(g, &goal));
             f.goal = (!satisfied).then(|| goal.clone());
             f.dynamic = dynamic;
             f.goal_gen += 1;
@@ -847,7 +867,12 @@ impl Pathfinder<'_> {
             f.last_failure = None;
             f.set_gen
         })
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            Error::Operation("pathfinder facade is missing — client entity is gone".into())
+        })?;
+        if satisfied {
+            stop_pathfinding_patched(&client, false);
+        }
         self.bot.emit_event(BotEvent::GoalUpdated {
             goal: goal.clone(),
             dynamic,
@@ -942,13 +967,19 @@ impl Pathfinder<'_> {
         // idle stop emits nothing
         let active = !client.is_goto_target_reached()
             || facade(client, |f| f.goal.is_some()).unwrap_or(false);
-        stop_pathfinding_patched(client, true);
+        // the facade write lands BEFORE the ECS patch: a bridge tick in
+        // the opposite order sees `calc_finished && goal_cleared` with
+        // the facade goal still set and reports a phantom `NoPath` a
+        // pending `goto` would trust over `PathStopped` (N-3). This
+        // order shows an ownerless installed goal — every arm gates on
+        // the facade goal, so it's silent.
         let stopped = facade_mut(client, |f| {
             cancel_watcher(f);
             f.last_failure = None;
             f.goal.take()
         })
         .flatten();
+        stop_pathfinding_patched(client, true);
         if active {
             self.bot.emit_event(BotEvent::PathStop { goal: stopped });
         }
@@ -995,8 +1026,11 @@ impl Pathfinder<'_> {
             f.movements = movements.clone();
             // re-issuing is a new goal generation — watchers still
             // holding the previous generation stop instead of
-            // overwriting the fresh goto with the old movements
+            // overwriting the fresh goto with the old movements.
+            // `last_failure` is per-generation too: a stale `Timeout`
+            // must not reject the re-issued goal's pending `goto`
             f.goal_gen += 1;
+            f.last_failure = None;
             f.goal.clone().zip(Some(f.dynamic))
         })
         .flatten();
@@ -1428,23 +1462,35 @@ pub(crate) struct PathTracker {
     /// per Update (~17 ms) while snapshots land per GameTick (50 ms) —
     /// so edge detection can't see it; the persistent wedge is the only
     /// observable signature. Armed under [`WEDGE_GRACE`] so a
-    /// just-written `GotoEvent` can't false-positive.
+    /// just-written `GotoEvent` can't false-positive. The timestamp
+    /// survives install/calc flicker — only satisfaction, execution, or
+    /// a re-issue disarms it, so a watcher re-issue inside the grace
+    /// window can't starve the wedge by re-hiding each failure (N-4).
     wedge_since: Option<Instant>,
     /// The `goal_gen` the search bookkeeping below belongs to — a
     /// `set_goal`/`set_movements` re-issue resets it (new promise, new
     /// budget).
     tracked_gen: u64,
-    /// Observed search time accumulated for `tracked_gen`. Upstream's
-    /// `thinkTimeout` bounds one A* end-to-end; azalea splits it into a
-    /// fresh search per repath, so the budget has to span them — a goal
-    /// whose searches total `think_timeout` without ever producing a
-    /// complete path rejects `Timeout` even while partial progress
-    /// keeps coming (the common unreachable-but-approachable case).
+    /// Observed search time accumulated for `tracked_gen` since the
+    /// last complete path. Upstream's `thinkTimeout` bounds one A*
+    /// end-to-end; azalea splits it into a fresh `max_timeout` per
+    /// repath, so the budget has to span them — a goal whose searches
+    /// total `think_timeout` without producing a complete path rejects
+    /// `Timeout` even while partial progress keeps coming (the common
+    /// unreachable-but-approachable case). Hidden searches — the ones
+    /// living and dying inside the tick gap — are unmetered here; the
+    /// wedge bounds them (N-7).
     search_spent: Duration,
-    /// Whether `tracked_gen`'s searches have produced a complete
-    /// (non-partial) path yet — once one has, the goal is established
-    /// and later recalcs carry their own per-search budgets.
+    /// The goal's currently-executing path is a complete (non-partial)
+    /// one — while that holds, the budget is disarmed; when it ends a
+    /// fresh repath batch accumulates from zeroed `search_spent` (a
+    /// success-then-perpetual-partial goal still rejects, N-2).
     saw_success: bool,
+    /// This batch's cumulative budget already produced its `timeout`
+    /// report — latched so a blown budget can't re-fire the status
+    /// every tick while the (surviving) goal keeps repathing. Re-arms
+    /// when a complete path installs or the goal is re-issued.
+    timeout_reported: bool,
 }
 
 /// Everything the diff needs from the ECS, extracted under one read guard
@@ -1490,6 +1536,7 @@ pub(crate) fn bridge_events(
         tracker.tracked_gen = now.facade_gen;
         tracker.search_spent = Duration::ZERO;
         tracker.saw_success = false;
+        tracker.timeout_reported = false;
         tracker.wedge_since = None;
     }
 
@@ -1517,8 +1564,22 @@ pub(crate) fn bridge_events(
     if let Some(elapsed) = calc_elapsed {
         tracker.search_spent += elapsed;
     }
+    // a freshly-installed complete path establishes the goal: the
+    // budget restarts from zero for whatever repaths follow it —
+    // upstream's next timed-out recalc still rejects a pending goto —
+    // and the `timeout` latch re-arms for the new batch. While the
+    // complete path keeps executing the budget stays disarmed; a
+    // partial path, an idle goal, or a mid-search snapshot ends the
+    // establishment so post-success partial loops still meet a
+    // terminal status (N-2).
     if now.executing && !now.is_partial {
-        tracker.saw_success = true;
+        if !tracker.saw_success {
+            tracker.saw_success = true;
+            tracker.search_spent = Duration::ZERO;
+            tracker.timeout_reported = false;
+        }
+    } else {
+        tracker.saw_success = false;
     }
     let spent_now = tracker.search_spent
         + if now.is_calculating {
@@ -1545,24 +1606,37 @@ pub(crate) fn bridge_events(
         && now.ecs_goal.is_none();
     // shared by the path_update classification and the goal-clear branch
     // — only evaluated when something actually changed, since `is_end`
-    // can raycast (ReachBlockPosGoal) and shouldn't run per tick
-    let satisfied = (calc_finished || goal_cleared || wedge_candidate || budget_exceeded)
+    // can raycast (ReachBlockPosGoal) and shouldn't run per tick. The
+    // budget term is gated on the latch — once the timeout has been
+    // reported, the surviving goal doesn't keep paying raycast ticks.
+    let satisfied = (calc_finished
+        || goal_cleared
+        || wedge_candidate
+        || (budget_exceeded && !tracker.timeout_reported))
         && now
             .facade_goal
             .as_ref()
             .is_some_and(|g| now.pos.is_some_and(|pos| g.is_end(client, pos)));
 
     // the wedge must persist past the grace window — a just-written
-    // `GotoEvent` shows the same signature for the ~17 ms until the next
-    // Update drains it, so flagging immediately would false-positive
+    // `GotoEvent` shows the same signature for the ~17 ms until the
+    // next Update drains it, so flagging immediately would
+    // false-positive. The timestamp survives install/calc flicker: a
+    // watcher re-issue inside the window re-hides each hidden drop,
+    // and resetting on `ecs_goal.is_some()` would starve the wedge
+    // forever under a moving unreachable target (N-4) — only real
+    // progress (satisfaction or an executing path) disarms it.
     tracker.wedge_since = if wedge_candidate && !satisfied {
         tracker.wedge_since.or_else(|| Some(Instant::now()))
-    } else {
+    } else if satisfied || now.executing {
         None
+    } else {
+        tracker.wedge_since
     };
-    let wedged = tracker
-        .wedge_since
-        .is_some_and(|t| t.elapsed() >= WEDGE_GRACE);
+    let wedged = wedge_candidate
+        && tracker
+            .wedge_since
+            .is_some_and(|t| t.elapsed() >= WEDGE_GRACE);
 
     // azalea drops its goal on an empty result only when
     // `retry_on_no_path` is false (every issue here sets it) — an ECS
@@ -1594,11 +1668,17 @@ pub(crate) fn bridge_events(
     } else {
         None
     };
-    // the cumulative promise budget expiring is also a failure — but a
-    // partial path may still be walking, so unlike a dead search it
-    // clears only the facade (upstream's `monitorMovement` also keeps
-    // walking the best path after a 'timeout' reject)
-    let promise_expired = search_failure.is_none() && budget_exceeded && !satisfied;
+    // the cumulative promise budget expiring reports 'timeout' — but
+    // unlike a dead search, the goal is upstream's surviving
+    // `stateGoal`: a plain/dynamic `set_goal` has no promise to settle
+    // and upstream keeps repathing after every `timeout` status, and
+    // even for `goto` the reject is promise-only while
+    // `monitorMovement` keeps walking. So nothing is cleared or
+    // cancelled — `last_failure` is recorded for a pending `goto` and
+    // the status is emitted, latched once per batch so a blown budget
+    // can't re-fire every tick (N-1).
+    let promise_expired =
+        search_failure.is_none() && budget_exceeded && !satisfied && !tracker.timeout_reported;
 
     // `path_update` — a path got installed (possibly merged mid-run by a
     // repath) or a calculation finished while something owned it: a
@@ -1606,9 +1686,13 @@ pub(crate) fn bridge_events(
     // upstream's `results.status`. A bare finish with neither — the
     // `stop()`/aborted-calc shape — stays silent, matching upstream's
     // aborted `astarContext` which produces no `path_update` at all.
+    // The executing→executing arm catches queued-path merges: walking
+    // only pops nodes, so a path that *grows* is a repath result
+    // (upstream emits `path_update` per result, N-6).
     if (!prev.executing && now.executing)
         || (calc_finished && (now.executing || now.facade_goal.is_some()))
         || (search_failure.is_some() && !calc_finished)
+        || (prev.executing && now.executing && now.path.len() > prev.path.len())
     {
         let status = if now.executing {
             if now.is_partial {
@@ -1639,16 +1723,17 @@ pub(crate) fn bridge_events(
         });
     }
 
-    // promise-expired reject — the goal stays on azalea (it may be
-    // walking a partial path; upstream keeps moving after a 'timeout'),
-    // only the facade's claim on it ends. Announced via `path_update`
-    // like a search-reported 'timeout'.
+    // promise-expired report — the facade goal is upstream's surviving
+    // `stateGoal` and stays (azalea's ECS goal/partial path is alive and
+    // keeps repathing; `monitorMovement` survives a 'timeout' reject
+    // there too). The watcher stays with it. Only the outcome is
+    // recorded so a pending `goto` can reject `Timeout` — that's the
+    // entire promise-level effect upstream's 'timeout' status has.
     if promise_expired && now.facade_gen == prev.facade_gen {
+        tracker.timeout_reported = true;
         facade_mut(client, |f| {
             if f.goal_gen == now.facade_gen {
                 f.last_failure = Some(PathError::Timeout);
-                cancel_watcher(f);
-                f.goal = None;
             }
         });
         out.push(BotEvent::PathUpdate {
@@ -2028,6 +2113,17 @@ mod tests {
             searching.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn AzaleaGoal>);
     }
 
+    /// Plant just the installed ECS goal (no `is_calculating`) — the
+    /// brief window between azalea draining a `GotoEvent` and the
+    /// search task starting, and the state a watcher re-issue leaves
+    /// when its own search dies hidden.
+    fn set_goal_installed(client: &azalea::Client, installed: bool) {
+        let mut ecs = client.ecs.write();
+        let mut entity = ecs.get_entity_mut(client.entity).unwrap();
+        entity.get_mut::<pathfinder::Pathfinder>().unwrap().goal =
+            installed.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn AzaleaGoal>);
+    }
+
     /// Drive `goto` until its goal is installed — `set_goal` runs on the
     /// future's first poll, so the watcher arm completes after a round.
     async fn await_install(
@@ -2095,7 +2191,9 @@ mod tests {
     /// `think_timeout` budget → `Timeout`, matching upstream's
     /// `results.status === 'timeout'`. The budget is a promise-level
     /// deadline, so the reject lands mid-search — upstream's
-    /// thinkTimeout aborts an in-flight A* the same way.
+    /// thinkTimeout aborts an in-flight A* the same way — while
+    /// `stateGoal` stays installed until the search's own end confirms
+    /// it dead.
     #[test]
     fn bridge_failed_search_past_budget_reports_timeout() {
         let client = watcher_client((
@@ -2128,14 +2226,31 @@ mod tests {
             )),
             "expected a timeout path_update, got {out:?}"
         );
+        // the reject is promise-level: `stateGoal` stays installed with
+        // the outcome recorded for a pending `goto`
         assert_eq!(
-            facade(&client, |f| f.last_failure),
-            Some(Some(PathError::Timeout))
+            facade(&client, |f| (f.goal.is_some(), f.last_failure)),
+            Some((true, Some(PathError::Timeout)))
         );
-        // the (dead) search finishing later reports nothing more —
-        // the facade already recorded and cleared the outcome
+        // the search's own timeout then kills it (azalea's max_timeout
+        // drops the goal) — the observed edge reports its result and
+        // clears the dead goal like any failed search
         set_searching(&client, false);
-        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        let out = bridge_events(&client, &mut tracker, &Event::Tick);
+        assert!(
+            out.iter().any(|e| matches!(
+                e,
+                BotEvent::PathUpdate {
+                    status: PathStatus::Timeout,
+                    ..
+                }
+            )),
+            "the dead search's finish reports its timeout, got {out:?}"
+        );
+        assert_eq!(
+            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            Some((true, Some(PathError::Timeout)))
+        );
     }
 
     /// A path arriving mid-run emits `path_update` with `success`/`partial`
@@ -2303,11 +2418,11 @@ mod tests {
 
     /// Upstream's `thinkTimeout` is a cumulative promise budget: a goal
     /// that keeps producing *partial* paths without ever completing must
-    /// reject `Timeout` once its searches total the budget — azalea
-    /// would otherwise repath the unreachable frontier forever. The ECS
-    /// goal and the partial path keep walking (upstream's
-    /// `monitorMovement` survives a timeout reject); only the facade's
-    /// claim on the promise ends.
+    /// report `Timeout` once its searches total the budget — azalea
+    /// would otherwise repath the unreachable frontier forever. The
+    /// facade goal is upstream's surviving `stateGoal` — it stays
+    /// installed with the outcome recorded for a pending `goto`, and
+    /// the partial path keeps walking like `monitorMovement` does.
     #[test]
     fn bridge_cumulative_search_budget_reports_timeout() {
         use std::collections::VecDeque;
@@ -2336,6 +2451,17 @@ mod tests {
                     ticks_since_last_node_reached: 0,
                     is_path_partial: true,
                 });
+        };
+        let has_timeout = |out: &[BotEvent]| {
+            out.iter().any(|e| {
+                matches!(
+                    e,
+                    BotEvent::PathUpdate {
+                        status: PathStatus::Timeout,
+                        ..
+                    }
+                )
+            })
         };
 
         let client = watcher_client((
@@ -2366,7 +2492,10 @@ mod tests {
                 let mut pf = entity.get_mut::<pathfinder::Pathfinder>().unwrap();
                 pf.is_calculating = true;
             }
-            assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+            if has_timeout(&bridge_events(&client, &mut tracker, &Event::Tick)) {
+                timed_out = true;
+                break;
+            }
             std::thread::sleep(Duration::from_millis(3));
             {
                 let mut ecs = client.ecs.write();
@@ -2377,29 +2506,35 @@ mod tests {
                     .is_calculating = false;
             }
             partial_path(&client, BlockPos::new(i, 64, 0));
-            let out = bridge_events(&client, &mut tracker, &Event::Tick);
-            if out.iter().any(|e| {
-                matches!(
-                    e,
-                    BotEvent::PathUpdate {
-                        status: PathStatus::Timeout,
-                        ..
-                    }
-                )
-            }) {
+            if has_timeout(&bridge_events(&client, &mut tracker, &Event::Tick)) {
                 timed_out = true;
                 break;
             }
         }
         assert!(timed_out, "cumulative search spend never rejected");
+        // upstream's `stateGoal` survives a 'timeout' — the facade goal
+        // stays installed (the report is promise-level), the outcome is
+        // recorded for a pending `goto`, and the partial path keeps
+        // walking like `monitorMovement` does
         assert_eq!(
-            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            facade(&client, |f| (f.goal.is_some(), f.last_failure)),
             Some((true, Some(PathError::Timeout))),
-            "facade goal must be cleared with the timeout recorded"
+            "facade goal must survive with the timeout recorded"
         );
-        // the partial path is still installed — the promise rejected,
-        // but upstream keeps walking the best path after a 'timeout'
         assert!(client.is_executing_path());
+        // and the status latches: the blown budget can't re-fire every
+        // tick while the goal keeps repathing
+        assert!(
+            bridge_events(&client, &mut tracker, &Event::Tick)
+                .iter()
+                .all(|e| !matches!(
+                    e,
+                    BotEvent::PathUpdate {
+                        status: PathStatus::Timeout,
+                        ..
+                    }
+                ))
+        );
     }
 
     /// I-2: `stop()` during an in-flight search must NOT produce a
@@ -2425,13 +2560,136 @@ mod tests {
         set_searching(&client, true);
         assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
 
-        // what stop() does: clear the ECS goal/calc, then the facade goal
-        stop_pathfinding_patched(&client, true);
+        // what stop() does: clear the facade goal, then the ECS
+        // goal/calc (facade-first so the intermediate state is an
+        // ownerless installed goal — silent in every arm)
         facade_mut(&client, |f| f.goal = None);
+        // a bridge tick in this window sees an ownerless installed goal
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        stop_pathfinding_patched(&client, true);
         let out = bridge_events(&client, &mut tracker, &Event::Tick);
         assert!(
             !out.iter().any(|e| matches!(e, BotEvent::PathUpdate { .. })),
             "an aborted calc must not emit path_update, got {out:?}"
+        );
+    }
+
+    /// N-4: a watcher re-issue that lands on a snapshot inside the
+    /// grace window must not reset the wedge clock — the install
+    /// flicker keeps the arming alive, so a goal whose searches die
+    /// hidden still meets its `noPath` verdict instead of degenerating
+    /// into a `path_stop` (or, pathological, starvation).
+    #[test]
+    fn bridge_wedge_survives_install_flicker() {
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            pathfinder::Pathfinder::default(),
+        ));
+        let goal = follow_at(&client, Vec3::new(500., 64., 0.));
+        facade_mut(&client, |f| {
+            f.goal = Some(goal);
+            f.goal_gen = 1;
+            f.set_gen = 1;
+        });
+        let mut tracker = PathTracker::default();
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        // wedge arms: facade goal set, ECS idle, goal unmet
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+
+        // the flicker — a re-issued install lands on snapshots (no calc
+        // ever observed); the wedge clock must keep running
+        set_goal_installed(&client, true);
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        std::thread::sleep(WEDGE_GRACE + Duration::from_millis(30));
+        // still installed — no verdict yet (the wedge is an idle check)
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+
+        // the install drops; the armed clock is already past the grace
+        // window → the dead search reports `noPath`, not `path_stop`
+        set_goal_installed(&client, false);
+        let out = bridge_events(&client, &mut tracker, &Event::Tick);
+        assert!(
+            out.iter().any(|e| matches!(
+                e,
+                BotEvent::PathUpdate {
+                    status: PathStatus::NoPath,
+                    ..
+                }
+            )),
+            "expected noPath after the flicker, got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|e| matches!(e, BotEvent::PathStop { .. })),
+            "a dead search is a failure, not a stop"
+        );
+        assert_eq!(
+            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            Some((true, Some(PathError::NoPath)))
+        );
+    }
+
+    /// N-1: the cumulative budget is promise-level. A `dynamic` goal has
+    /// no promise to settle and upstream keeps `stateGoal` repathing
+    /// after every `timeout` status — the report fires once, latched,
+    /// and the goal/watcher survive.
+    #[test]
+    fn bridge_dynamic_goal_survives_budget_expiry() {
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            pathfinder::Pathfinder::default(),
+        ));
+        let goal = follow_at(&client, Vec3::new(500., 64., 0.));
+        let watcher_cancel = Arc::new(AtomicBool::new(false));
+        facade_mut(&client, |f| {
+            f.goal = Some(goal);
+            f.dynamic = true;
+            f.goal_gen = 1;
+            f.set_gen = 1;
+            f.think_timeout = Duration::from_millis(10);
+            f.watcher_cancel = Some(watcher_cancel.clone());
+        });
+        let mut tracker = PathTracker::default();
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        set_searching(&client, true);
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        std::thread::sleep(Duration::from_millis(30));
+
+        let out = bridge_events(&client, &mut tracker, &Event::Tick);
+        assert!(
+            out.iter().any(|e| matches!(
+                e,
+                BotEvent::PathUpdate {
+                    status: PathStatus::Timeout,
+                    ..
+                }
+            )),
+            "the timeout status still reports, got {out:?}"
+        );
+        // upstream's `stateGoal` survives — the goal and its watcher
+        // stay (a `goto`'s promise rejects off `last_failure`, nothing
+        // else changes)
+        assert_eq!(
+            facade(&client, |f| (
+                f.goal.is_some(),
+                f.last_failure,
+                f.watcher_cancel.is_some()
+            )),
+            Some((true, Some(PathError::Timeout), true)),
+            "dynamic goal + watcher must survive the budget"
+        );
+        assert!(!watcher_cancel.load(std::sync::atomic::Ordering::Relaxed));
+        // latched — no re-fire while the goal keeps repathing
+        assert!(
+            bridge_events(&client, &mut tracker, &Event::Tick)
+                .iter()
+                .all(|e| !matches!(
+                    e,
+                    BotEvent::PathUpdate {
+                        status: PathStatus::Timeout,
+                        ..
+                    }
+                ))
         );
     }
 
@@ -2686,6 +2944,38 @@ mod tests {
         assert!(
             matches!(err, Error::Path(PathError::NoPath)),
             "expected NoPath, got {err:?}"
+        );
+    }
+
+    /// `goto` rejects `Timeout` when the cumulative budget reports —
+    /// with the facade goal still installed (upstream's surviving
+    /// `stateGoal` keeps repathing; the promise alone settles).
+    #[tokio::test]
+    async fn goto_rejects_timeout_with_goal_still_running() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let (bot, _shutdown) = crate::test_util::bot_with_shutdown(client.clone());
+        let pf = bot.pathfinder();
+
+        let mut goto = std::pin::pin!(pf.goto(follow_at(&client, Vec3::new(500., 64., 0.))));
+        await_install(&mut goto, &client).await;
+
+        // play the bridge's budget outcome: the goal survives with the
+        // timeout recorded — the goto's tick arm must still surface it
+        facade_mut(&client, |f| {
+            f.last_failure = Some(PathError::Timeout);
+        });
+        assert!(facade(&client, |f| f.goal.is_some()).unwrap_or(false));
+        let ticks = crate::test_util::tick_sender(&client);
+        while ticks.send(()).is_err() {
+            tokio::task::yield_now().await;
+        }
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), &mut goto)
+            .await
+            .expect("goto hung on a timed-out goal")
+            .expect_err("the timed-out goto resolved");
+        assert!(
+            matches!(err, Error::Path(PathError::Timeout)),
+            "expected Timeout, got {err:?}"
         );
     }
 
