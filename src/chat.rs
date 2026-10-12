@@ -603,7 +603,21 @@ impl Bot {
     /// `chatWithHeader`.
     fn chat_with_header(&self, header: &str, message: &str) -> Result<()> {
         if !self.logged_in() {
-            return Err(Error::NotConnected);
+            // Upstream splits this guard on its stored `endReason`: a
+            // call before play state and a call after a pre-play
+            // disconnect are different errors (and the latter names the
+            // reason).
+            if let Some(reason) = self.end_reason.lock().unwrap().clone() {
+                return Err(Error::Operation(format!(
+                    "bot.chat() called after the client disconnected before \
+                     entering the play state ({reason})"
+                )));
+            }
+            return Err(Error::Operation(
+                "bot.chat() called before the client entered the play state; \
+                 wait for the \"login\" or \"spawn\" event"
+                    .to_string(),
+            ));
         }
         for part in split_chat_message(header, message, self.chat_length_limit) {
             if part.starts_with('/') {

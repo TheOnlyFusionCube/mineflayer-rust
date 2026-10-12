@@ -65,6 +65,10 @@ pub struct Bot {
     /// azalea reports the disconnect so `BotEvent::End` can carry it
     /// (upstream: `client.end(reason)` -> `'end'` event).
     pub(crate) quit_reason: Arc<Mutex<Option<String>>>,
+    /// The reason the last `BotEvent::End` carried — upstream chat.js's
+    /// `endReason` (`_client.once('end', ...)`), read by `chat`/`whisper`
+    /// to distinguish "never entered play" from "disconnected pre-play".
+    pub(crate) end_reason: Arc<Mutex<Option<String>>>,
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
@@ -1079,6 +1083,7 @@ impl BotBuilder {
 
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let quit_reason = Arc::new(Mutex::new(None));
+        let end_reason = Arc::new(Mutex::new(None));
         let mut chat_shared = ChatShared::default();
         chat_shared.default_chat_patterns = builder.default_chat_patterns;
         let chat = Arc::new(Mutex::new(chat_shared));
@@ -1106,6 +1111,7 @@ impl BotBuilder {
             shutdown_tx,
             bridge::BridgeDeps {
                 quit_reason: quit_reason.clone(),
+                end_reason: end_reason.clone(),
                 chat: chat.clone(),
                 entities: entities.clone(),
                 world: world_state.clone(),
@@ -1123,6 +1129,7 @@ impl BotBuilder {
             events,
             bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
             quit_reason,
+            end_reason,
             _alive: alive,
             shutdown: shutdown_rx,
             _shutdown_tx: None,
@@ -1158,6 +1165,7 @@ impl Bot {
             bootstrap_events: Arc::new(Mutex::new(Some(events.subscribe()))),
             events: events.clone(),
             quit_reason: Arc::new(Mutex::new(None)),
+            end_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
             shutdown: shutdown_rx,
             _shutdown_tx: Some(shutdown_tx),

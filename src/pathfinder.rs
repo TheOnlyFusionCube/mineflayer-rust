@@ -171,8 +171,10 @@ pub enum Goal {
     },
     /// `goals.GoalBlock(x, y, z)` → [`goals::BlockPosGoal`].
     Block(BlockPos),
-    /// `goals.GoalGetToBlock(x, y, z)` → [`goals::ReachBlockPosGoal`]:
-    /// get to a spot the block is visible/reachable from, not onto it.
+    /// `goals.GoalGetToBlock(x, y, z)` — stand directly adjacent to the
+    /// block (upstream `isEnd`: `|dx| + |dz| + |dy<0?dy+1:dy| == 1`).
+    /// Custom [`GetToBlockGoal`] — azalea's `ReachBlockPosGoal` is the
+    /// *LookAtBlock* analog (reach/LOS, not adjacency).
     GetToBlock(BlockPos),
     /// `goals.GoalXZ(x, z)` → [`goals::XZGoal`].
     XZ {
@@ -245,9 +247,10 @@ impl Goal {
         match self {
             Goal::Near { pos, radius } => Some(Arc::new(goals::RadiusGoal::new(*pos, *radius))),
             Goal::Block(pos) => Some(Arc::new(goals::BlockPosGoal(*pos))),
-            Goal::GetToBlock(pos) | Goal::LookAtBlock(pos) | Goal::BreakBlock(pos) => Some(
-                Arc::new(goals::ReachBlockPosGoal::new(*pos, chunks.clone())),
-            ),
+            Goal::GetToBlock(pos) => Some(Arc::new(GetToBlockGoal(*pos))),
+            Goal::LookAtBlock(pos) | Goal::BreakBlock(pos) => Some(Arc::new(
+                goals::ReachBlockPosGoal::new(*pos, chunks.clone()),
+            )),
             Goal::XZ { x, z } => Some(Arc::new(goals::XZGoal { x: *x, z: *z })),
             Goal::NearXZ { x, z, range } => Some(Arc::new(NearXZGoal {
                 x: *x,
@@ -281,7 +284,7 @@ impl Goal {
     /// where no world component exists).
     fn needs_chunks(&self) -> bool {
         match self {
-            Goal::GetToBlock(_) | Goal::LookAtBlock(_) | Goal::BreakBlock(_) => true,
+            Goal::LookAtBlock(_) | Goal::BreakBlock(_) => true,
             Goal::Invert(inner) => inner.needs_chunks(),
             Goal::Any(children) | Goal::All(children) => children.iter().any(Goal::needs_chunks),
             _ => false,
@@ -430,6 +433,38 @@ impl AzaleaGoal for InvertedGoal {
     }
     fn success(&self, n: BlockPos) -> bool {
         !self.0.success(n)
+    }
+}
+
+/// `GoalGetToBlock` — upstream's strict-adjacency goal:
+/// `|dx| + |dz| + |dy<0?dy+1:dy| == 1` (a block below counts one step
+/// less because the feet block is inside it). Azalea's
+/// `ReachBlockPosGoal` answers a different question (can a face be
+/// seen within reach), so this one is implemented by hand.
+#[derive(Debug)]
+struct GetToBlockGoal(BlockPos);
+impl AzaleaGoal for GetToBlockGoal {
+    fn heuristic(&self, n: BlockPos) -> f32 {
+        let dx = (n.x - self.0.x).abs() as f32;
+        let dy = (n.y - self.0.y) as f32;
+        let dz = (n.z - self.0.z).abs() as f32;
+        // upstream: distanceXZ(dx, dz) + Math.abs(dy < 0 ? dy + 1 : dy),
+        // with distanceXZ the octagonal form and the whole thing scaled
+        // by azalea's COST_HEURISTIC like every azalea goal
+        let (straight, diagonal) = if dx < dz {
+            (dz - dx, dx)
+        } else {
+            (dx - dz, dz)
+        };
+        (diagonal * std::f32::consts::SQRT_2 + straight + if dy < 0. { dy + 1. } else { dy }.abs())
+            * pathfinder::costs::COST_HEURISTIC
+    }
+    fn success(&self, n: BlockPos) -> bool {
+        let dx = (n.x - self.0.x).abs();
+        let dy_raw = n.y - self.0.y;
+        let dy = if dy_raw < 0 { dy_raw + 1 } else { dy_raw }.abs();
+        let dz = (n.z - self.0.z).abs();
+        dx + dz + dy == 1
     }
 }
 
@@ -1854,9 +1889,9 @@ mod tests {
     use super::*;
 
     /// Each facade goal maps to an azalea goal whose `success`/`heuristic`
-    /// matches upstream semantics at probe positions. `GetToBlock` needs a
-    /// world for its LOS check, and `Follow` needs a live `EntityRef` —
-    /// both are covered by the live test instead.
+    /// matches upstream semantics at probe positions. `LookAtBlock`/
+    /// `BreakBlock` need a world for their LOS raycast, and `Follow`
+    /// needs a live `EntityRef` — all covered by the live test instead.
     #[test]
     fn goal_mapping_table() {
         let chunks = ChunkStorage::default();
@@ -1866,6 +1901,35 @@ mod tests {
         assert!(g.success(BlockPos::new(5, -60, 7)));
         assert!(g.success(BlockPos::new(5, 300, 7)));
         assert!(!g.success(BlockPos::new(5, 64, 8)));
+
+        // GoalGetToBlock is strict adjacency — |dx|+|dz|+|dy<0?dy+1:dy|
+        // == 1: four side neighbors succeed, and the block *above* the
+        // target counts (dy_raw=1 → 1), but the block *below* needs two
+        // (dy_raw=-1 → |−1+1|=0 fails, dy_raw=-2 → |−2+1|=1 succeeds).
+        // It needs no chunks — pure adjacency math, unlike the
+        // ReachBlockPosGoal it replaced.
+        let g = Goal::GetToBlock(BlockPos::new(4, 64, 4))
+            .to_azalea(&chunks)
+            .unwrap();
+        for pos in [
+            BlockPos::new(5, 64, 4),
+            BlockPos::new(3, 64, 4),
+            BlockPos::new(4, 64, 5),
+            BlockPos::new(4, 64, 3),
+            BlockPos::new(4, 65, 4), // standing on it
+        ] {
+            assert!(g.success(pos), "expected success at {pos:?}");
+        }
+        for pos in [
+            BlockPos::new(4, 64, 4), // inside
+            BlockPos::new(5, 64, 5), // diagonal
+            BlockPos::new(4, 66, 4), // two above
+            BlockPos::new(6, 64, 4), // two away
+            BlockPos::new(4, 63, 4), // directly below
+        ] {
+            assert!(!g.success(pos), "expected failure at {pos:?}");
+        }
+        assert!(g.success(BlockPos::new(4, 62, 4))); // dy_raw=-2 → 1
 
         // GoalY ignores x/z.
         let g = Goal::Y { y: 70 }.to_azalea(&chunks).unwrap();
@@ -2822,6 +2886,58 @@ mod tests {
         ecs.entity_mut(far_entity).despawn();
         drop(ecs);
         assert!(!far.is_end(&client, client.position()));
+    }
+
+    /// A `Follow` nested inside a composite resolves to a `RadiusGoal`
+    /// snapshot of the entity's position at conversion time — the
+    /// composite converts instead of erroring, and an untracked entity
+    /// fails the conversion (`issue` then rejects "isn't loaded").
+    #[test]
+    fn composite_follow_resolves_to_position_snapshot() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let target_entity = client
+            .ecs
+            .write()
+            .spawn(Position::new(Vec3::new(5., 64., 0.)))
+            .id();
+        let target = client.entity_ref_for(target_entity);
+
+        // Any(Follow@5,64,0 r=3, Block@0,64,0) — succeeds within 3 of
+        // the entity's current position OR exactly on the block.
+        let goal = Goal::Any(vec![
+            Goal::Follow {
+                entity: target.clone(),
+                range: 3.,
+            },
+            Goal::Block(BlockPos::new(0, 64, 0)),
+        ]);
+        let azalea_goal = goal
+            .to_azalea(&ChunkStorage::default())
+            .expect("composite with a tracked Follow must convert");
+        assert!(azalea_goal.success(BlockPos::new(6, 64, 0))); // near the entity
+        assert!(azalea_goal.success(BlockPos::new(0, 64, 0))); // on the block
+        assert!(!azalea_goal.success(BlockPos::new(10, 64, 0))); // neither
+
+        // `Invert(Follow)` resolves too — same `to_azalea` arm.
+        let inverted = Goal::Invert(Box::new(Goal::Follow {
+            entity: target,
+            range: 2.,
+        }))
+        .to_azalea(&ChunkStorage::default())
+        .unwrap();
+        assert!(!inverted.success(BlockPos::new(5, 64, 0)));
+
+        // an entity without a position fails the conversion — `issue`
+        // rejects it instead of aiming at a made-up spot.
+        let untracked = client.ecs.write().spawn_empty().id();
+        assert!(
+            Goal::Any(vec![Goal::Follow {
+                entity: client.entity_ref_for(untracked),
+                range: 1.,
+            }])
+            .to_azalea(&ChunkStorage::default())
+            .is_none()
+        );
     }
 
     /// `results.status` mapping for a finished search — the contract

@@ -27,6 +27,9 @@ uuid = "1"
 # azalea types (BlockPos, ItemStack, HumanoidArm, …) appear in the public
 # API, so live tests need the crate itself
 azalea = "0.16"
+# unit tests construct `Arc<RwLock<World>>` for `WorldHolder::new` — same
+# version azalea-client compiles its `shared` field with
+parking_lot = "0.12"
 
 [[test]]
 name = "live"
