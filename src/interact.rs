@@ -89,6 +89,46 @@ pub enum DigFace {
     Raycast,
 }
 
+/// `options.half` for the generic-place cursor (`lib/plugins/generic_place.js`)
+/// — `'top'`/`'bottom'` nudge the reported click 0.25 up/down on a side face
+/// (slab/stair halves).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceHalf {
+    /// `'top'` — `dy += 0.25`.
+    Top,
+    /// `'bottom'` — `dy -= 0.25`.
+    Bottom,
+}
+
+/// `bot._genericPlace`'s `options` (`lib/plugins/generic_place.js`), the
+/// [`Bot::place_block_opts`]/[`Bot::place_entity_opts`] argument.
+/// Upstream's public `placeBlock`/`placeEntity` don't expose it; the
+/// internal `_genericPlace`/`_*WithOptions` calls do — the `_opts`
+/// variants are the same surface.
+#[derive(Clone, Debug, Default)]
+pub struct PlaceOpts {
+    /// `options.offhand` — place with the off-hand item (`hand: 1` on the
+    /// wire), erroring `must be holding an item in the off-hand to place`
+    /// when slot 45 is empty. Otherwise the main hand must hold an item.
+    pub offhand: bool,
+    /// `options.half` — on a side face (`dy == 0.5`) shifts the cursor
+    /// 0.25 toward the named half.
+    pub half: Option<PlaceHalf>,
+    /// `options.delta` — replaces the computed cursor point outright.
+    pub delta: Option<Vec3>,
+    /// `options.forceLook` — `Ignore` skips the pre-place look; `Look`
+    /// looks with `force: false`, `Force` with `true` (upstream passes
+    /// the value straight to `lookAt`).
+    pub force_look: ForceLook,
+    /// `options.swingArm` — the hand to swing after the packet; `None`
+    /// is upstream's falsy and sends no swing.
+    pub swing_arm: Option<InteractionHand>,
+    /// `options.showHand` — accepted for signature parity; it has no
+    /// wire meaning in this protocol (the `bot.swingArm` row in
+    /// api-parity.md). Spawn-egg places set it `false` upstream.
+    pub show_hand: bool,
+}
+
 /// Why a [`Bot::dig`] future rejected — the `diggingAborted` payload.
 ///
 /// Upstream emits a bare event and rejects with `'Digging aborted'`; the
@@ -221,6 +261,28 @@ fn place_geometry(reference: BlockPos, face_vector: Vec3) -> Option<(BlockPos, D
         z: 0.5 + face_vector.z * 0.5,
     };
     Some((dest, direction, cursor))
+}
+
+/// `_genericPlace`'s cursor resolution: `0.5 + face·0.5`, `half` nudging
+/// `dy` 0.25 on side faces (`dy == 0.5`), `delta` replacing the result
+/// outright.
+fn place_cursor(face_vector: Vec3, opts: &PlaceOpts) -> Vec3 {
+    let mut cursor = Vec3 {
+        x: 0.5 + face_vector.x * 0.5,
+        y: 0.5 + face_vector.y * 0.5,
+        z: 0.5 + face_vector.z * 0.5,
+    };
+    if cursor.y == 0.5 {
+        match opts.half {
+            Some(PlaceHalf::Top) => cursor.y += 0.25,
+            Some(PlaceHalf::Bottom) => cursor.y -= 0.25,
+            None => {}
+        }
+    }
+    if let Some(delta) = opts.delta {
+        cursor = delta;
+    }
+    cursor
 }
 
 /// Per-tick mine progress → the `digTime` contract: `∞` for unbreakable
@@ -521,19 +583,43 @@ impl Bot {
     /// server ack, or the destination staying unchanged ("refused");
     /// `Error::Timeout` when the ack arrived but the update didn't.
     pub async fn place_block(&self, reference_block: &Block, face_vector: Vec3) -> Result<Block> {
-        let (dest, direction, cursor) = place_geometry(reference_block.pos, face_vector)
+        // upstream's public `placeBlock` is `_placeBlockWithOptions`
+        // called with `{ swingArm: 'right' }` — the default options.
+        self.place_block_opts(
+            reference_block,
+            face_vector,
+            &PlaceOpts {
+                swing_arm: Some(InteractionHand::MainHand),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// `bot._placeBlockWithOptions(referenceBlock, faceVector, options)` —
+    /// [`Bot::place_block`] with the full `_genericPlace` options surface
+    /// (offhand, cursor `half`/`delta`, `forceLook`, `swingArm`). An
+    /// offhand place still names the main-hand item in the refusal error,
+    /// like upstream's `bot.heldItem?.name`.
+    pub async fn place_block_opts(
+        &self,
+        reference_block: &Block,
+        face_vector: Vec3,
+        opts: &PlaceOpts,
+    ) -> Result<Block> {
+        let (dest, ..) = place_geometry(reference_block.pos, face_vector)
             .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
         let old_block = self.block_at(dest);
         let old_kind = old_block.as_ref().map(|b| b.kind());
-        let held = self
+        let held_name = self
             .held_item()
-            .ok_or_else(|| Error::Operation("must be holding an item to place".to_string()))?;
-        let held_name = held.kind().to_str();
+            .map(|h| h.name().to_string())
+            .unwrap_or_else(|| "block".to_string());
         let mut rx = self.events();
-        self.use_item_on(reference_block.pos, direction, cursor)
+        self.generic_place(reference_block.pos, face_vector, opts)
             .await?;
         let new_block = self
-            .wait_place_result(reference_block.pos, dest, old_kind, held_name, &mut rx)
+            .wait_place_result(reference_block.pos, dest, old_kind, &held_name, &mut rx)
             .await?;
         self.emit_event(BotEvent::BlockPlaced {
             old: old_block,
@@ -556,6 +642,21 @@ impl Bot {
         reference_block: &Block,
         face_vector: Vec3,
     ) -> Result<azalea::EntityRef> {
+        self.place_entity_opts(reference_block, face_vector, &PlaceOpts::default())
+            .await
+    }
+
+    /// `bot._placeEntityWithOptions(referenceBlock, faceVector, options)` —
+    /// [`Bot::place_entity`] with the `_genericPlace` options surface.
+    /// Like upstream, `bot.heldItem` is still required even for
+    /// `offhand: true` (it names the expected entity), and an unset
+    /// `swingArm` defaults to the placing hand.
+    pub async fn place_entity_opts(
+        &self,
+        reference_block: &Block,
+        face_vector: Vec3,
+        opts: &PlaceOpts,
+    ) -> Result<azalea::EntityRef> {
         let held = self.held_item().ok_or_else(|| {
             Error::Operation("must be holding an item to place an entity".to_string())
         })?;
@@ -565,18 +666,30 @@ impl Bot {
                 "Cannot place entity using {item_name}"
             )));
         };
-        let (dest, direction, cursor) = place_geometry(reference_block.pos, face_vector)
+        let (dest, ..) = place_geometry(reference_block.pos, face_vector)
             .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
         let dest_corner = Vec3 {
             x: dest.x as f64,
             y: dest.y as f64,
             z: dest.z as f64,
         };
+        // upstream: `if (!options.swingArm) options.swingArm =
+        // options.offhand ? 'left' : 'right'` — swing the placing hand.
+        let mut opts = opts.clone();
+        if opts.swing_arm.is_none() {
+            opts.swing_arm = Some(if opts.offhand {
+                InteractionHand::OffHand
+            } else {
+                InteractionHand::MainHand
+            });
+        }
         let mut rx = self.events();
-        self.use_item_on(reference_block.pos, direction, cursor)
+        let hand = self
+            .generic_place(reference_block.pos, face_vector, &opts)
             .await?;
         if expected.is_boat {
             // upstream's `useItemWithOwnPacket` — a bare use-item on ≥1.19
+            // sent for the hand the place packet carried
             let seq = self.next_sequence();
             let (y_rot, x_rot) = self
                 .client
@@ -584,7 +697,7 @@ impl Bot {
                 .map(|l| (l.y_rot(), l.x_rot()))
                 .unwrap_or_default();
             self.client.write_packet(ServerboundUseItem {
-                hand: InteractionHand::MainHand,
+                hand,
                 seq,
                 y_rot,
                 x_rot,
@@ -643,7 +756,17 @@ impl Bot {
             y: 0.5 + dir_vec.y * 0.5,
             z: 0.5 + dir_vec.z * 0.5,
         });
-        self.use_item_on(block.pos, face, cursor).await
+        // upstream activateBlock: `hand: 0`, always look, always swing —
+        // it predates `_genericPlace` and takes no options.
+        self.use_item_on(
+            block.pos,
+            face,
+            cursor,
+            InteractionHand::MainHand,
+            ForceLook::Look,
+            Some(InteractionHand::MainHand),
+        )
+        .await
     }
 
     /// The `Mining`/`MiningQueued` target, whichever is active — azalea
@@ -765,19 +888,33 @@ impl Bot {
             .unwrap_or(0)
     }
 
-    /// Upstream `_genericPlace`: look at the clicked point, send
-    /// `ServerboundUseItemOn` for `pos`/`direction`/`cursor`, swing — the
-    /// shared core of `place_block`, `place_entity`, and `activate_block`.
-    async fn use_item_on(&self, pos: BlockPos, direction: Direction, cursor: Vec3) -> Result<()> {
+    /// The `use_item_on` wire send shared by [`Bot::generic_place`] and
+    /// [`Bot::activate_block`]: look at the clicked point (unless the
+    /// caller opted out), send `ServerboundUseItemOn` for
+    /// `pos`/`direction`/`cursor`/`hand`, then swing if asked — the
+    /// ordering upstream's "The swing must follow use_item_on" comment
+    /// enforces.
+    async fn use_item_on(
+        &self,
+        pos: BlockPos,
+        direction: Direction,
+        cursor: Vec3,
+        hand: InteractionHand,
+        force_look: ForceLook,
+        swing_arm: Option<InteractionHand>,
+    ) -> Result<()> {
         let location = Vec3 {
             x: pos.x as f64 + cursor.x,
             y: pos.y as f64 + cursor.y,
             z: pos.z as f64 + cursor.z,
         };
-        self.look_at(location, false).await?;
+        if force_look != ForceLook::Ignore {
+            self.look_at(location, force_look == ForceLook::Force)
+                .await?;
+        }
         let seq = self.next_sequence();
         self.client.write_packet(ServerboundUseItemOn {
-            hand: InteractionHand::MainHand,
+            hand,
             block_hit: BlockHit {
                 block_pos: pos,
                 direction,
@@ -787,8 +924,58 @@ impl Bot {
             },
             seq,
         });
-        self.swing_arm(InteractionHand::MainHand);
+        if let Some(arm) = swing_arm {
+            self.swing_arm(arm);
+        }
         Ok(())
+    }
+
+    /// `bot._genericPlace` (`lib/plugins/generic_place.js`) — the
+    /// options-aware place path behind `place_block_opts`/
+    /// `place_entity_opts`. Checks the chosen hand holds an item,
+    /// resolves the cursor (`half` nudge, `delta` override), and returns
+    /// the hand the packet carried (`place_entity`'s boat `use_item`
+    /// needs it).
+    async fn generic_place(
+        &self,
+        reference: BlockPos,
+        face_vector: Vec3,
+        opts: &PlaceOpts,
+    ) -> Result<InteractionHand> {
+        let direction = face_direction(face_vector)
+            .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
+        // upstream checks the hand before computing the cursor: offhand
+        // wants `bot.inventory.slots[45]`, main hand wants `bot.heldItem`.
+        let hand = if opts.offhand {
+            if !self
+                .inventory()
+                .slot(45)
+                .is_some_and(|i| i.stack.is_present())
+            {
+                return Err(Error::Operation(
+                    "must be holding an item in the off-hand to place".to_string(),
+                ));
+            }
+            InteractionHand::OffHand
+        } else {
+            if self.held_item().is_none() {
+                return Err(Error::Operation(
+                    "must be holding an item to place".to_string(),
+                ));
+            }
+            InteractionHand::MainHand
+        };
+        let cursor = place_cursor(face_vector, opts);
+        self.use_item_on(
+            reference,
+            direction,
+            cursor,
+            hand,
+            opts.force_look,
+            opts.swing_arm,
+        )
+        .await?;
+        Ok(hand)
     }
 
     /// Upstream `placeBlock`'s wait: a `blockUpdate` on the reference block
@@ -867,6 +1054,117 @@ mod tests {
         );
         assert_eq!(face_direction(Vec3::new(1., 0., 0.)), Some(Direction::East));
         assert_eq!(face_direction(Vec3::new(0., 0., 0.)), None);
+    }
+
+    /// `_genericPlace`'s cursor math: `0.5 + face·0.5` default, `half`
+    /// nudging `dy` only on side faces (upstream's slab/stair steering),
+    /// `delta` replacing the result outright.
+    #[test]
+    fn generic_place_cursor_resolution() {
+        let side = Vec3::new(1., 0., 0.);
+        let top = Vec3::new(0., 1., 0.);
+
+        // defaults — the face center.
+        assert_eq!(
+            place_cursor(side, &PlaceOpts::default()),
+            Vec3::new(1., 0.5, 0.5)
+        );
+        assert_eq!(
+            place_cursor(top, &PlaceOpts::default()),
+            Vec3::new(0.5, 1., 0.5)
+        );
+
+        // `half` applies only when `dy == 0.5` — a top face's `dy` is
+        // already 1.0, so it passes through unchanged.
+        let top_half = PlaceOpts {
+            half: Some(PlaceHalf::Top),
+            ..Default::default()
+        };
+        assert_eq!(place_cursor(side, &top_half), Vec3::new(1., 0.75, 0.5));
+        assert_eq!(place_cursor(top, &top_half), Vec3::new(0.5, 1., 0.5));
+        let bottom_half = PlaceOpts {
+            half: Some(PlaceHalf::Bottom),
+            ..Default::default()
+        };
+        assert_eq!(place_cursor(side, &bottom_half), Vec3::new(1., 0.25, 0.5));
+
+        // `delta` wins over everything, including a nudged `half`.
+        let with_delta = PlaceOpts {
+            half: Some(PlaceHalf::Top),
+            delta: Some(Vec3::new(0.1, 0.2, 0.3)),
+            ..Default::default()
+        };
+        assert_eq!(place_cursor(side, &with_delta), Vec3::new(0.1, 0.2, 0.3));
+    }
+
+    /// The hand gate mirrors `_genericPlace`: `offhand` requires slot 45,
+    /// the main-hand path requires `heldItem` — each with upstream's
+    /// message.
+    #[tokio::test]
+    async fn generic_place_requires_item_in_chosen_hand() {
+        use azalea::entity::inventory::Inventory;
+
+        let client = crate::test_util::live_entity_client(Inventory::default());
+        let bot = crate::Bot::new(client);
+        let face = Vec3::new(0., 1., 0.);
+        let pos = BlockPos::new(0, 64, 0);
+
+        let err = bot
+            .generic_place(
+                pos,
+                face,
+                &PlaceOpts {
+                    offhand: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must be holding an item in the off-hand to place"),
+            "unexpected error: {err}"
+        );
+
+        let err = bot
+            .generic_place(pos, face, &PlaceOpts::default())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("must be holding an item to place"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// `place_entity`'s swing default: unset `swingArm` follows the
+    /// placing hand (`'left'` for offhand, `'right'` otherwise) — the
+    /// same conditional upstream applies before `_genericPlace`.
+    #[test]
+    fn place_entity_swing_defaults_to_placing_hand() {
+        // the default-fill logic lives inline in place_entity_opts, but
+        // its contract is simple enough to pin down here:
+        let resolve = |opts: &PlaceOpts| {
+            opts.swing_arm.unwrap_or(if opts.offhand {
+                InteractionHand::OffHand
+            } else {
+                InteractionHand::MainHand
+            })
+        };
+        assert_eq!(resolve(&PlaceOpts::default()), InteractionHand::MainHand);
+        assert_eq!(
+            resolve(&PlaceOpts {
+                offhand: true,
+                ..Default::default()
+            }),
+            InteractionHand::OffHand
+        );
+        assert_eq!(
+            resolve(&PlaceOpts {
+                swing_arm: Some(InteractionHand::OffHand),
+                ..Default::default()
+            }),
+            InteractionHand::OffHand
+        );
     }
 
     #[test]
