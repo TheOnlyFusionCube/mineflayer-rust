@@ -16,7 +16,19 @@
 //! `PathfinderFacade` components — azalea's `PathFoundEvent`/
 //! `StopPathfindingEvent` are ECS messages that never reach the `Event`
 //! stream, so the bridge diffs once per `Tick` (the same cadence upstream's
-//! `physicsTick` monitor uses):
+//! `physicsTick` monitor uses). Two failure classes need care beyond
+//! edge detection:
+//!
+//! - azalea runs its whole goto chain per Update (~17 ms) while ticks
+//!   land per GameTick (50 ms), so a fast-failing search can install
+//!   and drop inside one gap — no `is_calculating`/goal edges survive.
+//!   The bridge flags a *steady-state wedge* instead: facade goal set
+//!   while the ECS shows no goal, no calc, and no path, persisting past
+//!   [`WEDGE_GRACE`].
+//! - upstream's `thinkTimeout` bounds one A* end-to-end, but azalea
+//!   splits the search into a fresh `max_timeout` per repath, so the
+//!   budget is tracked cumulatively per goal issue — partial progress
+//!   can't keep a `goto` pending forever (upstream's `timeout`).
 //!
 //! - `path_update` — a path was installed, or a calculation finished
 //!   (azalea clears `is_calculating` for every result, failures included,
@@ -70,8 +82,18 @@ use crate::{Bot, BotEvent, Error, Result, windows::Item, world::Block};
 const AVOID_STEP_COST: f32 = 100.0;
 
 /// `bot.pathfinder.thinkTimeout` upstream (5000 ms) — the per-search time
-/// budget; azalea's `PathfinderOpts::max_timeout` plays the same role.
+/// budget; azalea's `PathfinderOpts::max_timeout` plays the same role,
+/// and the bridge applies it cumulatively across repaths (see
+/// [`bridge_events`]) since upstream's sliced A* shares one budget.
 const DEFAULT_THINK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the facade-goal-without-any-ECS-goal signature must persist
+/// before it's a failed search rather than a `GotoEvent` still waiting
+/// for the next Update pass to pick it up. azalea drains the goto
+/// message every Update (~17 ms), so a transient wedge clears in one
+/// tick; >2 GameTicks means the goal already installed and dropped
+/// inside a tick gap no edge-detection could see.
+const WEDGE_GRACE: Duration = Duration::from_millis(100);
 
 /// Upstream's `results.status` on `path_update` — the A* outcome a search
 /// produced (`pf-goto.js` reads it to settle a pending `goto`).
@@ -97,18 +119,22 @@ pub enum PathStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PathError {
     /// `err.name === 'NoPath'` — the search found no route to the goal.
-    #[error("NoPath: no path to the goal!")]
+    #[error("NoPath: No path to the goal!")]
     NoPath,
     /// `err.name === 'Timeout'` — the search hit the think timeout.
-    #[error("Timeout: took too long to decide path to goal!")]
+    /// (upstream's message spells it "Took to long" — kept verbatim)
+    #[error("Timeout: Took to long to decide path to goal!")]
     Timeout,
     /// `err.name === 'GoalChanged'` — the goal was replaced before it
     /// could be completed.
-    #[error("GoalChanged: the goal was changed before it could be completed!")]
+    #[error("GoalChanged: The goal was changed before it could be completed!")]
     GoalChanged,
     /// `err.name === 'PathStopped'` — the path was stopped before the
     /// goal could be reached.
-    #[error("PathStopped: the path was stopped before the goal could be reached!")]
+    #[error(
+        "PathStopped: Path was stopped before it could be completed! \
+         Thus, the desired goal was not reached."
+    )]
     PathStopped,
 }
 
@@ -242,20 +268,98 @@ impl Goal {
         }
     }
 
+    /// Whether [`Goal::to_azalea`] actually reads its `chunks`
+    /// parameter — only the `ReachBlockPosGoal`-backed variants
+    /// raycast into chunk storage. Lets [`Goal::is_end`] skip the
+    /// `WorldHolder` lock for every other goal shape (and stay usable
+    /// where no world component exists).
+    fn needs_chunks(&self) -> bool {
+        match self {
+            Goal::GetToBlock(_) | Goal::LookAtBlock(_) | Goal::BreakBlock(_) => true,
+            Goal::Invert(inner) => inner.needs_chunks(),
+            Goal::Any(children) | Goal::All(children) => children.iter().any(Goal::needs_chunks),
+            _ => false,
+        }
+    }
+
     /// The goal's own success check at `pos` — upstream's `goal.isEnd`.
-    /// For [`Goal::Follow`] that's "within range of where the entity is
-    /// now" (and unreachable while the entity isn't loaded).
+    /// Evaluated through the azalea goal this maps to so semantics can't
+    /// drift: for [`Goal::Follow`] that's the `RadiusGoal` at the
+    /// entity's current position — its `success` measures from the
+    /// block *center* like the installed goal does (a raw Vec3 distance
+    /// here would disagree by ±0.5 per axis), and it needs no
+    /// `ChunkStorage`, so this arm skips `client.world()` entirely and
+    /// is `false` while the entity isn't loaded.
     fn is_end(&self, client: &azalea::Client, pos: Vec3) -> bool {
         match self {
-            Goal::Follow { entity, range } => entity
-                .get_component::<Position>()
-                .is_some_and(|p| p.distance_to(pos) <= f64::from(*range)),
+            Goal::Follow { entity, range } => entity.get_component::<Position>().is_some_and(|p| {
+                goals::RadiusGoal::new(**p, *range).success(player_pos_to_block_pos(pos))
+            }),
             _ => {
-                let chunks = client.world().read().chunks.clone();
+                let chunks = if self.needs_chunks() {
+                    client.world().read().chunks.clone()
+                } else {
+                    ChunkStorage::default()
+                };
                 self.to_azalea(&chunks)
                     .is_some_and(|goal| goal.success(player_pos_to_block_pos(pos)))
             }
         }
+    }
+}
+
+/// Structural identity for the `newGoal !== goal` check upstream's
+/// `goto` runs on `goal_updated` — a re-issued goal equal to the pending
+/// one doesn't count as a replacement (upstream compares by object
+/// identity; a value type's closest honest analog is equality, so this
+/// errs toward *not* rejecting where upstream's identity check
+/// wouldn't). [`Goal::Follow`] compares the target's ECS id — the
+/// `Client` inside an `EntityRef` isn't part of the goal's meaning.
+fn same_goal(a: &Goal, b: &Goal) -> bool {
+    match (a, b) {
+        (
+            Goal::Near {
+                pos: p1,
+                radius: r1,
+            },
+            Goal::Near {
+                pos: p2,
+                radius: r2,
+            },
+        ) => p1 == p2 && r1 == r2,
+        (Goal::Block(a), Goal::Block(b)) => a == b,
+        (Goal::GetToBlock(a), Goal::GetToBlock(b)) => a == b,
+        (Goal::LookAtBlock(a), Goal::LookAtBlock(b)) => a == b,
+        (Goal::BreakBlock(a), Goal::BreakBlock(b)) => a == b,
+        (Goal::XZ { x: x1, z: z1 }, Goal::XZ { x: x2, z: z2 }) => x1 == x2 && z1 == z2,
+        (
+            Goal::NearXZ {
+                x: x1,
+                z: z1,
+                range: r1,
+            },
+            Goal::NearXZ {
+                x: x2,
+                z: z2,
+                range: r2,
+            },
+        ) => x1 == x2 && z1 == z2 && r1 == r2,
+        (Goal::Y { y: y1 }, Goal::Y { y: y2 }) => y1 == y2,
+        (Goal::Invert(a), Goal::Invert(b)) => same_goal(a, b),
+        (
+            Goal::Follow {
+                entity: e1,
+                range: r1,
+            },
+            Goal::Follow {
+                entity: e2,
+                range: r2,
+            },
+        ) => e1.id() == e2.id() && r1 == r2,
+        (Goal::Any(a), Goal::Any(b)) | (Goal::All(a), Goal::All(b)) => {
+            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| same_goal(x, y))
+        }
+        _ => false,
     }
 }
 
@@ -621,8 +725,10 @@ impl Pathfinder<'_> {
         let _ = shutdown.borrow_and_update();
         let client = self.client().clone();
         let probe = goal.clone();
-        self.set_goal(goal, false)?;
-        let my_gen = facade(&client, |f| f.set_gen).unwrap_or_default();
+        // captured inside the set_goal facade write — a separate read
+        // afterwards could adopt a racing replacement's generation and
+        // never see the GoalChanged
+        let my_gen = self.set_goal_inner(goal, false)?;
         loop {
             tokio::select! {
                 biased;
@@ -707,6 +813,13 @@ impl Pathfinder<'_> {
     /// `Goal::Follow` with `dynamic = false` ends at the first in-range
     /// tick, and `dynamic = true` follows until stopped or despawned.
     pub fn set_goal(&self, goal: Goal, dynamic: bool) -> Result<()> {
+        self.set_goal_inner(goal, dynamic).map(|_| ())
+    }
+
+    /// `set_goal` that also returns the `set_gen` it established —
+    /// captured inside the same facade write so a `goto` can't adopt a
+    /// racing replacement's generation (the identity check's read side).
+    fn set_goal_inner(&self, goal: Goal, dynamic: bool) -> Result<u64> {
         let client = self.client().clone();
         let movements = self.movements();
         sync_constraints(&client, &movements);
@@ -718,14 +831,23 @@ impl Pathfinder<'_> {
         if satisfied {
             stop_pathfinding_patched(&client, false);
         }
-        facade_mut(&client, |f| {
+        let set_gen = facade_mut(&client, |f| {
             cancel_watcher(f);
+            // `newGoal !== goal` — upstream's identity check wouldn't
+            // reject a goto when the identical goal is re-issued, so an
+            // equal goal+dynamic doesn't bump `set_gen` (the re-path
+            // below still happens; only the replacement flag is deduped)
+            let same = f.goal.as_ref().is_some_and(|g| same_goal(g, &goal)) && f.dynamic == dynamic;
             f.goal = (!satisfied).then(|| goal.clone());
             f.dynamic = dynamic;
             f.goal_gen += 1;
-            f.set_gen += 1;
+            if !same {
+                f.set_gen += 1;
+            }
             f.last_failure = None;
-        });
+            f.set_gen
+        })
+        .unwrap_or_default();
         self.bot.emit_event(BotEvent::GoalUpdated {
             goal: goal.clone(),
             dynamic,
@@ -737,13 +859,13 @@ impl Pathfinder<'_> {
         }
         if satisfied {
             self.bot.emit_event(BotEvent::GoalReached { goal });
-            return Ok(());
+            return Ok(set_gen);
         }
         let result = self.issue(goal, dynamic, movements);
         if result.is_err() {
             facade_mut(&client, |f| f.goal = None);
         }
-        result
+        result.map(|_| set_gen)
     }
 
     /// Issue a goal to azalea (or its watcher task for
@@ -768,11 +890,14 @@ impl Pathfinder<'_> {
                     cancel_watcher(f);
                     f.watcher_cancel = Some(cancel.clone());
                 });
+                // movements travel with the driver — every re-issue is
+                // a fresh issue, so `think_timeout` is re-read then
+                // (`set_think_timeout` must reach re-issues, M-7)
                 follow_driver(
                     client.clone(),
                     entity,
                     range,
-                    opts,
+                    movements,
                     cancel,
                     self.bot.clone(),
                     issue_gen,
@@ -785,7 +910,7 @@ impl Pathfinder<'_> {
                         "Goal::Follow's entity isn't loaded".to_string(),
                     ));
                 };
-                client.start_goto_with_opts(SharedGoal(azalea_goal.clone()), opts.clone());
+                client.start_goto_with_opts(SharedGoal(azalea_goal.clone()), opts);
                 if dynamic {
                     let cancel = Arc::new(AtomicBool::new(false));
                     facade_mut(&client, |f| {
@@ -795,7 +920,7 @@ impl Pathfinder<'_> {
                     dynamic_watcher(
                         client.clone(),
                         azalea_goal,
-                        opts,
+                        movements,
                         cancel,
                         self.bot.shutdown.clone(),
                         issue_gen,
@@ -901,8 +1026,10 @@ impl Pathfinder<'_> {
     }
 
     /// `bot.pathfinder.isMining()` — whether the bot is currently mining
-    /// a block (azalea's `Mining` component — the one the pathfinder's
-    /// mine edges drive).
+    /// a block (azalea's `Mining` component). `diverges`: upstream's flag
+    /// is the *pathfinder's own* `digging` state; azalea's component
+    /// counts any in-progress client mining — a manual `bot.dig` in
+    /// flight reports true here where upstream's would not.
     pub fn is_mining(&self) -> bool {
         self.client().is_mining()
     }
@@ -917,8 +1044,12 @@ impl Pathfinder<'_> {
     /// `bot.pathfinder.bestHarvestTool(block)` — the inventory item that
     /// digs `block` fastest, via azalea's `get_mine_progress` (accounts
     /// for held-item rules, water on the eyes, haste/fatigue). `None`
-    /// when the inventory is empty or the entity isn't loaded, like
-    /// upstream's `null` for `bot.inventory.items()` being empty.
+    /// when the inventory is empty, the entity isn't loaded, or every
+    /// tool's dig time is infinite (unbreakable — upstream's
+    /// `digTime: Infinity` keeps `bestTool` at `null`, and zero mine
+    /// progress is the same signal here). Scans `player_slots_range` —
+    /// main inventory + hotbar, the range upstream's
+    /// `inventory.items()` covers; crafting/armor/offhand slots are out.
     pub fn best_harvest_tool(&self, block: &Block) -> Option<Item> {
         let client = self.client();
         let block_trait = Box::<dyn azalea::block::BlockTrait>::from(block.state);
@@ -933,8 +1064,11 @@ impl Pathfinder<'_> {
                 // dig time is proportional to the inverse of
                 // per-tick mine progress, so argmax progress ==
                 // upstream's argmin digTime over `inventory.items()`
+                let menu = &inventory.inventory_menu;
+                let slots = menu.slots();
                 let mut best: Option<(usize, f32)> = None;
-                for (i, stack) in inventory.inventory_menu.slots().iter().enumerate() {
+                for i in menu.player_slots_range() {
+                    let stack = &slots[i];
                     if stack.is_empty() {
                         continue;
                     }
@@ -950,7 +1084,9 @@ impl Pathfinder<'_> {
                         best = Some((i, progress));
                     }
                 }
-                best.map(|(i, _)| (i as i16, inventory.inventory_menu.slots()[i].clone()))
+                // zero progress everywhere = infinite digTime = no tool
+                best.filter(|&(_, p)| p > 0.)
+                    .map(|(i, _)| (i as i16, slots[i].clone()))
             })
             .ok()
             .flatten()
@@ -982,6 +1118,9 @@ impl Pathfinder<'_> {
     ///
     /// `diverges` vs upstream's generator: no incremental `yield`s —
     /// callers wanting the walk continued call again from the path end.
+    /// The search runs on the caller thread for up to `timeout` —
+    /// calling this on the bot's LocalSet thread stalls the ECS for
+    /// that long, so prefer `spawn_blocking` for big searches.
     /// `optimizePath`/`resetEntityIntersects`/`searchRadius`/`tickTimeout`
     /// have no azalea knob and are not exposed.
     pub fn get_path_from_to(
@@ -1034,16 +1173,29 @@ impl Pathfinder<'_> {
             .path
             .map(|edges| edges.iter().map(|e| e.movement.target).collect())
             .unwrap_or_default();
-        let status = if !event.is_partial {
-            PathStatus::Success
-        } else if !path.is_empty() {
-            PathStatus::Partial
-        } else if elapsed >= timeout {
-            PathStatus::Timeout
-        } else {
-            PathStatus::NoPath
-        };
+        let status = classify_search_result(event.is_partial, path.is_empty(), elapsed, timeout);
         Ok(PathResult { status, path })
+    }
+}
+
+/// Upstream's `results.status` for a finished azalea search — a
+/// complete path is `success`, a non-empty partial `partial`, and the
+/// empty+partial result means the space was exhausted (`noPath`) or the
+/// budget ran out (`timeout`), separated by elapsed time.
+fn classify_search_result(
+    is_partial: bool,
+    path_empty: bool,
+    elapsed: Duration,
+    budget: Duration,
+) -> PathStatus {
+    if !is_partial {
+        PathStatus::Success
+    } else if !path_empty {
+        PathStatus::Partial
+    } else if elapsed >= budget {
+        PathStatus::Timeout
+    } else {
+        PathStatus::NoPath
     }
 }
 
@@ -1096,7 +1248,7 @@ fn follow_driver(
     client: azalea::Client,
     entity: EntityRef,
     range: f32,
-    opts: PathfinderOpts,
+    movements: Movements,
     cancel: Arc<AtomicBool>,
     bot: Bot,
     issue_gen: u64,
@@ -1107,6 +1259,9 @@ fn follow_driver(
         // mark the initial value seen so only the sender's drop resolves
         let _ = shutdown.borrow_and_update();
         let mut last_target: Option<BlockPos> = None;
+        // the goal was just issued — a drop observed on the first poll
+        // is a fresh one
+        let mut was_live = true;
         let mut despawned = false;
         loop {
             tokio::select! {
@@ -1123,6 +1278,13 @@ fn follow_driver(
             if cancel.load(atomic::Ordering::Relaxed) {
                 break;
             }
+            // a just-observed goal drop may be a failed search the
+            // bridge hasn't cleared yet — re-issuing in that window
+            // installs a stale goal nobody owns; skip this tick so the
+            // failure-clear can run first
+            let live = pathfinder_live(&client);
+            let fresh_drop = was_live && !live;
+            was_live = live;
             if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
                 // reached (non-dynamic), stopped, or replaced — whoever
                 // cleared or superseded it already reported the outcome;
@@ -1135,13 +1297,17 @@ fn follow_driver(
                 break;
             };
             let block_pos = BlockPos::from(pos);
-            if last_target == Some(block_pos) {
+            if last_target == Some(block_pos) || fresh_drop {
                 continue;
             }
             last_target = Some(block_pos);
+            // every issue reads the live think_timeout — a
+            // `set_think_timeout` mid-follow must reach re-issues
+            let think_timeout =
+                facade(&client, |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT);
             client.start_goto_with_opts(
                 SharedGoal(Arc::new(goals::RadiusGoal::new(pos, range))),
-                opts.clone(),
+                movements.to_opts().max_timeout(think_timeout),
             );
         }
         if cancel.load(atomic::Ordering::Relaxed) || !despawned {
@@ -1177,7 +1343,7 @@ fn follow_driver(
 fn dynamic_watcher(
     client: azalea::Client,
     goal: Arc<dyn AzaleaGoal>,
-    opts: PathfinderOpts,
+    movements: Movements,
     cancel: Arc<AtomicBool>,
     mut shutdown: watch::Receiver<()>,
     issue_gen: u64,
@@ -1185,6 +1351,9 @@ fn dynamic_watcher(
     tokio::spawn(async move {
         let mut ticks = client.get_tick_broadcaster();
         let _ = shutdown.borrow_and_update();
+        // the goal was just issued — a drop observed on the first poll
+        // is a fresh one
+        let mut was_live = true;
         loop {
             tokio::select! {
                 r = ticks.recv() => {
@@ -1200,6 +1369,13 @@ fn dynamic_watcher(
             if cancel.load(atomic::Ordering::Relaxed) {
                 break;
             }
+            // a just-observed goal drop may be a failed search the
+            // bridge hasn't cleared yet — re-issuing in that window
+            // installs a stale goal nobody owns; skip this tick so the
+            // failure-clear can run first
+            let live = pathfinder_live(&client);
+            let fresh_drop = was_live && !live;
+            was_live = live;
             if !client.is_goto_target_reached() {
                 continue;
             }
@@ -1208,12 +1384,34 @@ fn dynamic_watcher(
             if goal.success(player_pos_to_block_pos(client.position())) {
                 continue;
             }
-            if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
-                break;
+            if fresh_drop {
+                continue;
             }
-            client.start_goto_with_opts(SharedGoal(goal.clone()), opts.clone());
+            let Some(think_timeout) = facade(&client, |f| {
+                (f.goal.is_some() && f.goal_gen == issue_gen).then_some(f.think_timeout)
+            })
+            .flatten() else {
+                break;
+            };
+            client.start_goto_with_opts(
+                SharedGoal(goal.clone()),
+                movements.to_opts().max_timeout(think_timeout),
+            );
         }
     })
+}
+
+/// Whether the ECS pathfinder looks live — a goal installed, a search
+/// in flight, or a path executing. Watchers diff this across their own
+/// ticks: a fresh drop may be a failed search whose failure-clear
+/// hasn't run yet (azalea's goal drop lands in Update, the bridge sees
+/// it on the next GameTick), and a re-issue inside that window would
+/// install an unclaimed goal the bot then walks (M-4).
+fn pathfinder_live(client: &azalea::Client) -> bool {
+    client
+        .try_query_self::<&pathfinder::Pathfinder, _>(|p| p.goal.is_some() || p.is_calculating)
+        .unwrap_or(false)
+        || client.is_executing_path()
 }
 
 /// Per-tick diff state for the path events — see [`bridge_events`].
@@ -1224,6 +1422,29 @@ pub(crate) struct PathTracker {
     /// duration compared against `think_timeout` classifies it `Timeout`
     /// (the budget ran out) vs `NoPath` (the space was exhausted early).
     calc_started: Option<Instant>,
+    /// First snapshot the goal sat wedged (facade goal set, no ECS
+    /// goal/calc/path, goal unmet). A fast-failing search installs and
+    /// drops inside one GameTick gap — azalea runs the whole goto chain
+    /// per Update (~17 ms) while snapshots land per GameTick (50 ms) —
+    /// so edge detection can't see it; the persistent wedge is the only
+    /// observable signature. Armed under [`WEDGE_GRACE`] so a
+    /// just-written `GotoEvent` can't false-positive.
+    wedge_since: Option<Instant>,
+    /// The `goal_gen` the search bookkeeping below belongs to — a
+    /// `set_goal`/`set_movements` re-issue resets it (new promise, new
+    /// budget).
+    tracked_gen: u64,
+    /// Observed search time accumulated for `tracked_gen`. Upstream's
+    /// `thinkTimeout` bounds one A* end-to-end; azalea splits it into a
+    /// fresh search per repath, so the budget has to span them — a goal
+    /// whose searches total `think_timeout` without ever producing a
+    /// complete path rejects `Timeout` even while partial progress
+    /// keeps coming (the common unreachable-but-approachable case).
+    search_spent: Duration,
+    /// Whether `tracked_gen`'s searches have produced a complete
+    /// (non-partial) path yet — once one has, the goal is established
+    /// and later recalcs carry their own per-search budgets.
+    saw_success: bool,
 }
 
 /// Everything the diff needs from the ECS, extracted under one read guard
@@ -1262,7 +1483,27 @@ pub(crate) fn bridge_events(
     let now = tracker.last.as_ref().expect("just stored");
     let mut out = Vec::new();
 
-    if !prev.is_calculating && now.is_calculating {
+    // the search bookkeeping is scoped to one goal issue — a
+    // `set_goal`/`set_movements` re-issue restarts the promise (fresh
+    // goal, fresh budget, fresh wedge arming)
+    if now.facade_gen != tracker.tracked_gen {
+        tracker.tracked_gen = now.facade_gen;
+        tracker.search_spent = Duration::ZERO;
+        tracker.saw_success = false;
+        tracker.wedge_since = None;
+    }
+
+    // a superseded calc keeps `is_calculating` true across the swap —
+    // the replacement installs a new `Arc`, so a same-flag goal
+    // transition means the old search was orphaned; restart the clock
+    // instead of letting its elapsed bleed into the new one
+    let superseded = prev.is_calculating
+        && now.is_calculating
+        && match (&prev.ecs_goal, &now.ecs_goal) {
+            (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+            _ => false,
+        };
+    if (!prev.is_calculating && now.is_calculating) || superseded {
         tracker.calc_started = Some(Instant::now());
     }
     let calc_finished = prev.is_calculating && !now.is_calculating;
@@ -1271,21 +1512,65 @@ pub(crate) fn bridge_events(
     } else {
         None
     };
+    // upstream's thinkTimeout bounds one A* end-to-end; azalea splits it
+    // into a fresh search per repath, so elapsed accumulates across them
+    if let Some(elapsed) = calc_elapsed {
+        tracker.search_spent += elapsed;
+    }
+    if now.executing && !now.is_partial {
+        tracker.saw_success = true;
+    }
+    let spent_now = tracker.search_spent
+        + if now.is_calculating {
+            tracker
+                .calc_started
+                .map(|t| t.elapsed())
+                .unwrap_or_default()
+        } else {
+            Duration::ZERO
+        };
+    // the promise-level budget: searches for this goal totaling
+    // think_timeout without ever producing a complete path → upstream
+    // 'timeout' (azalea would repath a partial frontier forever)
+    let budget_exceeded =
+        now.facade_goal.is_some() && !tracker.saw_success && spent_now >= now.think_timeout;
+
     let goal_cleared = prev.ecs_goal.is_some() && now.ecs_goal.is_none();
+    // a facade goal with no ECS goal, no calc, and no path is the only
+    // signature a fast-failing search leaves when it installs and drops
+    // inside one GameTick gap — the edges can't be observed
+    let wedge_candidate = now.facade_goal.is_some()
+        && !now.executing
+        && !now.is_calculating
+        && now.ecs_goal.is_none();
     // shared by the path_update classification and the goal-clear branch
     // — only evaluated when something actually changed, since `is_end`
     // can raycast (ReachBlockPosGoal) and shouldn't run per tick
-    let satisfied = (calc_finished || goal_cleared)
+    let satisfied = (calc_finished || goal_cleared || wedge_candidate || budget_exceeded)
         && now
             .facade_goal
             .as_ref()
             .is_some_and(|g| now.pos.is_some_and(|pos| g.is_end(client, pos)));
+
+    // the wedge must persist past the grace window — a just-written
+    // `GotoEvent` shows the same signature for the ~17 ms until the next
+    // Update drains it, so flagging immediately would false-positive
+    tracker.wedge_since = if wedge_candidate && !satisfied {
+        tracker.wedge_since.or_else(|| Some(Instant::now()))
+    } else {
+        None
+    };
+    let wedged = tracker
+        .wedge_since
+        .is_some_and(|t| t.elapsed() >= WEDGE_GRACE);
+
     // azalea drops its goal on an empty result only when
     // `retry_on_no_path` is false (every issue here sets it) — an ECS
     // goal drop in the same tick a calculation finished, with no path
-    // executing and the goal unmet, is a failed search. Duration vs the
-    // think budget separates `Timeout` (budget hit) from `NoPath`
-    // (search space exhausted early), matching upstream's statuses.
+    // executing and the goal unmet, is a failed search; so is a wedge
+    // that outlived the grace window. Duration vs the think budget
+    // separates `Timeout` (budget hit) from `NoPath` (search space
+    // exhausted early), matching upstream's statuses.
     let search_failure = if calc_finished
         && goal_cleared
         && !now.executing
@@ -1297,14 +1582,34 @@ pub(crate) fn bridge_events(
         } else {
             PathError::NoPath
         })
+    } else if wedged {
+        // a hidden install/fail/drop spent an unobservable share of the
+        // budget — classify against the cumulative promise spend like
+        // every other failure (Timeout only if the budget's blown)
+        Some(if spent_now >= now.think_timeout {
+            PathError::Timeout
+        } else {
+            PathError::NoPath
+        })
     } else {
         None
     };
+    // the cumulative promise budget expiring is also a failure — but a
+    // partial path may still be walking, so unlike a dead search it
+    // clears only the facade (upstream's `monitorMovement` also keeps
+    // walking the best path after a 'timeout' reject)
+    let promise_expired = search_failure.is_none() && budget_exceeded && !satisfied;
 
     // `path_update` — a path got installed (possibly merged mid-run by a
-    // repath) or a calculation finished. `status` mirrors upstream's
-    // `results.status`.
-    if (!prev.executing && now.executing) || calc_finished {
+    // repath) or a calculation finished while something owned it: a
+    // facade goal, or a path it just installed. `status` mirrors
+    // upstream's `results.status`. A bare finish with neither — the
+    // `stop()`/aborted-calc shape — stays silent, matching upstream's
+    // aborted `astarContext` which produces no `path_update` at all.
+    if (!prev.executing && now.executing)
+        || (calc_finished && (now.executing || now.facade_goal.is_some()))
+        || (search_failure.is_some() && !calc_finished)
+    {
         let status = if now.executing {
             if now.is_partial {
                 PathStatus::Partial
@@ -1321,10 +1626,10 @@ pub(crate) fn bridge_events(
             // goto on this ("goal is already met")
             PathStatus::Success
         } else {
-            // an aborted calculation (stop()/replacement mid-search):
-            // upstream has no 'aborted' status — `noPath` is the closest
-            // "produced nothing" bucket, and a pending `goto`
-            // corroborates against `last_failure` before trusting it
+            // a calculation whose result landed with no path — azalea's
+            // result was either empty (a real `noPath`) or superseded;
+            // a pending `goto` corroborates against `last_failure`
+            // before trusting it
             PathStatus::NoPath
         };
         out.push(BotEvent::PathUpdate {
@@ -1334,14 +1639,34 @@ pub(crate) fn bridge_events(
         });
     }
 
+    // promise-expired reject — the goal stays on azalea (it may be
+    // walking a partial path; upstream keeps moving after a 'timeout'),
+    // only the facade's claim on it ends. Announced via `path_update`
+    // like a search-reported 'timeout'.
+    if promise_expired && now.facade_gen == prev.facade_gen {
+        facade_mut(client, |f| {
+            if f.goal_gen == now.facade_gen {
+                f.last_failure = Some(PathError::Timeout);
+                cancel_watcher(f);
+                f.goal = None;
+            }
+        });
+        out.push(BotEvent::PathUpdate {
+            path: now.path.clone(),
+            is_partial: now.is_partial,
+            status: PathStatus::Timeout,
+        });
+    }
+
     // `goal_reached` / `path_stop` / failure-clear — azalea cleared its
-    // goal. `now.facade_goal.is_some()` gates the whole thing: `stop()`
+    // goal, or the goal sits in a wedge the drop left behind.
+    // `now.facade_goal.is_some()` gates the whole thing: `stop()`
     // and the follow driver clear the facade goal when they report, so a
     // clear arriving with it already `None` was already announced.
     // Satisfaction is checked against the *current* facade goal
     // (`is_end`), which also covers a replaced goal that
     // instant-satisfied within the same tick.
-    if goal_cleared && now.facade_goal.is_some() {
+    if (goal_cleared || wedge_candidate) && now.facade_goal.is_some() {
         // Both branches take the facade goal only when its generation is
         // unchanged since the snapshot — a `set_goal` that landed in
         // between already announced the old goal's death via
@@ -1374,12 +1699,14 @@ pub(crate) fn bridge_events(
                         f.goal = None;
                     }
                 });
-            } else {
+            } else if goal_cleared {
                 // the same goal was abandoned without reaching (world
                 // change, azalea-internal stop). A goal_gen bump means the
                 // cleared goal belonged to an older set_goal — its death
                 // was already announced by that call's path_reset, so say
-                // nothing.
+                // nothing. A wedge still inside its grace window
+                // (`wedge_candidate && !goal_cleared`) lands here too —
+                // it gets its own verdict once the window closes.
                 let stopped = facade_mut(client, |f| {
                     if f.goal_gen == now.facade_gen {
                         f.goal.take()
@@ -1490,6 +1817,35 @@ mod tests {
             -inner_azalea.heuristic(BlockPos::new(3, 64, 4))
         );
 
+        // GoalNearXZ — upstream `distanceXZ` (octagonal: straight +
+        // diagonal·√2) × COST_HEURISTIC, and `isEnd` dx²+dz² ≤ range²
+        // measured on integer node coords, y ignored.
+        let g = Goal::NearXZ {
+            x: 10,
+            z: 10,
+            range: 5.,
+        }
+        .to_azalea(&chunks)
+        .unwrap();
+        // dx=dz=10 → straight 0, diagonal 10 → 10·√2·COST_HEURISTIC
+        assert_eq!(
+            g.heuristic(BlockPos::new(0, 64, 0)),
+            10. * std::f32::consts::SQRT_2 * pathfinder::costs::COST_HEURISTIC
+        );
+        // dx=6, dz=0 → straight 6, diagonal 0 → 6·COST_HEURISTIC
+        assert_eq!(
+            g.heuristic(BlockPos::new(4, 64, 10)),
+            6. * pathfinder::costs::COST_HEURISTIC
+        );
+        // dx=6, dz=8 → diagonal 6, straight 2 → (6√2+2)·COST_HEURISTIC
+        assert_eq!(
+            g.heuristic(BlockPos::new(4, 64, 2)),
+            (6. * std::f32::consts::SQRT_2 + 2.) * pathfinder::costs::COST_HEURISTIC
+        );
+        assert!(g.success(BlockPos::new(13, 64, 14))); // dx²+dz² = 9+16 = 25 ≤ 25
+        assert!(g.success(BlockPos::new(13, 300, 14))); // y ignored
+        assert!(!g.success(BlockPos::new(16, 64, 10))); // 36 > 25
+
         // Any = OR, All = AND.
         let any = Goal::Any(vec![Goal::XZ { x: 5, z: 5 }, Goal::Y { y: 70 }])
             .to_azalea(&chunks)
@@ -1567,7 +1923,7 @@ mod tests {
         let handle = dynamic_watcher(
             client.clone(),
             goal,
-            Movements::default().to_opts(),
+            Movements::default(),
             Arc::new(AtomicBool::new(false)),
             shutdown_rx,
             7,
@@ -1619,7 +1975,7 @@ mod tests {
             client.clone(),
             target,
             2.,
-            Movements::default().to_opts(),
+            Movements::default(),
             Arc::new(AtomicBool::new(false)),
             bot,
             3,
@@ -1735,9 +2091,11 @@ mod tests {
         );
     }
 
-    /// Same failure path, but with the search outliving a near-zero
-    /// `think_timeout` → `Timeout`, matching upstream's
-    /// `results.status === 'timeout'`.
+    /// Same failure path, but with the search outliving the
+    /// `think_timeout` budget → `Timeout`, matching upstream's
+    /// `results.status === 'timeout'`. The budget is a promise-level
+    /// deadline, so the reject lands mid-search — upstream's
+    /// thinkTimeout aborts an in-flight A* the same way.
     #[test]
     fn bridge_failed_search_past_budget_reports_timeout() {
         let client = watcher_client((
@@ -1749,16 +2107,16 @@ mod tests {
             f.goal = Some(goal);
             f.goal_gen = 1;
             f.set_gen = 1;
-            f.think_timeout = Duration::from_nanos(1);
+            f.think_timeout = Duration::from_millis(30);
         });
         let mut tracker = PathTracker::default();
         assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
         set_searching(&client, true);
         assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
-        // let the tracked search age past the (nanosecond) budget
-        std::thread::sleep(Duration::from_millis(2));
-
-        set_searching(&client, false);
+        // let the in-flight search age past the budget — the promise
+        // rejects mid-search, like upstream's thinkTimeout aborting a
+        // running A*
+        std::thread::sleep(Duration::from_millis(60));
         let out = bridge_events(&client, &mut tracker, &Event::Tick);
         assert!(
             out.iter().any(|e| matches!(
@@ -1774,6 +2132,10 @@ mod tests {
             facade(&client, |f| f.last_failure),
             Some(Some(PathError::Timeout))
         );
+        // the (dead) search finishing later reports nothing more —
+        // the facade already recorded and cleared the outcome
+        set_searching(&client, false);
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
     }
 
     /// A path arriving mid-run emits `path_update` with `success`/`partial`
@@ -1858,6 +2220,393 @@ mod tests {
             )),
             "expected a partial path_update, got {out:?}"
         );
+    }
+
+    /// The C-1 hole: a fast-failing search installs its goal and drops
+    /// it entirely inside one GameTick gap — no `is_calculating`/goal
+    /// edges ever appear. The steady-state wedge (facade goal set, ECS
+    /// idle, goal unmet) past the grace window is the only signature —
+    /// it must report `noPath` and clear the facade goal like an
+    /// observed failure.
+    #[test]
+    fn bridge_wedged_goal_after_hidden_drop_reports_failure() {
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            pathfinder::Pathfinder::default(),
+        ));
+        // `follow_at` spawns an ECS entity — build it before the
+        // facade write, not inside the `ecs.write()` guard
+        let goal = follow_at(&client, Vec3::new(500., 64., 0.));
+        facade_mut(&client, |f| {
+            f.goal = Some(goal);
+            f.goal_gen = 1;
+            f.set_gen = 1;
+        });
+        let mut tracker = PathTracker::default();
+        // baseline plants `last`; the wedge arms on the next tick and
+        // must NOT fire inside the grace window
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        assert!(
+            bridge_events(&client, &mut tracker, &Event::Tick).is_empty(),
+            "wedge fired before the grace window closed"
+        );
+        std::thread::sleep(WEDGE_GRACE + Duration::from_millis(30));
+
+        let out = bridge_events(&client, &mut tracker, &Event::Tick);
+        assert!(
+            out.iter().any(|e| matches!(
+                e,
+                BotEvent::PathUpdate {
+                    status: PathStatus::NoPath,
+                    ..
+                }
+            )),
+            "expected a noPath path_update, got {out:?}"
+        );
+        assert!(!out.iter().any(|e| matches!(e, BotEvent::PathStop { .. })));
+        assert_eq!(
+            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            Some((true, Some(PathError::NoPath))),
+            "facade goal must be cleared with the failure recorded"
+        );
+    }
+
+    /// The other half of the wedge: a goal that *became* satisfied while
+    /// its search lived and died inside the tick gap resolves
+    /// `goal_reached`, never `noPath` — upstream's monitor checks `isEnd`
+    /// per physicsTick regardless of path state.
+    #[test]
+    fn bridge_wedged_satisfied_goal_reports_reached() {
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            pathfinder::Pathfinder::default(),
+        ));
+        facade_mut(&client, |f| {
+            // a YGoal the bot is already standing on
+            f.goal = Some(Goal::Y { y: 64 });
+            f.goal_gen = 1;
+            f.set_gen = 1;
+        });
+        let mut tracker = PathTracker::default();
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+
+        let out = bridge_events(&client, &mut tracker, &Event::Tick);
+        assert!(
+            out.iter()
+                .any(|e| matches!(e, BotEvent::GoalReached { .. })),
+            "expected goal_reached, got {out:?}"
+        );
+        assert!(!out.iter().any(|e| matches!(e, BotEvent::PathUpdate { .. })));
+        assert!(facade(&client, |f| f.goal.is_none()).unwrap_or(false));
+    }
+
+    /// Upstream's `thinkTimeout` is a cumulative promise budget: a goal
+    /// that keeps producing *partial* paths without ever completing must
+    /// reject `Timeout` once its searches total the budget — azalea
+    /// would otherwise repath the unreachable frontier forever. The ECS
+    /// goal and the partial path keep walking (upstream's
+    /// `monitorMovement` survives a timeout reject); only the facade's
+    /// claim on the promise ends.
+    #[test]
+    fn bridge_cumulative_search_budget_reports_timeout() {
+        use std::collections::VecDeque;
+        fn noop(_: moves::ExecuteCtx) {}
+        fn unreached(_: moves::IsReachedCtx) -> bool {
+            false
+        }
+        let partial_path = |client: &azalea::Client, target| {
+            client
+                .ecs
+                .write()
+                .entity_mut(client.entity)
+                .insert(ExecutingPath {
+                    path: VecDeque::from([pathfinder::astar::Edge {
+                        movement: pathfinder::astar::Movement {
+                            target,
+                            data: moves::MoveData {
+                                execute: &noop,
+                                is_reached: &unreached,
+                            },
+                        },
+                        cost: 1.,
+                    }]),
+                    queued_path: None,
+                    last_reached_node: BlockPos::new(0, 64, 0),
+                    ticks_since_last_node_reached: 0,
+                    is_path_partial: true,
+                });
+        };
+
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            pathfinder::Pathfinder::default(),
+        ));
+        // `follow_at` spawns an ECS entity — build it before the
+        // facade write, not inside the `ecs.write()` guard
+        let goal = follow_at(&client, Vec3::new(500., 64., 0.));
+        facade_mut(&client, |f| {
+            f.goal = Some(goal);
+            f.goal_gen = 1;
+            f.set_gen = 1;
+            f.think_timeout = Duration::from_millis(10);
+        });
+        let mut tracker = PathTracker::default();
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+
+        // repath cycles: each observed search contributes a few ms of
+        // spent budget and installs another partial — the goal never
+        // completes (saw_success stays false)
+        let mut timed_out = false;
+        for i in 0..10 {
+            {
+                let mut ecs = client.ecs.write();
+                let mut entity = ecs.get_entity_mut(client.entity).unwrap();
+                entity.remove::<ExecutingPath>();
+                let mut pf = entity.get_mut::<pathfinder::Pathfinder>().unwrap();
+                pf.is_calculating = true;
+            }
+            assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+            std::thread::sleep(Duration::from_millis(3));
+            {
+                let mut ecs = client.ecs.write();
+                let mut entity = ecs.get_entity_mut(client.entity).unwrap();
+                entity
+                    .get_mut::<pathfinder::Pathfinder>()
+                    .unwrap()
+                    .is_calculating = false;
+            }
+            partial_path(&client, BlockPos::new(i, 64, 0));
+            let out = bridge_events(&client, &mut tracker, &Event::Tick);
+            if out.iter().any(|e| {
+                matches!(
+                    e,
+                    BotEvent::PathUpdate {
+                        status: PathStatus::Timeout,
+                        ..
+                    }
+                )
+            }) {
+                timed_out = true;
+                break;
+            }
+        }
+        assert!(timed_out, "cumulative search spend never rejected");
+        assert_eq!(
+            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            Some((true, Some(PathError::Timeout))),
+            "facade goal must be cleared with the timeout recorded"
+        );
+        // the partial path is still installed — the promise rejected,
+        // but upstream keeps walking the best path after a 'timeout'
+        assert!(client.is_executing_path());
+    }
+
+    /// I-2: `stop()` during an in-flight search must NOT produce a
+    /// `path_update` — upstream's aborted `astarContext` is nulled in
+    /// `resetPath` and reports nothing. Previously the aborted calc
+    /// fell into the `noPath` arm deterministically.
+    #[test]
+    fn bridge_aborted_calc_emits_no_update() {
+        let client = watcher_client((
+            Position::new(Vec3::new(0., 64., 0.)),
+            pathfinder::Pathfinder::default(),
+        ));
+        // `follow_at` spawns an ECS entity — build it before the
+        // facade write, not inside the `ecs.write()` guard
+        let goal = follow_at(&client, Vec3::new(500., 64., 0.));
+        facade_mut(&client, |f| {
+            f.goal = Some(goal);
+            f.goal_gen = 1;
+            f.set_gen = 1;
+        });
+        let mut tracker = PathTracker::default();
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+        set_searching(&client, true);
+        assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
+
+        // what stop() does: clear the ECS goal/calc, then the facade goal
+        stop_pathfinding_patched(&client, true);
+        facade_mut(&client, |f| f.goal = None);
+        let out = bridge_events(&client, &mut tracker, &Event::Tick);
+        assert!(
+            !out.iter().any(|e| matches!(e, BotEvent::PathUpdate { .. })),
+            "an aborted calc must not emit path_update, got {out:?}"
+        );
+    }
+
+    /// `newGoal !== goal` — a `set_goal` re-issuing a structurally
+    /// identical goal is not a replacement: `set_gen` must not move, so
+    /// a pending `goto` survives it (upstream's identity check wouldn't
+    /// reject either).
+    #[tokio::test]
+    async fn goto_survives_identical_goal_reissue() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let (bot, _shutdown) = crate::test_util::bot_with_shutdown(client.clone());
+        let pf = bot.pathfinder();
+        let pf2 = bot.pathfinder();
+
+        // `follow_at` spawns a fresh entity per call, so the goal must
+        // be built off one shared target — Follow identity is the ECS id
+        let target_entity = client
+            .ecs
+            .write()
+            .spawn(Position::new(Vec3::new(500., 64., 0.)))
+            .id();
+        let mk = |client: &azalea::Client| Goal::Follow {
+            entity: client.entity_ref_for(target_entity),
+            range: 1.,
+        };
+        let mut goto = std::pin::pin!(pf.goto(mk(&client)));
+        await_install(&mut goto, &client).await;
+        let my_gen = facade(&client, |f| f.set_gen);
+
+        pf2.set_goal(mk(&client), false).unwrap();
+        assert_eq!(
+            facade(&client, |f| f.set_gen),
+            my_gen,
+            "an identical re-issue bumped set_gen"
+        );
+
+        pf2.stop();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), &mut goto)
+            .await
+            .expect("goto hung")
+            .expect_err("the identical re-issue resolved the goto");
+        assert!(
+            matches!(err, Error::Path(PathError::PathStopped)),
+            "expected PathStopped (no GoalChanged), got {err:?}"
+        );
+    }
+
+    /// The `newGoal !== goal` check's value type analog — same variant,
+    /// same parameters. `Follow` compares the target's ECS id; a
+    /// different entity is a different goal.
+    #[test]
+    fn same_goal_identity() {
+        let a = Goal::Near {
+            pos: Vec3::new(1., 2., 3.),
+            radius: 4.,
+        };
+        assert!(same_goal(&a, &a.clone()));
+        assert!(!same_goal(
+            &a,
+            &Goal::Near {
+                pos: Vec3::new(1., 2., 3.),
+                radius: 5.
+            }
+        ));
+        assert!(!same_goal(&a, &Goal::Block(BlockPos::new(1, 2, 3))));
+        assert!(!same_goal(
+            &Goal::LookAtBlock(BlockPos::new(1, 2, 3)),
+            &Goal::BreakBlock(BlockPos::new(1, 2, 3))
+        ));
+
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let e1 = client.ecs.write().spawn(()).id();
+        let e2 = client.ecs.write().spawn(()).id();
+        let f1 = Goal::Follow {
+            entity: client.entity_ref_for(e1),
+            range: 2.,
+        };
+        assert!(same_goal(
+            &f1,
+            &Goal::Follow {
+                entity: client.entity_ref_for(e1),
+                range: 2.
+            }
+        ));
+        assert!(!same_goal(
+            &f1,
+            &Goal::Follow {
+                entity: client.entity_ref_for(e2),
+                range: 2.
+            }
+        ));
+    }
+
+    /// M-6: `Goal::Follow`'s `is_end` must answer with the same
+    /// block-center `RadiusGoal` check the installed goal runs — a raw
+    /// Vec3 distance disagrees by ±0.5 per axis and would report a
+    /// reached goal as still pending at the boundary.
+    #[test]
+    fn follow_is_end_uses_block_center() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        // entity (0.4, 64.5, 0.4) vs block (0,64,0) center (0.5,64.5,
+        // 0.5): ≈0.14 — in range at r=0.5. The old Vec3 check against
+        // the bot's origin would measure ≈0.75 and disagree.
+        let target_entity = client
+            .ecs
+            .write()
+            .spawn(Position::new(Vec3::new(0.4, 64.5, 0.4)))
+            .id();
+        let goal = Goal::Follow {
+            entity: client.entity_ref_for(target_entity),
+            range: 0.5,
+        };
+        assert!(goal.is_end(&client, client.position()));
+
+        // past the center radius → out of range
+        let far_entity = client
+            .ecs
+            .write()
+            .spawn(Position::new(Vec3::new(1.6, 64.5, 0.4)))
+            .id();
+        let far = Goal::Follow {
+            entity: client.entity_ref_for(far_entity),
+            range: 0.5,
+        };
+        assert!(!far.is_end(&client, client.position()));
+
+        // a despawned target is never satisfied — upstream's null-target
+        // follow can't be met either
+        let mut ecs = client.ecs.write();
+        ecs.entity_mut(far_entity).despawn();
+        drop(ecs);
+        assert!(!far.is_end(&client, client.position()));
+    }
+
+    /// `results.status` mapping for a finished search — the contract
+    /// `getPathTo`/`getPathFromTo` share with the bridge's failure
+    /// classification.
+    #[test]
+    fn search_result_status_mapping() {
+        let budget = Duration::from_secs(5);
+        // complete path
+        assert_eq!(
+            classify_search_result(false, false, Duration::ZERO, budget),
+            PathStatus::Success
+        );
+        // non-empty partial
+        assert_eq!(
+            classify_search_result(true, false, Duration::ZERO, budget),
+            PathStatus::Partial
+        );
+        // empty result inside budget = exhausted space
+        assert_eq!(
+            classify_search_result(true, true, Duration::from_secs(1), budget),
+            PathStatus::NoPath
+        );
+        // empty result at/over budget = timed out
+        assert_eq!(
+            classify_search_result(true, true, budget, budget),
+            PathStatus::Timeout
+        );
+    }
+
+    /// `think_timeout`/`is_mining`/`is_building` accessors — the trivial
+    /// facade-backed surface.
+    #[test]
+    fn pathfinder_accessors() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let (bot, _shutdown) = crate::test_util::bot_with_shutdown(client);
+        let pf = bot.pathfinder();
+        assert_eq!(pf.think_timeout(), DEFAULT_THINK_TIMEOUT);
+        pf.set_think_timeout(Duration::from_millis(1234));
+        assert_eq!(pf.think_timeout(), Duration::from_millis(1234));
+        // no Mining component → not mining; azalea never places → never building
+        assert!(!pf.is_mining());
+        assert!(!pf.is_building());
     }
 
     /// `goto` rejects `GoalChanged` when another `set_goal` lands while
