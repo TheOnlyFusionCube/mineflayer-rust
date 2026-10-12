@@ -3,8 +3,9 @@
 //! Upstream's collect is a find → goto → dig loop that resolves once every
 //! requested block is broken; ours keeps that shape over the U3/U6/U7
 //! primitives: [`FindBlocksOpts`] re-searches each iteration (the world
-//! changes under us as we dig), [`Goal::GetToBlock`] walks into dig reach,
-//! and [`Bot::dig`] does the breaking. Before digging, the loop equips
+//! changes under us as we dig), [`Goal::LookAtBlock`] walks into sight
+//! and dig reach like upstream's `mineBlock` goal, and [`Bot::dig`] does
+//! the breaking. Before digging, the loop equips
 //! the best harvest tool the way upstream's `mineBlock` does
 //! (`requireHarvest` + `getFromChest`). Dug blocks then get a bounded
 //! drop-vacuum pass — vanilla pickup is contact-only, and digging from
@@ -474,7 +475,10 @@ impl CollectBlock<'_> {
             }
             bot.emit_event(BotEvent::CollectBlockFound(block.clone()));
             let pf = bot.pathfinder();
-            match tokio::time::timeout(GOTO_TIMEOUT, pf.goto(Goal::GetToBlock(pos))).await {
+            // upstream's mineBlock paths with `GoalLookAtBlock` — get
+            // within sight+reach of a face, not strictly adjacent
+            // (`cb.ts:24`)
+            match tokio::time::timeout(GOTO_TIMEOUT, pf.goto(Goal::LookAtBlock(pos))).await {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     if stale(&bot.client, generation) {
@@ -653,11 +657,13 @@ impl CollectBlock<'_> {
             .collect()
     }
 
-    /// `emptyInventoryIfFull`/`placeItems` — deposit the filter-passing
-    /// inventory stacks into the nearest non-full registered chest.
-    /// Errors `NoChests` like upstream when the inventory is full and
-    /// no chest can take the overflow.
-    async fn empty_inventory_if_full(
+    /// `emptyInventoryIfFull(bot, chestLocations, itemFilter)` — deposit
+    /// the filter-passing inventory stacks into the nearest non-full
+    /// registered chest. No-ops while a slot is free; errors `NoChests`
+    /// like upstream when the inventory is full and no chest can take
+    /// the overflow. `collect` calls this internally with the configured
+    /// (or per-call) chest list and filter.
+    pub async fn empty_inventory_if_full(
         &self,
         chest_locations: &[BlockPos],
         item_filter: &ItemFilter,

@@ -40,6 +40,7 @@ use std::{
         Arc,
         atomic::{self, AtomicBool},
     },
+    time::Duration,
 };
 
 use azalea::{
@@ -79,15 +80,36 @@ pub enum Goal {
     },
     /// `goals.GoalBlock(x, y, z)` → [`goals::BlockPosGoal`].
     Block(BlockPos),
-    /// `goals.GoalGetToBlock(x, y, z)` → [`goals::ReachBlockPosGoal`]:
-    /// get to a spot the block is visible/reachable from, not onto it.
+    /// `goals.GoalGetToBlock(x, y, z)` — stand directly adjacent to the
+    /// block (upstream `isEnd`: `|dx| + |dz| + |dy<0?dy+1:dy| == 1`).
+    /// Custom [`GetToBlockGoal`] — azalea's `ReachBlockPosGoal` is the
+    /// *LookAtBlock* analog (reach/LOS, not adjacency).
     GetToBlock(BlockPos),
+    /// `goals.GoalLookAtBlock(pos, world, {reach})` — path to a spot
+    /// where a face of the block is visible within reach →
+    /// [`goals::ReachBlockPosGoal`] (4.5 survival reach, eye 1.62).
+    /// `diverges`: azalea raycasts the block *center*; upstream raycasts
+    /// each visible face and takes `entityHeight`/`reach` options.
+    /// `GoalBreakBlock` is this same goal upstream (a LookAtBlock
+    /// wrapper that leaves the digging to the caller).
+    LookAtBlock(BlockPos),
     /// `goals.GoalXZ(x, z)` → [`goals::XZGoal`].
     XZ {
         /// Target x coordinate.
         x: i32,
         /// Target z coordinate.
         z: i32,
+    },
+    /// `goals.GoalNearXZ(x, z, range)` — euclidean distance on the XZ
+    /// plane, y ignored (`dx² + dz² <= range²`). Custom [`NearXZGoal`] —
+    /// azalea has only the exact-match `XZGoal`.
+    NearXZ {
+        /// Target x coordinate.
+        x: i32,
+        /// Target z coordinate.
+        z: i32,
+        /// How close is close enough (euclidean, XZ only).
+        radius: f32,
     },
     /// `goals.GoalY(y)` → [`goals::YGoal`].
     Y {
@@ -121,17 +143,25 @@ pub enum Goal {
 impl Goal {
     /// The azalea goal for pathing, or `None` for [`Goal::Follow`] (and
     /// any composite containing one) — follows are driven by a watcher,
-    /// not a static goal. `chunks` is the bot's live chunk storage, needed
-    /// only by [`Goal::GetToBlock`]'s line-of-sight check.
+    /// not a static goal; `issue()` folds nested follows into `Near`
+    /// snapshots via [`resolve_nested_follows`] first. `chunks` is the
+    /// bot's live chunk storage, needed only by [`Goal::LookAtBlock`]'s
+    /// line-of-sight check.
     fn to_azalea(&self, chunks: &ChunkStorage) -> Option<Arc<dyn AzaleaGoal>> {
         match self {
             Goal::Near { pos, radius } => Some(Arc::new(goals::RadiusGoal::new(*pos, *radius))),
             Goal::Block(pos) => Some(Arc::new(goals::BlockPosGoal(*pos))),
-            Goal::GetToBlock(pos) => Some(Arc::new(goals::ReachBlockPosGoal::new(
+            Goal::GetToBlock(pos) => Some(Arc::new(GetToBlockGoal(*pos))),
+            Goal::LookAtBlock(pos) => Some(Arc::new(goals::ReachBlockPosGoal::new(
                 *pos,
                 chunks.clone(),
             ))),
             Goal::XZ { x, z } => Some(Arc::new(goals::XZGoal { x: *x, z: *z })),
+            Goal::NearXZ { x, z, radius } => Some(Arc::new(NearXZGoal {
+                x: *x,
+                z: *z,
+                range_sq: radius * radius,
+            })),
             Goal::Y { y } => Some(Arc::new(goals::YGoal { y: *y })),
             Goal::Invert(inner) => inner
                 .to_azalea(chunks)
@@ -211,6 +241,50 @@ impl AzaleaGoal for AllGoal {
     }
     fn success(&self, n: BlockPos) -> bool {
         self.0.iter().all(|goal| goal.success(n))
+    }
+}
+
+/// `GoalGetToBlock` — upstream's strict-adjacency goal:
+/// `|dx| + |dz| + |dy<0?dy+1:dy| == 1` (a block below counts one step
+/// less because the feet block is inside it). Azalea's
+/// `ReachBlockPosGoal` answers a different question (can a face be
+/// seen within reach), so this one is implemented by hand.
+#[derive(Debug)]
+struct GetToBlockGoal(BlockPos);
+impl AzaleaGoal for GetToBlockGoal {
+    fn heuristic(&self, n: BlockPos) -> f32 {
+        let dx = (n.x - self.0.x) as f32;
+        let dy = (n.y - self.0.y) as f32;
+        let dz = (n.z - self.0.z) as f32;
+        // upstream: distanceXZ(dx, dz) + Math.abs(dy < 0 ? dy + 1 : dy)
+        dx.hypot(dz) + if dy < 0. { dy + 1. } else { dy }.abs()
+    }
+    fn success(&self, n: BlockPos) -> bool {
+        let dx = (n.x - self.0.x).abs();
+        let dy_raw = n.y - self.0.y;
+        let dy = if dy_raw < 0 { dy_raw + 1 } else { dy_raw }.abs();
+        let dz = (n.z - self.0.z).abs();
+        dx + dz + dy == 1
+    }
+}
+
+/// `GoalNearXZ` — upstream's XZ-radius goal: `dx² + dz² <= range²`,
+/// y ignored entirely.
+#[derive(Debug)]
+struct NearXZGoal {
+    x: i32,
+    z: i32,
+    range_sq: f32,
+}
+impl AzaleaGoal for NearXZGoal {
+    fn heuristic(&self, n: BlockPos) -> f32 {
+        // upstream: distanceXZ(dx, dz)
+        ((self.x - n.x) as f32).hypot((self.z - n.z) as f32)
+    }
+    fn success(&self, n: BlockPos) -> bool {
+        let dx = self.x - n.x;
+        let dz = self.z - n.z;
+        (dx * dx + dz * dz) as f32 <= self.range_sq
     }
 }
 
@@ -369,7 +443,7 @@ fn cant_break(cant_break: &HashSet<BlockKind>, state: azalea::block::BlockState)
 /// Facade state azalea has no slot for: the [`Goal`] the user set (azalea
 /// keeps only the opaque `Arc<dyn Goal>`), the `dynamic` flag, the
 /// `Movements`, and the cancel flag for the follow/dynamic watcher.
-#[derive(Component, Default)]
+#[derive(Component)]
 pub(crate) struct PathfinderFacade {
     /// The last `set_goal` argument. `None` once the goal is reached or
     /// abandoned (cleared by the bridge diff, `stop`, or a watcher exit).
@@ -385,9 +459,30 @@ pub(crate) struct PathfinderFacade {
     pub dynamic: bool,
     /// `bot.pathfinder.movements`.
     pub movements: Movements,
+    /// `bot.pathfinder.thinkTimeout` — the A* budget per path attempt,
+    /// applied as azalea's `PathfinderOpts::max_timeout` (upstream
+    /// 5000 ms; azalea's own default is the same 5 s).
+    pub think_timeout: Duration,
     /// Set to cancel the running follow/dynamic watcher.
     watcher_cancel: Option<Arc<AtomicBool>>,
 }
+
+impl Default for PathfinderFacade {
+    fn default() -> Self {
+        Self {
+            goal: None,
+            goal_gen: 0,
+            dynamic: false,
+            movements: Movements::default(),
+            think_timeout: DEFAULT_THINK_TIMEOUT,
+            watcher_cancel: None,
+        }
+    }
+}
+
+/// Upstream's `thinkTimeout` default — 5000 ms (azalea's `max_timeout`
+/// default agrees).
+pub const DEFAULT_THINK_TIMEOUT: Duration = Duration::from_millis(5000);
 
 /// Run `f` against the [`PathfinderFacade`] component, inserting a default
 /// one first if the client entity lacks it. `None` when the entity is gone.
@@ -579,12 +674,23 @@ impl Pathfinder<'_> {
             }
             _ => {
                 let chunks = client.world().read().chunks.clone();
+                // A `Follow` can't drive its own watcher inside a
+                // composite — resolve it to a `Near` snapshot at the
+                // entity's current position. Upstream's monitorGoals
+                // polls the live entity each tick; our composite keeps
+                // the position the entity had when the goal was issued
+                // (`diverges` — a still-tracking follow needs the
+                // top-level `Goal::Follow` watcher).
+                let goal = resolve_nested_follows(&goal)?;
                 let Some(azalea_goal) = goal.to_azalea(&chunks) else {
                     return Err(Error::Operation(
                         "Goal::Follow can't be nested inside a composite goal".to_string(),
                     ));
                 };
-                client.start_goto_with_opts(SharedGoal(azalea_goal.clone()), movements.to_opts());
+                client.start_goto_with_opts(
+                    SharedGoal(azalea_goal.clone()),
+                    movements.to_opts().max_timeout(self.think_timeout()),
+                );
                 if dynamic {
                     let cancel = Arc::new(AtomicBool::new(false));
                     facade_mut(&client, |f| {
@@ -640,6 +746,26 @@ impl Pathfinder<'_> {
         self.client().is_calculating_path()
     }
 
+    /// `bot.pathfinder.isMining()` — whether a dig is in progress
+    /// (upstream's flag covers pathfinder-driven digs; azalea's `Mining`
+    /// component answers the same question for digs from any source).
+    pub fn is_mining(&self) -> bool {
+        self.client().is_mining()
+    }
+
+    /// `bot.pathfinder.thinkTimeout` — the per-attempt A* budget
+    /// (upstream default 5000 ms; applied to azalea's
+    /// `PathfinderOpts::max_timeout`, whose own default is also 5 s).
+    pub fn think_timeout(&self) -> Duration {
+        facade(self.client(), |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT)
+    }
+
+    /// Set `bot.pathfinder.thinkTimeout`. Takes effect on the next
+    /// issued goal like upstream's plain field write.
+    pub fn set_think_timeout(&self, timeout: Duration) {
+        facade_mut(self.client(), |f| f.think_timeout = timeout);
+    }
+
     /// `bot.pathfinder.haveGoal()` — whether a goal is currently set.
     pub fn have_goal(&self) -> bool {
         self.goal().is_some()
@@ -690,6 +816,45 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
     if let Some(cancel) = facade.watcher_cancel.take() {
         cancel.store(true, atomic::Ordering::Relaxed);
     }
+}
+
+/// Replace every [`Goal::Follow`] inside a composite/`Invert` tree with a
+/// `Near` at the entity's current position — upstream `GoalComposite*`
+/// accepts live `GoalFollow` children (its monitor re-polls them), but
+/// our per-tick re-issue machinery only exists for a *top-level* follow
+/// ([`follow_driver`]). The snapshot keeps the composite honest: it
+/// paths to where the entity was when the goal was issued. Errors on a
+/// despawned entity — upstream would still aim at its stale position,
+/// but we have no last-known store for it.
+fn resolve_nested_follows(goal: &Goal) -> Result<Goal> {
+    Ok(match goal {
+        Goal::Any(children) => Goal::Any(
+            children
+                .iter()
+                .map(resolve_nested_follows)
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Goal::All(children) => Goal::All(
+            children
+                .iter()
+                .map(resolve_nested_follows)
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        Goal::Invert(inner) => Goal::Invert(Box::new(resolve_nested_follows(inner)?)),
+        Goal::Follow { entity, range } => {
+            let pos = entity
+                .get_component::<Position>()
+                .map(|p| **p)
+                .ok_or_else(|| {
+                    Error::Operation("Goal::Follow's entity is no longer tracked".to_string())
+                })?;
+            Goal::Near {
+                pos,
+                radius: *range,
+            }
+        }
+        other => other.clone(),
+    })
 }
 
 /// Stop azalea's pathfinder (`force` = halt mid-move) and patch the
@@ -778,7 +943,11 @@ fn follow_driver(
             last_target = Some(block_pos);
             client.start_goto_with_opts(
                 SharedGoal(Arc::new(goals::RadiusGoal::new(pos, range))),
-                movements.to_opts(),
+                // thinkTimeout is read live per issue, like upstream's
+                // field read inside `getPathFromTo`
+                movements.to_opts().max_timeout(
+                    facade(&client, |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT),
+                ),
             );
         }
         if cancel.load(atomic::Ordering::Relaxed) || !despawned {
@@ -848,7 +1017,12 @@ fn dynamic_watcher(
             if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
                 break;
             }
-            client.start_goto_with_opts(SharedGoal(goal.clone()), movements.to_opts());
+            client.start_goto_with_opts(
+                SharedGoal(goal.clone()),
+                movements.to_opts().max_timeout(
+                    facade(&client, |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT),
+                ),
+            );
         }
     })
 }
@@ -994,9 +1168,9 @@ mod tests {
     use super::*;
 
     /// Each facade goal maps to an azalea goal whose `success`/`heuristic`
-    /// matches upstream semantics at probe positions. `GetToBlock` needs a
-    /// world for its LOS check, and `Follow` needs a live `EntityRef` —
-    /// both are covered by the live test instead.
+    /// matches upstream semantics at probe positions. `LookAtBlock`
+    /// needs a world for its LOS raycast, and `Follow` needs a live
+    /// `EntityRef` — both are covered by the live test instead.
     #[test]
     fn goal_mapping_table() {
         let chunks = ChunkStorage::default();
@@ -1006,6 +1180,47 @@ mod tests {
         assert!(g.success(BlockPos::new(5, -60, 7)));
         assert!(g.success(BlockPos::new(5, 300, 7)));
         assert!(!g.success(BlockPos::new(5, 64, 8)));
+
+        // GoalNearXZ is the radius form of XZ — y is ignored, the
+        // boundary is euclidean (`dx² + dz² <= range²`).
+        let g = Goal::NearXZ {
+            x: 5,
+            z: 7,
+            radius: 2.,
+        }
+        .to_azalea(&chunks)
+        .unwrap();
+        assert!(g.success(BlockPos::new(5, -60, 7))); // on target, any y
+        assert!(g.success(BlockPos::new(6, 64, 8))); // √2 < 2
+        assert!(!g.success(BlockPos::new(7, 64, 9))); // √8 > 2
+        assert!(!g.success(BlockPos::new(5, 64, 10))); // 3 > 2
+
+        // GoalGetToBlock is strict adjacency — |dx|+|dz|+|dy<0?dy+1:dy|
+        // == 1: four side neighbors succeed, and the block *above* the
+        // target counts (dy_raw=1 → 1), but the block *below* needs two
+        // (dy_raw=-1 → |−1+1|=0 fails, dy_raw=-2 → |−2+1|=1 succeeds).
+        let g = Goal::GetToBlock(BlockPos::new(4, 64, 4))
+            .to_azalea(&chunks)
+            .unwrap();
+        for pos in [
+            BlockPos::new(5, 64, 4),
+            BlockPos::new(3, 64, 4),
+            BlockPos::new(4, 64, 5),
+            BlockPos::new(4, 64, 3),
+            BlockPos::new(4, 65, 4), // standing on it
+        ] {
+            assert!(g.success(pos), "expected success at {pos:?}");
+        }
+        for pos in [
+            BlockPos::new(4, 64, 4), // inside
+            BlockPos::new(5, 64, 5), // diagonal
+            BlockPos::new(4, 66, 4), // two above
+            BlockPos::new(6, 64, 4), // two away
+            BlockPos::new(4, 63, 4), // directly below
+        ] {
+            assert!(!g.success(pos), "expected failure at {pos:?}");
+        }
+        assert!(g.success(BlockPos::new(4, 62, 4))); // dy_raw=-2 → 1
 
         // GoalY ignores x/z.
         let g = Goal::Y { y: 70 }.to_azalea(&chunks).unwrap();
@@ -1198,5 +1413,60 @@ mod tests {
             .await
             .expect("follow driver outlived the connection")
             .unwrap();
+    }
+
+    /// M6: a `Follow` nested in a composite resolves to a `Near`
+    /// snapshot of the entity's position at issue time, so the
+    /// composite converts instead of erroring.
+    #[test]
+    fn composite_follow_resolves_to_position_snapshot() {
+        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let target_entity = client
+            .ecs
+            .write()
+            .spawn(Position::new(Vec3::new(5., 64., 0.)))
+            .id();
+        let target = client.entity_ref_for(target_entity);
+
+        let goal = Goal::Any(vec![
+            Goal::Follow {
+                entity: target.clone(),
+                range: 3.,
+            },
+            Goal::Block(BlockPos::new(0, 64, 0)),
+        ]);
+        let resolved = resolve_nested_follows(&goal).unwrap();
+        match &resolved {
+            Goal::Any(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(
+                    &children[0],
+                    Goal::Near { pos, radius }
+                        if *pos == Vec3::new(5., 64., 0.) && *radius == 3.
+                ));
+            }
+            _ => panic!("composite shape must survive resolution"),
+        }
+        // and the resolved tree now converts to an azalea goal —
+        // before the fix `to_azalea` returned `None` for any tree
+        // containing a Follow.
+        assert!(resolved.to_azalea(&ChunkStorage::default()).is_some());
+
+        // `Invert(Follow)` resolves too — same tree walk.
+        let inverted = resolve_nested_follows(&Goal::Invert(Box::new(Goal::Follow {
+            entity: target,
+            range: 2.,
+        })))
+        .unwrap();
+        assert!(matches!(inverted, Goal::Invert(inner) if matches!(&*inner, Goal::Near { .. })));
+
+        // an entity without a position errors instead of aiming at a
+        // made-up spot.
+        let untracked = client.ecs.write().spawn_empty().id();
+        let result = resolve_nested_follows(&Goal::Any(vec![Goal::Follow {
+            entity: client.entity_ref_for(untracked),
+            range: 1.,
+        }]));
+        assert!(matches!(result, Err(Error::Operation(_))));
     }
 }
