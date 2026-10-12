@@ -976,14 +976,21 @@ impl Bot {
     }
 
     /// `bot.activateEntity(entity)` — right-click an entity (use item /
-    /// talk to villager / board minecart).
-    pub fn activate_entity(&self, entity: &EntityRef) {
+    /// talk to villager / board minecart). Looks at `entity.position + 1`
+    /// first, like upstream's `lookAt(entity.position.offset(0, 1, 0))`.
+    pub async fn activate_entity(&self, entity: &EntityRef) -> Result<()> {
+        if let Some(pos) = entity.get_component::<Position>().map(|p| **p) {
+            self.look_at(pos.up(1.), false).await?;
+        }
         self.client.entity_interact(entity.id());
+        Ok(())
     }
 
     /// `bot.activateEntityAt(entity, pos)` — right-click at a specific point
-    /// on the entity's hitbox (e.g. armor stands).
-    pub fn activate_entity_at(&self, entity: &EntityRef, pos: Vec3) {
+    /// on the entity's hitbox (e.g. armor stands). Looks at `pos` first,
+    /// like upstream's `lookAt(position)`.
+    pub async fn activate_entity_at(&self, entity: &EntityRef, pos: Vec3) -> Result<()> {
+        self.look_at(pos, false).await?;
         self.client
             .ecs
             .write()
@@ -992,6 +999,7 @@ impl Bot {
                 target: entity.id(),
                 location: Some(pos),
             });
+        Ok(())
     }
 
     /// `bot.useOn(target)` — saddle/shears-style use. Upstream sends the

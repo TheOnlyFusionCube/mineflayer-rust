@@ -30,6 +30,9 @@ use crate::{
 pub(crate) struct BridgeDeps {
     /// `Bot::quit`/`end` reason, consumed by `translate` on `End`.
     pub quit_reason: Arc<Mutex<Option<String>>>,
+    /// Written with the reason every `BotEvent::End` goes out — upstream
+    /// chat.js's `endReason`, read by `chat`/`whisper`'s pre-play error.
+    pub end_reason: Arc<Mutex<Option<String>>>,
     /// Chat-domain state (pattern registry, tablist, `tab_complete` correlation).
     pub chat: Arc<Mutex<ChatShared>>,
     /// Entity-domain packet decode state — see [`entity::EntityTracker`].
@@ -79,6 +82,7 @@ pub(crate) fn spawn(
     tokio::spawn(async move {
         let BridgeDeps {
             quit_reason,
+            end_reason,
             chat,
             entities,
             world,
@@ -161,6 +165,12 @@ pub(crate) fn spawn(
                     let world_events =
                         crate::world::observe_event(&world, &client, &mut state.lids, &event);
                     for bot_event in translate(&mut state, &quit_reason, &client, event) {
+                        // upstream chat.js keeps `endReason` for the
+                        // pre-play error message — record it before the
+                        // event goes out so a racing `chat()` sees it.
+                        if let BotEvent::End(reason) = &bot_event {
+                            *end_reason.lock().unwrap() = Some(reason.clone());
+                        }
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
                         let _ = events.send(bot_event.clone());

@@ -149,9 +149,13 @@ async fn entities() {
     bot.attack(&own, true);
     bot.swing_arm(InteractionHand::MainHand);
     bot.swing_arm(InteractionHand::OffHand);
-    bot.activate_entity(&own);
+    bot.activate_entity(&own)
+        .await
+        .expect("activate_entity failed");
     bot.use_on(&own);
-    bot.activate_entity_at(&own, own.position());
+    bot.activate_entity_at(&own, own.position())
+        .await
+        .expect("activate_entity_at failed");
     assert!(own.on_ground().is_some());
     assert!(own.velocity().is_some());
     assert!(own.look_direction().is_some());
