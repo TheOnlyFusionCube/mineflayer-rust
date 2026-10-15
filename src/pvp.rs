@@ -194,11 +194,12 @@ impl Pvp<'_> {
     /// return immediately, like upstream. The bot follows `entity` while
     /// it stays loaded, alive, and inside `view_distance`, swinging on
     /// the `melee_attack_rate` schedule whenever `attack_range` allows.
-    /// A second `attack` retargets the loop; the loop ends on
-    /// [`Pvp::stop`], the target's death/despawn/leaving view, or
+    /// Attacking the already-active target is a silent no-op; a second
+    /// `attack` on a different target retargets the loop. The loop ends
+    /// on [`Pvp::stop`], the target's death/despawn/leaving view, or
     /// disconnect — each ending emits [`BotEvent::StoppedAttacking`]
     /// exactly once. Emits [`BotEvent::StartedAttacking`] on every
-    /// successful call.
+    /// successful non-no-op call.
     ///
     /// # Errors
     ///
@@ -207,6 +208,12 @@ impl Pvp<'_> {
         let bot = self.bot;
         if !bot.logged_in() {
             return Err(Error::NotConnected);
+        }
+        // upstream `if (target === this.target) return;` — no goal reset,
+        // no new driver, no `startedAttacking`
+        let current = pvp_state(&bot.client, |s| s.target.as_ref().map(|t| t.id())).flatten();
+        if current == Some(entity.id()) {
+            return Ok(());
         }
         let opts = pvp_state(&bot.client, |s| s.opts.clone()).unwrap_or_default();
         // upstream: `if (this.movements) pathfinder.setMovements(this.movements)`
@@ -605,6 +612,27 @@ mod tests {
             assert!(!matches!(event, BotEvent::StoppedAttacking));
         }
         assert_eq!(started, 2);
+
+        bot.pvp().stop();
+    }
+
+    /// upstream `PVP.ts`: `if (target === this.target) return;` — attacking
+    /// the already-active target is a silent no-op (no fresh goal, no
+    /// second `StartedAttacking`).
+    #[tokio::test]
+    async fn attack_same_target_is_a_no_op() {
+        let bot = spawned_bot();
+        let mut rx = bot.events();
+        let target = spawn_target(&bot, 5., 0.);
+
+        bot.pvp().attack(&target).unwrap();
+        bot.pvp().attack(&target).unwrap();
+        assert_eq!(bot.pvp().target().map(|t| t.id()), Some(target.id()));
+        let mut started = 0;
+        while let Ok(event) = rx.try_recv() {
+            started += usize::from(matches!(event, BotEvent::StartedAttacking));
+        }
+        assert_eq!(started, 1);
 
         bot.pvp().stop();
     }
