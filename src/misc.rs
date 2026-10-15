@@ -930,7 +930,8 @@ impl Creative {
     }
 
     /// `bot.creative.clearInventory()` — clear every occupied slot of the
-    /// player inventory.
+    /// player inventory concurrently, like upstream's `Promise.all` (each
+    /// slot's confirmation is independent).
     pub async fn clear_inventory(&self) -> Result<()> {
         let Some(inv) = self.client.get_component::<Inventory>() else {
             return Err(Error::NotConnected);
@@ -944,9 +945,8 @@ impl Creative {
             .map(|(slot, _)| slot as u16)
             .collect();
         drop(inv);
-        for slot in occupied {
-            self.clear_slot(slot).await?;
-        }
+        let clears = occupied.iter().map(|&slot| self.clear_slot(slot));
+        futures::future::try_join_all(clears).await?;
         Ok(())
     }
 
