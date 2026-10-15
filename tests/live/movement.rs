@@ -93,10 +93,27 @@ async fn movement() {
     )
     .await;
     bot.wait_for_ticks(60).await.expect("wait_for_ticks");
-    let moved = bot.position();
+    // the persistent fixture can wall off the spawn on some headings —
+    // sweep the compass until a heading really walks
+    let mut moved = bot.position();
+    for heading in 0..4 {
+        if horizontal_distance(start, moved) > 1.0 {
+            break;
+        }
+        let base = bot.position();
+        let target = match heading {
+            0 => base.east(5.0),
+            1 => base.south(5.0),
+            2 => base.west(5.0),
+            _ => base.north(5.0),
+        };
+        bot.look_at(target, false).await.expect("look_at failed");
+        bot.wait_for_ticks(40).await.expect("wait_for_ticks");
+        moved = bot.position();
+    }
     assert!(
         horizontal_distance(start, moved) > 1.0,
-        "bot should have walked forward: {start:?} -> {moved:?}"
+        "bot never walked on any heading: {start:?} -> {moved:?}"
     );
     bot.set_control_state(Control::Jump, false);
 
