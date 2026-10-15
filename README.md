@@ -76,8 +76,9 @@ cargo run --example echo -- localhost 25566
 
 [`docs/api-parity.md`](docs/api-parity.md) is the source of truth: every
 public mineflayer API is a row marked `ported`, `diverges` (intentional
-semantic difference, with a note), `wontfix`, or `pending`. Current counts:
-**321 ported · 78 diverges · 34 wontfix · 40 pending**.
+semantic difference, with a note), `wontfix`, or `additive` (Rust surface
+beyond upstream). Current counts:
+**339 ported · 119 diverges · 49 wontfix · 11 additive — zero pending**.
 
 ## Live testing
 
@@ -105,6 +106,13 @@ at pin time ICEs compiling `azalea-entity`, and `.cargo/config.toml` sets
 `-Znext-solver=no` because the next-gen trait solver can't infer
 azalea-core's const generics. Both pins are workspace-local — don't
 override with `cargo +nightly` or `RUSTFLAGS`.
+
+`Cargo.toml`'s `[patch.crates-io]` also pins every `azalea*` crate to
+upstream commit `ddef371` (still the `0.16.0+mc26.1` release line): the
+published release serializes `ServerboundAttack`'s entity id as a fixed
+i32 where release MC 26.1 servers read a VarInt, so every `bot.attack()`
+was rejected as malformed and kicked the client. Drop the patch once a
+fixed release is published.
 
 ## Limitations
 
