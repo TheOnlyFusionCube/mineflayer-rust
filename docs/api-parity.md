@@ -107,7 +107,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | initial `Event::Spawn`; post-respawn 'spawn' from the first `c_set_health` with health > 0 while dead — upstream's `isAlive` re-arm (azalea Spawn never refires in 0.16) |
 | `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | emitted per `c_respawn` packet — death respawn and dimension change alike, like upstream's `respawn` packet handler |
 | `event('connect') (undoc)` | lifecycle | `BotEvent::Connected` | diverges | upstream fires on raw socket connect (pre-login); azalea surfaces no socket-level event — emitted right before the first `Login` (earliest wire-up proof), once per connection (azalea Login is also once-only, so the edge is exactly once) |
-| `event('kicked')` | lifecycle | `BotEvent::Kicked(String)` | diverges | azalea folds kick into `Disconnect(reason)`; we emit Kicked then End; no loggedIn flag |
+| `event('kicked')` | lifecycle | `BotEvent::Kicked(String, bool)` | diverges | azalea folds kick into `Disconnect(reason)`; we emit `Kicked(reason, logged_in)` then `End`; `logged_in` is the bridge's login state (`true` = in-game kick, `false` = login phase) |
 | `event('end')` | lifecycle | `BotEvent::End(String)` | ported | exactly-once; reason = quit arg / kick / 'socketClosed' |
 | `event('error')` | lifecycle | `BotEvent::Error(String)` | ported | currently: connection failures only |
 

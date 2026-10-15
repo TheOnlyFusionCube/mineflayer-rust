@@ -132,9 +132,11 @@ pub enum BotEvent {
     Respawn,
     /// `death` — the bot died.
     Death,
-    /// `kicked` — the server disconnected us with a reason (in-game kicks
-    /// only; see api-parity.md for the login-phase caveat).
-    Kicked(String),
+    /// `kicked` — the server disconnected us with a reason. The bool is
+    /// upstream `kick.js`'s `loggedIn`: `true` for an in-game kick, `false`
+    /// for a kick during the login phase (see api-parity.md for the
+    /// login-phase caveat).
+    Kicked(String, bool),
     /// `end` — the connection ended, with the reason (`socketClosed`,
     /// the `quit`/`end` argument, or a kick reason).
     End(String),
@@ -1355,12 +1357,12 @@ mod tests {
         let mut rx2 = tx.subscribe();
 
         tx.send(BotEvent::Login).unwrap();
-        tx.send(BotEvent::Kicked("bye".to_string())).unwrap();
+        tx.send(BotEvent::Kicked("bye".to_string(), true)).unwrap();
 
         assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Login));
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Login));
-        assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked(_)));
-        assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked(_)));
+        assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked(_, _)));
+        assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked(_, _)));
     }
 
     #[test]

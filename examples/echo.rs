@@ -57,7 +57,9 @@ async fn main() {
                     eprintln!("echo failed: {err}");
                 }
             }
-            Ok(BotEvent::Kicked(reason)) => println!("I was kicked from the server: {reason}"),
+            Ok(BotEvent::Kicked(reason, _)) => {
+                println!("I was kicked from the server: {reason}")
+            }
             Ok(BotEvent::End(reason)) => {
                 println!("disconnected: {reason}");
                 break;

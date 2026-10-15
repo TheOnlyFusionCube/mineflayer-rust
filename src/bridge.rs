@@ -322,7 +322,15 @@ fn translate(
                 // (`DisconnectEvent` docs); `None` means local/socket close.
                 Some(reason) => {
                     let reason = reason.to_string();
-                    vec![BotEvent::Kicked(reason.clone()), BotEvent::End(reason)]
+                    // upstream `kick.js` distinguishes its two listeners by
+                    // the kicked phase: an in-game kick reports `loggedIn`
+                    // true, a login-phase disconnect false. Login is exactly
+                    // the state that `connected` tracks.
+                    let logged_in = state.connected;
+                    vec![
+                        BotEvent::Kicked(reason.clone(), logged_in),
+                        BotEvent::End(reason),
+                    ]
                 }
                 None => {
                     let reason = quit_reason
@@ -826,7 +834,8 @@ mod tests {
         // End only fires once
         assert!(translate(&mut s, &qr, &client, Event::Disconnect(None)).is_empty());
 
-        // kick -> Kicked then End with the kick reason
+        // kick -> Kicked then End with the kick reason; no login first, so
+        // this is upstream's login-phase listener: `loggedIn = false`
         let mut s = BridgeState::default();
         assert!(matches!(
             &translate(
@@ -835,7 +844,24 @@ mod tests {
                 &client,
                 Event::Disconnect(Some(azalea::FormattedText::from("banned")))
             )[..],
-            [BotEvent::Kicked(k), BotEvent::End(r)] if k == "banned" && r == "banned"
+            [BotEvent::Kicked(k, false), BotEvent::End(r)] if k == "banned" && r == "banned"
+        ));
+
+        // after a login, the in-game handler reports `loggedIn = true`
+        let mut s = BridgeState::default();
+        assert!(
+            translate(&mut s, &qr, &client, Event::Login)
+                .iter()
+                .any(|e| matches!(e, BotEvent::Login))
+        );
+        assert!(matches!(
+            &translate(
+                &mut s,
+                &qr,
+                &client,
+                Event::Disconnect(Some(azalea::FormattedText::from("banned")))
+            )[..],
+            [BotEvent::Kicked(k, true), BotEvent::End(r)] if k == "banned" && r == "banned"
         ));
     }
 
