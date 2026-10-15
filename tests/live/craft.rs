@@ -40,10 +40,18 @@ async fn wait_for(
 }
 
 async fn connect() -> Bot {
+    // A fresh username per run: the fixture world persists player data,
+    // and leftovers from an earlier run (crafted planks, a table) would
+    // fail the empty-inventory recipe gate below. The recipe book and
+    // stats likewise accrete per name.
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() % 1_000_000_000)
+        .unwrap_or(0);
     let bot = Bot::builder()
         .host("localhost")
         .port(25566)
-        .username("u10bot")
+        .username(format!("u10bot{suffix}"))
         .connect()
         .await
         .expect("connect failed");
