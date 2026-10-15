@@ -29,7 +29,9 @@ use azalea::{
     entity::{EntityKindComponent, Position, inventory::Inventory},
     registry::builtin::{BlockKind, EntityKind},
 };
-use mineflayer::{Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook};
+use mineflayer::{
+    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, entity::EntityExt,
+};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 /// Receive events until one satisfies `pred` (`Lagged` just re-reads).
@@ -126,20 +128,41 @@ async fn dig_place_activate_stop() {
         .await
         .expect("chunks never loaded");
 
-    // ---- dig the block under the feet -------------------------------------
-    let feet = bot.position().to_block_pos_floor();
-    let below_pos = BlockPos {
-        x: feet.x,
-        y: feet.y - 1,
-        z: feet.z,
+    // ---- dig a block in reach ---------------------------------------------
+    // the persistent fixture has drifted around the spawn (holes, edges —
+    // the bot can land on a one-wide column), so land first and then take
+    // the first guaranteed-dropping block in reach: the cell under the
+    // feet when it is real ground, else the nearest of the common droppers
+    for _ in 0..100 {
+        if bot.entity().on_ground() == Some(true) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let below_pos = {
+        let feet = bot.position().to_block_pos_floor();
+        std::iter::once(BlockPos {
+            x: feet.x,
+            y: feet.y - 1,
+            z: feet.z,
+        })
+        .chain(
+            [
+                BlockKind::Dirt,
+                BlockKind::GrassBlock,
+                BlockKind::Stone,
+                BlockKind::Cobblestone,
+                BlockKind::Sand,
+                BlockKind::Gravel,
+            ]
+            .into_iter()
+            .flat_map(|kind| bot.find_blocks(FindBlocksOpts::new(kind).max_distance(4.5).count(2))),
+        )
+        .find(|pos| bot.block_at(*pos).is_some_and(|b| bot.can_dig_block(&b)))
+        .expect("no diggable block in reach of the spawn")
     };
-    let below = bot.block_at(below_pos).expect("block below feet unloaded");
-    assert!(
-        below.diggable(),
-        "expected a diggable block under the spawn, got {}",
-        below.name()
-    );
-    assert!(bot.can_dig_block(&below), "below-feet block out of reach");
+    let below = bot.block_at(below_pos).expect("dig target unloaded");
+    assert!(bot.can_dig_block(&below), "dig target out of reach");
 
     bot.dig(&below).await.expect("dig failed");
     match wait_for(
@@ -304,20 +327,31 @@ async fn dig_place_activate_stop() {
         ),
     ];
     let mut placed = None;
+    let mut side_errs = Vec::new();
     for (ref_pos, face) in sides {
         let Some(reference) = bot.block_at(ref_pos) else {
+            side_errs.push(format!("{ref_pos:?}: unloaded"));
             continue;
         };
         if reference.state.is_air() {
+            side_errs.push(format!("{ref_pos:?}: air"));
             continue;
         }
         match bot.place_block(&reference, face).await {
-            Ok(new) => placed = Some(new),
-            Err(_) => continue,
+            Ok(new) => {
+                placed = Some(new);
+                break;
+            }
+            Err(e) => side_errs.push(format!("{ref_pos:?}: {e:?}")),
         }
-        break;
     }
-    let placed = placed.expect("place_block failed on every side of the hole");
+    let placed = placed.unwrap_or_else(|| {
+        panic!(
+            "place_block failed on every side of the hole {below_pos:?} (dug {}; held {:?}): {side_errs:?}",
+            below.name(),
+            bot.held_item().map(|i| i.name())
+        )
+    });
     assert_eq!(placed.pos, below_pos, "placed block isn't the hole");
     match wait_for(
         &mut rx,

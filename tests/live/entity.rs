@@ -144,16 +144,46 @@ async fn entities() {
     )
     .await;
 
-    // `bot.attack`/`bot.swing_arm`/`bot.activate_entity` send without error
-    // against our own entity (harmless — a bot can't hurt itself)
-    bot.attack(&own, true);
+    // `bot.attack` needs a valid *other* entity — attacking our own
+    // entity gets the connection kicked (`invalid_entity_attacked`) — so
+    // bring up a second bot as the target
+    let dummy = Bot::builder()
+        .host("localhost")
+        .port(25566)
+        .username("u4dummy")
+        .connect()
+        .await
+        .expect("dummy connect failed");
+    let mut drx = dummy.events();
+    wait_for(
+        &mut drx,
+        Duration::from_secs(15),
+        |e| matches!(e, BotEvent::Spawn),
+        "dummy spawn",
+    )
+    .await;
+    let mut dummy_entity = None;
+    for _ in 0..100 {
+        if let Some(e) = bot
+            .find_players(PlayerFilter::Username("u4dummy"))
+            .into_iter()
+            .next()
+        {
+            dummy_entity = Some(e);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let dummy_entity = dummy_entity.expect("u4bot never saw the dummy's entity");
+
+    bot.attack(&dummy_entity, true);
     bot.swing_arm(InteractionHand::MainHand);
     bot.swing_arm(InteractionHand::OffHand);
-    bot.activate_entity(&own)
+    bot.activate_entity(&dummy_entity)
         .await
         .expect("activate_entity failed");
-    bot.use_on(&own);
-    bot.activate_entity_at(&own, own.position())
+    bot.use_on(&dummy_entity);
+    bot.activate_entity_at(&dummy_entity, dummy_entity.position())
         .await
         .expect("activate_entity_at failed");
     assert!(own.on_ground().is_some());
@@ -172,6 +202,7 @@ async fn entities() {
     );
 
     bot.quit(None);
+    dummy.quit(None);
     wait_for(
         &mut rx,
         Duration::from_secs(10),

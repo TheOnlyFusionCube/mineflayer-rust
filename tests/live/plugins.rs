@@ -283,23 +283,37 @@ async fn collect_tool_pvp() {
             BotEvent::CollectBlockFound(_) | BotEvent::Collected(_) | BotEvent::CollectDone { .. }
         )
     });
-    let mut collected = None;
-    'kinds: for kind in LOGS.iter().chain(FALLBACK_DIGGABLE.iter()) {
-        let want = if LOGS.contains(kind) { 2 } else { 1 };
-        match bot
-            .collect_block()
-            .collect(CollectTarget::new(*kind).count(want).max_distance(48.))
-            .await
-        {
-            Ok(c) => {
-                collected = Some((*kind, c));
-                break 'kinds;
+    let (collected_kind, collected, mut collect_tap) = 'kinds: {
+        for kind in LOGS.iter().chain(FALLBACK_DIGGABLE.iter()) {
+            // logs first ask for 2 (exercise the count loop), then 1 — a
+            // world drifted down to a single reachable log still feeds the
+            // tool phase
+            let wants: &[usize] = if LOGS.contains(kind) { &[2, 1] } else { &[1] };
+            for want in wants {
+                // fresh tap per attempt: a failed attempt may have dug and
+                // `Collected` a few blocks before giving up, and those
+                // events must not pollute the successful attempt's
+                // assertions
+                let attempt_tap = tap(&bot, |e| {
+                    matches!(
+                        e,
+                        BotEvent::CollectBlockFound(_)
+                            | BotEvent::Collected(_)
+                            | BotEvent::CollectDone { .. }
+                    )
+                });
+                match bot
+                    .collect_block()
+                    .collect(CollectTarget::new(*kind).count(*want).max_distance(48.))
+                    .await
+                {
+                    Ok(c) => break 'kinds (*kind, c, attempt_tap),
+                    Err(e) => eprintln!("collect {kind:?} x{want} failed: {e:?} — next"),
+                }
             }
-            Err(e) => eprintln!("collect {kind:?} failed: {e:?} — next kind"),
         }
-    }
-    let (collected_kind, collected) =
-        collected.expect("collect found no diggable block within 48m — fixture has no world?");
+        panic!("collect found no diggable block within 48m — fixture has no world?");
+    };
     let is_log = LOGS.contains(&collected_kind);
     eprintln!(
         "collect: {collected_kind:?} x{} at {:?}",
