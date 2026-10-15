@@ -26,16 +26,17 @@ use std::time::{Duration, Instant};
 use azalea::ecs as bevy_ecs;
 use azalea::{
     BlockPos, Vec3,
+    app::{App, Plugin},
     block::BlockTrait,
-    core::{direction::Direction, game_type::GameMode, hit_result::BlockHitResult},
-    ecs::prelude::Component,
+    core::{direction::Direction, game_type::GameMode, hit_result::BlockHitResult, tick::GameTick},
+    ecs::{entity::Entity, prelude::Component, schedule::IntoScheduleConfigs, world::World},
     entity::{
         ActiveEffects, Attributes, FluidOnEyes, Physics, Position, dimensions::EntityDimensions,
         inventory::Inventory, mining::get_mine_progress,
     },
     interact::{BlockStatePredictionHandler, pick::HitResultComponent},
     local_player::WorldHolder,
-    mining::{Mining, MiningQueued, StopMiningBlockEvent},
+    mining::{Mining, MiningQueued, MiningSystems, StopMiningBlockEvent},
     physics::{clip::traverse_blocks, collision::BlockWithShape},
     protocol::packets::game::{
         s_interact::InteractionHand,
@@ -232,6 +233,28 @@ pub(crate) struct InteractShared {
     dig_target: Option<(BlockPos, Direction, u64)>,
     /// `bot.lastDigTime` — set when a dig finishes for any reason.
     last_dig_time: Option<Instant>,
+    /// An aborted dig whose engine state may still be coming — the
+    /// reconciliation pass cancels it in-span (see
+    /// [`reconcile_aborted_dig`]).
+    aborted_dig: Option<AbortedEngineDig>,
+}
+
+/// Engine state owed to an aborted dig generation.
+///
+/// `start_mining` only enqueues a message: at abort time the engine may
+/// have no `MiningQueued`/`Mining` yet, and the message may materialize
+/// and be acted on (including azalea's creative instant-break) before any
+/// external task can look. [`reconcile_aborted_dig`] runs at the head of
+/// the mining chain, so this is the earliest point the port can cancel
+/// inside the tick that materializes the start.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AbortedEngineDig {
+    pos: BlockPos,
+    seq: u64,
+    /// Consecutive reconciliation runs that found no engine state: a start
+    /// cannot be pending past one full span, so two quiet runs are proof
+    /// nothing more is coming.
+    quiet_runs: u8,
 }
 
 impl InteractShared {
@@ -244,6 +267,89 @@ impl InteractShared {
             self.aborted_seq = self.dig_seq;
             self.last_dig_time = Some(Instant::now());
         }
+    }
+
+    fn mark_aborted_engine_dig(&mut self, pos: BlockPos, seq: u64) {
+        self.aborted_dig = Some(AbortedEngineDig {
+            pos,
+            seq,
+            quiet_runs: 0,
+        });
+    }
+}
+
+/// Cancel engine state owed to an aborted dig, at the head of `GameTick`'s
+/// mining chain (installed by [`DigAbortPlugin`]).
+///
+/// A `StartMiningBlockEvent` written by `start_mining` is only read by the
+/// next `Update`; an abort landing before that cannot see the state it
+/// creates, and the `Update`+`GameTick` pair runs under one ECS lock, so no
+/// external task can intervene. This pass runs before `handle_mining_queued`
+/// in the same span, so a freshly materialized `MiningQueued` is dropped
+/// before it can start mining — or, in creative mode, instantly break the
+/// block. Markers are dropped once a newer dig owns the generation, once
+/// the state was cancelled, or after two consecutive runs found nothing (a
+/// start cannot stay unread past one full span).
+pub(crate) fn reconcile_aborted_dig(world: &mut World) {
+    let entities: Vec<Entity> = {
+        let mut query = world.query::<(Entity, &InteractShared)>();
+        query
+            .iter(world)
+            .filter(|(_, shared)| shared.aborted_dig.is_some())
+            .map(|(entity, _)| entity)
+            .collect()
+    };
+    for entity in entities {
+        let (target, superseded) = {
+            let Some(shared) = world.get::<InteractShared>(entity) else {
+                continue;
+            };
+            let Some(aborted) = shared.aborted_dig else {
+                continue;
+            };
+            (aborted.pos, shared.dig_seq != aborted.seq)
+        };
+        if superseded {
+            // a newer dig owns the generation — even at the same position
+            // its engine state must survive untouched
+            if let Some(mut shared) = world.get_mut::<InteractShared>(entity) {
+                shared.aborted_dig = None;
+            }
+            continue;
+        }
+        let (queued, mining) = (
+            world.get::<MiningQueued>(entity).map(|q| q.position) == Some(target),
+            world.get::<Mining>(entity).map(|m| m.pos) == Some(target),
+        );
+        if queued {
+            world.entity_mut(entity).remove::<MiningQueued>();
+        }
+        if mining {
+            world.write_message(StopMiningBlockEvent { entity });
+        }
+        let Some(mut shared) = world.get_mut::<InteractShared>(entity) else {
+            continue;
+        };
+        let Some(mut aborted) = shared.aborted_dig else {
+            continue;
+        };
+        if queued || mining {
+            shared.aborted_dig = None;
+        } else {
+            aborted.quiet_runs += 1;
+            shared.aborted_dig = (aborted.quiet_runs < 2).then_some(aborted);
+        }
+    }
+}
+
+/// Installs [`reconcile_aborted_dig`]; added by the bot bootstrap
+/// (`BotBuilder::connect` mirrors azalea's `StartClientOpts::new` and adds
+/// this plugin before the ECS runner starts).
+pub(crate) struct DigAbortPlugin;
+
+impl Plugin for DigAbortPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(GameTick, reconcile_aborted_dig.before(MiningSystems));
     }
 }
 
@@ -387,14 +493,6 @@ impl Bot {
         self.stop_digging();
 
         let pos = block.pos;
-        let my_seq = {
-            let mut ecs = self.client.ecs.write();
-            let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) else {
-                return Err(Error::NotConnected);
-            };
-            shared.dig_seq += 1;
-            shared.dig_seq
-        };
         // upstream sets `targetDigBlock`/`targetDigFace` synchronously at
         // dig start; the face is the one azalea will send — the hit result
         // when we're looking at the block, `Down` otherwise (its
@@ -406,15 +504,29 @@ impl Bot {
             .filter(|b| b.block_pos == pos)
             .map(|b| b.direction)
             .unwrap_or(Direction::Down);
-        // store the target before the wire call: a `stop_digging` landing
-        // between the two must still see the dig in flight
-        {
+        // bump the generation, publish the target, and enqueue the start
+        // under one lock: a `stop_digging` can then never land between the
+        // target becoming visible and the wire call existing (it either
+        // sees the whole start — and marks the generation so the in-span
+        // reconciliation cancels the queued message — or sees none of it)
+        let my_seq = {
             let mut ecs = self.client.ecs.write();
-            if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
-                shared.dig_target = Some((pos, target_face, my_seq));
-            }
-        }
-        self.client.start_mining(pos);
+            let seq = {
+                let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) else {
+                    return Err(Error::NotConnected);
+                };
+                shared.dig_seq += 1;
+                let seq = shared.dig_seq;
+                shared.dig_target = Some((pos, target_face, seq));
+                seq
+            };
+            ecs.write_message(azalea::mining::StartMiningBlockEvent {
+                entity: self.client.entity,
+                position: pos,
+                force: true,
+            });
+            seq
+        };
 
         let outcome = self
             .dig_wait(
@@ -430,6 +542,11 @@ impl Bot {
         // this point — retire any engine operation still aimed at `pos`
         // before hiding the target
         if matches!(outcome, DigExit::Aborted(_)) {
+            // the in-span reconciliation cancels a pending engine start
+            // before the mining chain can act on it; the polling loop
+            // stays as a backstop (clients built without the plugin, and
+            // engine state that predates the marker)
+            self.mark_aborted_engine_dig(pos, my_seq);
             self.retire_engine_dig(pos, my_seq).await;
         }
         self.settle_dig(pos, my_seq);
@@ -457,17 +574,39 @@ impl Bot {
         }
     }
 
-    /// Retire any engine mining still aimed at `pos` for the aborted
-    /// generation `my_seq`: drop a `MiningQueued` and send the engine's
-    /// stop for a live `Mining`. The start is an enqueued message, so at
-    /// stop time the engine state may not exist yet — it only materializes
-    /// when azalea next processes messages. The loop therefore keeps
-    /// checking for one tick after the state goes clear (an event pending
-    /// at stop materializes within that tick), and bails the moment a
-    /// newer dig owns the generation so it can never cancel a replacement.
+    /// Record the aborted generation for [`reconcile_aborted_dig`].
+    fn mark_aborted_engine_dig(&self, pos: BlockPos, seq: u64) {
+        let mut ecs = self.client.ecs.write();
+        if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
+            shared.mark_aborted_engine_dig(pos, seq);
+        }
+    }
+
+    /// Backstop for [`reconcile_aborted_dig`]: drop a `MiningQueued` and
+    /// send the engine's stop for a live `Mining` still aimed at `pos` for
+    /// the aborted generation `my_seq`. The in-span reconciliation is the
+    /// airtight path; this loop exists for clients built without
+    /// [`DigAbortPlugin`] (tests) and for engine state that predates the
+    /// marker. It keeps checking one real tick after the state goes clear
+    /// (a start pending at stop materializes within one span; a timeout
+    /// without a tick proves nothing and does not count), and bails the
+    /// moment a newer dig owns the generation so it can never cancel a
+    /// replacement.
     async fn retire_engine_dig(&self, pos: BlockPos, my_seq: u64) {
         let entity = self.client.entity;
-        for ticks_waited in 0..5 {
+        // the ECS runner clears all entities and resources as it exits —
+        // nothing is left to retire, and a fresh broadcaster lookup would
+        // panic on the missing resource
+        let mut ticks = {
+            let ecs = self.client.ecs.read();
+            if ecs.get_entity(entity).is_err() {
+                return;
+            }
+            ecs.get_resource::<azalea::tick_broadcast::TickBroadcast>()
+                .map(|broadcast| broadcast.subscribe())
+        };
+        let mut ticks_waited = 0u32;
+        for _ in 0..5 {
             let complete = {
                 // one lock section: reading the state and cancelling it
                 // must not interleave with an Update moving the engine
@@ -495,14 +634,36 @@ impl Bot {
             };
             // a start still pending at stop time can only materialize
             // once an Update has run: conclude only on a clear check that
-            // followed a full tick wait
+            // followed a real tick. The timeout branch proves nothing (the
+            // runner may be stalled), so it must not count as one.
             if complete && ticks_waited >= 1 {
                 return;
             }
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
-                self.wait_for_ticks(1).await.ok();
-            })
-            .await;
+            let Some(tick_receiver) = ticks.as_mut() else {
+                // no tick broadcaster at all: nothing to wait on, the
+                // single pass above was all this setup can offer
+                return;
+            };
+            let ticked = matches!(
+                tokio::time::timeout(std::time::Duration::from_millis(200), tick_receiver.recv())
+                    .await,
+                Ok(Ok(())) | Ok(Err(broadcast::error::RecvError::Lagged(_)))
+            );
+            if !ticked {
+                // no tick within the window: nothing can have materialized,
+                // and a despawned client has no runner left
+                if self
+                    .client
+                    .ecs
+                    .read()
+                    .get_entity(self.client.entity)
+                    .is_err()
+                {
+                    return;
+                }
+                continue;
+            }
+            ticks_waited += 1;
         }
     }
 
@@ -632,8 +793,8 @@ impl Bot {
     pub fn stop_digging(&self) {
         let entity = self.client.entity;
         let mut ecs = self.client.ecs.write();
-        let mining = ecs.get::<Mining>(entity).is_some();
-        let queued = ecs.get::<MiningQueued>(entity).is_some();
+        let mining = ecs.get::<Mining>(entity).map(|m| m.pos);
+        let queued = ecs.get::<MiningQueued>(entity).map(|q| q.position);
         {
             let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) else {
                 return;
@@ -641,19 +802,27 @@ impl Bot {
             // upstream `if (!targetDigBlock) return` — but engine state
             // outlives the target (a timed-out dig), and that must stay
             // stoppable: only a fully idle stop is a no-op
-            if shared.dig_target.is_none() && !mining && !queued {
+            if shared.dig_target.is_none() && mining.is_none() && queued.is_none() {
                 return;
+            }
+            if let Some((pos, _, seq)) = shared.dig_target {
+                shared.mark_aborted_engine_dig(pos, seq);
+            } else if let Some(pos) = queued.or(mining) {
+                // leftover engine state with no target: tag it with the
+                // current generation so the reconciliation can retire it
+                let seq = shared.dig_seq;
+                shared.mark_aborted_engine_dig(pos, seq);
             }
             shared.abort_current();
             shared.dig_target = None;
         }
-        if !mining && !queued {
+        if mining.is_none() && queued.is_none() {
             return;
         }
-        if queued {
+        if queued.is_some() {
             ecs.entity_mut(entity).remove::<MiningQueued>();
         }
-        if mining {
+        if mining.is_some() {
             ecs.write_message(StopMiningBlockEvent { entity });
         }
     }
@@ -1236,6 +1405,128 @@ mod tests {
         assert!(shared.last_dig_time.is_none());
     }
 
+    fn aborted_world(aborted: Option<AbortedEngineDig>, dig_seq: u64) -> (World, Entity) {
+        let mut world = World::new();
+        world.init_resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>();
+        let entity = world
+            .spawn(InteractShared {
+                dig_seq,
+                aborted_dig: aborted,
+                ..Default::default()
+            })
+            .id();
+        (world, entity)
+    }
+
+    fn aborted_marker(pos: BlockPos, seq: u64) -> Option<AbortedEngineDig> {
+        Some(AbortedEngineDig {
+            pos,
+            seq,
+            quiet_runs: 0,
+        })
+    }
+
+    /// The reconciliation drops a materialized queued mine for the aborted
+    /// generation before the mining chain can act on it (the pending-start
+    /// window `retire_engine_dig` cannot close from outside the tick).
+    #[test]
+    fn reconcile_drops_a_queued_start_for_the_aborted_generation() {
+        use azalea::mining::MiningQueued;
+
+        let pos = BlockPos::new(9, 64, 9);
+        let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 1);
+        world.entity_mut(entity).insert(MiningQueued {
+            position: pos,
+            direction: Direction::Down,
+            force: true,
+        });
+        reconcile_aborted_dig(&mut world);
+        assert!(world.get::<MiningQueued>(entity).is_none());
+        assert!(
+            world
+                .get::<InteractShared>(entity)
+                .unwrap()
+                .aborted_dig
+                .is_none(),
+            "cancelled marker should be cleared"
+        );
+        // stop was enqueued for a live mine, not for the queued one
+        let messages = world.resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>();
+        assert_eq!(messages.len(), 0);
+    }
+
+    /// A live `Mining` at the aborted position gets the engine stop.
+    #[test]
+    fn reconcile_stops_live_mining_for_the_aborted_generation() {
+        use azalea::mining::Mining;
+
+        let pos = BlockPos::new(4, 64, 5);
+        let (mut world, entity) = aborted_world(aborted_marker(pos, 3), 3);
+        world.entity_mut(entity).insert(Mining {
+            pos,
+            dir: Direction::Down,
+            force: true,
+        });
+        reconcile_aborted_dig(&mut world);
+        assert_eq!(
+            world
+                .resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>()
+                .len(),
+            1
+        );
+        // a second run is quiet: the marker is gone and nothing new fires
+        reconcile_aborted_dig(&mut world);
+        assert_eq!(
+            world
+                .resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>()
+                .len(),
+            1
+        );
+    }
+
+    /// A newer generation owns the position: its engine state must survive,
+    /// and the stale marker is dropped.
+    #[test]
+    fn reconcile_leaves_a_newer_generation_alone() {
+        use azalea::mining::MiningQueued;
+
+        let pos = BlockPos::new(2, 64, 2);
+        let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 2);
+        world.entity_mut(entity).insert(MiningQueued {
+            position: pos,
+            direction: Direction::Down,
+            force: true,
+        });
+        reconcile_aborted_dig(&mut world);
+        assert!(world.get::<MiningQueued>(entity).is_some());
+        assert!(
+            world
+                .get::<InteractShared>(entity)
+                .unwrap()
+                .aborted_dig
+                .is_none()
+        );
+    }
+
+    /// A pending start cannot stay unread past one full span: two quiet
+    /// runs prove nothing more is coming and drop the marker.
+    #[test]
+    fn reconcile_expires_a_quiet_marker_after_two_runs() {
+        let pos = BlockPos::new(6, 64, 6);
+        let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 1);
+        reconcile_aborted_dig(&mut world);
+        let marker = world.get::<InteractShared>(entity).unwrap().aborted_dig;
+        assert_eq!(marker.map(|m| m.quiet_runs), Some(1));
+        reconcile_aborted_dig(&mut world);
+        assert!(
+            world
+                .get::<InteractShared>(entity)
+                .unwrap()
+                .aborted_dig
+                .is_none()
+        );
+    }
+
     /// A stop must still reach engine state that outlived the target (a
     /// timed-out dig): with no target but a live `MiningQueued`, the stop
     /// is not a no-op and drops the queued mine.
@@ -1257,6 +1548,13 @@ mod tests {
         assert!(
             ecs.get::<MiningQueued>(bot.client().entity).is_none(),
             "stop left the queued engine mine behind"
+        );
+        assert!(
+            ecs.get::<InteractShared>(bot.client().entity)
+                .unwrap()
+                .aborted_dig
+                .is_some(),
+            "stop did not publish the aborted generation for reconciliation"
         );
     }
 

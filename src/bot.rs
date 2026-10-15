@@ -1037,6 +1037,12 @@ impl BotBuilder {
 
     /// Join the server and wire up the event bridge. Runs inside the bot
     /// thread's `LocalSet` (azalea requires it for `Client::join`).
+    ///
+    /// This mirrors azalea's own `StartClientOpts::new` + `Client::join`
+    /// bootstrap (same default plugins, same runner start) so the client app
+    /// can also carry the port's [`crate::interact::DigAbortPlugin`], which
+    /// cancels engine mining for aborted digs inside the tick that a pending
+    /// start materializes — azalea gives no hook for that otherwise.
     async fn connect_azalea(builder: BotBuilder) -> Result<Bot> {
         let account = match builder.auth {
             Some(Auth::Offline { username }) => azalea::account::Account::offline(&username),
@@ -1047,13 +1053,7 @@ impl BotBuilder {
             None => azalea::account::Account::offline(&builder.username),
         };
         let address = format!("{}:{}", builder.host, builder.port);
-        let (client, rx) = match &builder.proxy {
-            // `options.agent`-analog: azalea's SOCKS5 proxy join path
-            Some(proxy) => {
-                azalea::Client::join_with_proxy(account, address.as_str(), proxy.clone()).await?
-            }
-            None => azalea::Client::join(account, address.as_str()).await?,
-        };
+        let (client, rx) = join_azalea(account, &address, builder.proxy.clone()).await?;
 
         // azalea's default plugins auto-reconnect 5s after any disconnect —
         // including our own `disconnect()`. That would silently break
@@ -1146,6 +1146,46 @@ impl BotBuilder {
     }
 }
 
+/// Join a server through azalea's own bootstrap, plus the port's plugins.
+///
+/// Mirrors `StartClientOpts::new` (`DefaultPlugins`, `DefaultBotPlugins`,
+/// `DefaultSwarmPlugins`, then the ECS runner) so the client app can carry
+/// [`crate::interact::DigAbortPlugin`] — `Client::join`/`join_with_proxy`
+/// build the same app, but offer no plugin hook.
+async fn join_azalea(
+    account: azalea::account::Account,
+    address: &str,
+    proxy: Option<azalea::protocol::connect::Proxy>,
+) -> Result<(
+    azalea::Client,
+    tokio::sync::mpsc::UnboundedReceiver<azalea::Event>,
+)> {
+    use azalea::protocol::address::ResolvableAddr as _;
+
+    let address = address.resolve().await?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = azalea::app::App::new();
+    app.add_plugins((
+        azalea::DefaultPlugins,
+        azalea::bot::DefaultBotPlugins,
+        azalea::swarm::DefaultSwarmPlugins,
+    ));
+    app.add_plugins(crate::interact::DigAbortPlugin);
+    let (ecs_lock, start_running_systems, _appexit_rx) = azalea::start_ecs_runner(app.main_mut());
+    start_running_systems();
+    let client = azalea::Client::start_client(azalea::StartClientOpts {
+        ecs_lock,
+        account,
+        connect_opts: azalea::join::ConnectOpts {
+            address,
+            server_proxy: proxy.clone(),
+            sessionserver_proxy: proxy,
+        },
+        event_sender: Some(tx),
+    })
+    .await;
+    Ok((client, rx))
+}
 impl Bot {
     /// `createBot(options)` — the builder entry point.
     pub fn builder() -> BotBuilder {
