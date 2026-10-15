@@ -533,7 +533,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 |---|---|---|---|---|
 | `bot.creative.setInventorySlot(slot,item)` | inventory | `bot.creative().set_inventory_slot(slot,item).await` | diverges | waits for the `container_set_slot` echo but errors `Server rejected` on the first non-matching echo — upstream ignores interleaved non-matching updates and keeps waiting the full 5 s for the requested item (and on ack-less versions skips the echo for a stats round-trip) |
 | `bot.creative.clearSlot(slot)` | inventory | `bot.creative().clear_slot(slot).await` | ported | — |
-| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | diverges | clears serially and aborts on the first error; upstream `Promise.all`s every slot clear — concurrent, and sibling clears still run when one fails |
+| `bot.creative.clearInventory()` | inventory | `bot.creative().clear_inventory().await` | diverges | concurrent like upstream's `Promise.all`, and every started slot clear runs to completion (upstream rejects early while siblings keep settling) — the first error surfaces after all slots settle; each slot's in-flight flag releases on drop, so cancellation cannot poison a slot |
 | `bot.creative.flyTo(dest)` | inventory | `bot.creative().fly_to(Vec3).await` | ported | straight-line 0.5-block steps per 50ms |
 | `bot.creative.startFlying()` | inventory | `bot.creative().start_flying()` | diverges | sets `PlayerAbilities.flying` and sends `s_player_abilities` (what the vanilla client does on double-jump); upstream only zeroes `bot.physics.gravity` locally — no packet |
 | `bot.creative.stopFlying()` | inventory | `bot.creative().stop_flying()` | diverges | same packet-vs-local difference as `start_flying` |

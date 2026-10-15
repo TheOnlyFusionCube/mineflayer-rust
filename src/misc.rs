@@ -857,6 +857,23 @@ pub struct Creative {
     events: broadcast::Receiver<BotEvent>,
 }
 
+/// Releases a slot's `creative_slots_in_flight` entry on drop — including
+/// when the caller's future is cancelled or panics, which a trailing
+/// cleanup statement would skip and thereby poison the slot with the
+/// "calling again" error.
+struct CreativeSlotGuard {
+    client: azalea::Client,
+    slot: u16,
+}
+
+impl Drop for CreativeSlotGuard {
+    fn drop(&mut self) {
+        let _ = misc_mut(&self.client, |m| {
+            m.creative_slots_in_flight.remove(&self.slot);
+        });
+    }
+}
+
 impl Creative {
     /// `bot.creative.setInventorySlot(slot, item)` — the
     /// `s_set_creative_mode_slot` packet, then a wait for the server's
@@ -884,11 +901,11 @@ impl Creative {
                 "Setting slot {slot} cancelled due to calling bot.creative.set_inventory_slot({slot}, ...) again"
             )));
         }
-        let result = self.set_inventory_slot_inner(slot, item).await;
-        let _ = misc_mut(&self.client, |m| {
-            m.creative_slots_in_flight.remove(&slot);
-        });
-        result
+        let _guard = CreativeSlotGuard {
+            client: self.client.clone(),
+            slot,
+        };
+        self.set_inventory_slot_inner(slot, item).await
     }
 
     async fn set_inventory_slot_inner(&self, slot: u16, item: ItemStack) -> Result<()> {
@@ -945,9 +962,15 @@ impl Creative {
             .map(|(slot, _)| slot as u16)
             .collect();
         drop(inv);
+        // upstream `Promise.all` rejects at the first rejection while the
+        // other promises keep settling (JS promises cannot be cancelled) —
+        // `join_all` waits for every slot for the same shape, then reports
+        // the first error rather than dropping sibling futures mid-flight
         let clears = occupied.iter().map(|&slot| self.clear_slot(slot));
-        futures::future::try_join_all(clears).await?;
-        Ok(())
+        futures::future::join_all(clears)
+            .await
+            .into_iter()
+            .collect()
     }
 
     /// `bot.creative.startFlying()` — set the flying ability locally and
