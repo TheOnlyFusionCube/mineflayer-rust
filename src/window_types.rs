@@ -446,6 +446,7 @@ impl Furnace {
 
     fn data(&self, property: u16) -> Option<i16> {
         self.bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -454,6 +455,7 @@ impl Furnace {
 
     fn data_map(&self) -> Option<HashMap<u16, i16>> {
         self.bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -616,6 +618,7 @@ impl EnchantmentTable {
     pub fn enchantments(&self) -> [EnchantmentOption; 3] {
         let data = self
             .bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -631,6 +634,7 @@ impl EnchantmentTable {
     /// `enchantmentTable.xpseed` — `-1` until the server sends it.
     pub fn xp_seed(&self) -> i32 {
         self.bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -690,6 +694,7 @@ impl EnchantmentTable {
     /// condition — becomes false again if a cost goes back to `-1`).
     pub fn is_ready(&self) -> bool {
         self.bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -753,6 +758,7 @@ impl Anvil {
     /// preview has no azalea equivalent, so the checks below read this.
     pub fn repair_cost(&self) -> Option<i32> {
         self.bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -971,6 +977,7 @@ impl Villager {
     /// packet (empty until it arrives, which `open_villager` waits on).
     pub fn trades(&self) -> Vec<VillagerTrade> {
         self.bot
+            .shared
             .window_data
             .lock()
             .unwrap()
@@ -982,7 +989,7 @@ impl Villager {
 
     /// `villager.selectedTrade` — the offer `trade` last selected.
     pub fn selected_trade(&self) -> Option<VillagerTrade> {
-        let t = self.bot.window_data.lock().unwrap();
+        let t = self.bot.shared.window_data.lock().unwrap();
         t.offers
             .get(&self.window.id())?
             .get(*t.selected_trade.get(&self.window.id())?)
@@ -1118,7 +1125,13 @@ impl Bot {
             }
         }
         // offers can race ahead of the open — check before waiting
-        let has_offers = self.window_data.lock().unwrap().offers.contains_key(&id);
+        let has_offers = self
+            .shared
+            .window_data
+            .lock()
+            .unwrap()
+            .offers
+            .contains_key(&id);
         if !has_offers {
             await_event(
                 &mut rx,
@@ -1127,7 +1140,14 @@ impl Bot {
             )
             .await;
         }
-        if self.window_data.lock().unwrap().offers.contains_key(&id) {
+        if self
+            .shared
+            .window_data
+            .lock()
+            .unwrap()
+            .offers
+            .contains_key(&id)
+        {
             Ok(Villager {
                 window,
                 bot: self.clone(),
@@ -1148,7 +1168,7 @@ impl Bot {
         let mut rx = self.events();
 
         let (trade, count) = {
-            let mut t = self.window_data.lock().unwrap();
+            let mut t = self.shared.window_data.lock().unwrap();
             let offers = t
                 .offers
                 .get_mut(&id)
@@ -1200,7 +1220,7 @@ impl Bot {
             self.put_requirements(&villager.window, &trade).await?;
             // upstream updates the local offer copy after each trade
             {
-                let mut t = self.window_data.lock().unwrap();
+                let mut t = self.shared.window_data.lock().unwrap();
                 if let Some(t) = t
                     .offers
                     .get_mut(&id)

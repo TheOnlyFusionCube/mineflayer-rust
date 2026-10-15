@@ -11,9 +11,10 @@
 # Usage:
 #   ./scripts/live-server.sh        # start (idempotent), prints LIVE_SERVER_READY
 #   ./scripts/live-server.sh stop   # kill the fixture server
+#   ./scripts/live-server.sh reset  # stop, delete the worlds, start with seed 13371337
 #
 # State lives in .live/ (gitignored): server.jar, server.log, server.pid,
-# version.txt, eula.txt, server.properties, jdk/.
+# version.txt, eula.txt, server.properties, jdk/, world*.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -154,8 +155,25 @@ resolve_java() {
     echo "$vendored"
 }
 
+pid_cwd() {
+    lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
+}
+
 pid_alive() {
-    [ -f "$LIVE_DIR/server.pid" ] && kill -0 "$(cat "$LIVE_DIR/server.pid")" 2>/dev/null
+    [ -f "$LIVE_DIR/server.pid" ] || return 1
+    local pid
+    pid="$(cat "$LIVE_DIR/server.pid")"
+    kill -0 "$pid" 2>/dev/null && [ "$(pid_cwd "$pid")" = "$LIVE_DIR" ]
+}
+
+assert_port_free() {
+    command -v lsof >/dev/null 2>&1 || { echo "error: lsof is needed to check port $PORT" >&2; exit 1; }
+    local pid cwd
+    pid="$(lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sed -n '1p' || true)"
+    [ -z "$pid" ] && return
+    cwd="$(pid_cwd "$pid")"
+    echo "error: port $PORT already occupied by pid $pid (cwd ${cwd:-unknown}); not starting fixture from $LIVE_DIR" >&2
+    exit 1
 }
 
 stop_server() {
@@ -182,6 +200,7 @@ start_server() {
         echo "LIVE_SERVER_READY"
         return
     fi
+    assert_port_free
 
     local target version version_url version_json jar_url required_java java_bin
     target="$(mc_target_version)"
@@ -215,6 +234,7 @@ start_server() {
     cat > "$LIVE_DIR/server.properties" <<EOF
 online-mode=false
 server-port=$PORT
+level-seed=13371337
 sync-chunk-writes=false
 spawn-protection=0
 EOF
@@ -249,5 +269,11 @@ EOF
 case "${1:-start}" in
     start) start_server ;;
     stop)  stop_server ;;
-    *) echo "usage: $0 [start|stop]" >&2; exit 2 ;;
+    reset)
+        stop_server
+        assert_port_free
+        rm -rf "$LIVE_DIR/world" "$LIVE_DIR/world_nether" "$LIVE_DIR/world_the_end"
+        start_server
+        ;;
+    *) echo "usage: $0 [start|stop|reset]" >&2; exit 2 ;;
 esac

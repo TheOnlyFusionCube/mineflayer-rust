@@ -779,13 +779,14 @@ impl Bot {
     /// Diagnostics — upstream has no book at all.
     #[doc(hidden)]
     pub fn known_recipe_count(&self) -> usize {
-        self.recipes.lock().unwrap().entries.len()
+        self.shared.recipes.lock().unwrap().entries.len()
     }
 
     /// Convert the recipe book into [`Recipe`]s (skipping
     /// furnace/smithing/stonecutter displays).
     fn book_recipes(&self) -> impl Iterator<Item = Recipe> {
-        self.recipes
+        self.shared
+            .recipes
             .lock()
             .unwrap()
             .entries

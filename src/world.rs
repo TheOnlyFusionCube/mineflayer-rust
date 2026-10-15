@@ -885,7 +885,8 @@ impl Bot {
     /// `bot.spawnPoint` — decoded from `c_set_default_spawn_position`
     /// (azalea drops it). `BlockPos::default()` until the packet arrives.
     pub fn spawn_point(&self) -> BlockPos {
-        self.world_state
+        self.shared
+            .world_state
             .read()
             .unwrap()
             .spawn_point
@@ -896,30 +897,30 @@ impl Bot {
 
     /// `bot.time` — `None` until the first `set_time` packet.
     pub fn time(&self) -> Option<Time> {
-        let state = self.world_state.read().unwrap();
+        let state = self.shared.world_state.read().unwrap();
         Time::compute(&state, self.dimension().as_ref())
     }
 
     /// `bot.isRaining`.
     pub fn is_raining(&self) -> bool {
-        self.world_state.read().unwrap().is_raining
+        self.shared.world_state.read().unwrap().is_raining
     }
 
     /// `bot.rainState` — 0.0..1.0.
     pub fn rain_state(&self) -> f32 {
-        self.world_state.read().unwrap().rain_state
+        self.shared.world_state.read().unwrap().rain_state
     }
 
     /// `bot.thunderState` — 0.0..1.0.
     pub fn thunder_state(&self) -> f32 {
-        self.world_state.read().unwrap().thunder_state
+        self.shared.world_state.read().unwrap().thunder_state
     }
 
     /// `bot.game` — snapshot; `None` fields weren't seen yet.
     pub fn game(&self) -> Game {
         let (min_y, height) = with_world(&self.client, |w| (w.chunks.min_y(), w.chunks.height()))
             .map_or((None, None), |(y, h)| (Some(y), Some(h)));
-        let state = self.world_state.read().unwrap();
+        let state = self.shared.world_state.read().unwrap();
         Game {
             level_type: state
                 .is_flat

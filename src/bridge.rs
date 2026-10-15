@@ -7,7 +7,7 @@
 
 use std::{
     collections::HashSet,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
 };
 
 use azalea::{
@@ -16,38 +16,17 @@ use azalea::{
     player::GameProfileComponent,
     protocol::packets::game::{ClientboundGamePacket, c_system_chat::ClientboundSystemChat},
 };
-use tokio::sync::{broadcast, mpsc::UnboundedReceiver, watch};
+use tokio::sync::{mpsc::UnboundedReceiver, watch};
 
 use crate::{
     BotEvent,
     chat::{ChatShared, TabList},
     entity,
-    world::WorldState,
 };
 
-/// Shared state the bridge needs beyond its own bookkeeping — one struct so
-/// `spawn` stays under `clippy::too_many_arguments` as domains add theirs.
-pub(crate) struct BridgeDeps {
-    /// `Bot::quit`/`end` reason, consumed by `translate` on `End`.
-    pub quit_reason: Arc<Mutex<Option<String>>>,
-    /// Written with the reason every `BotEvent::End` goes out — upstream
-    /// chat.js's `endReason`, read by `chat`/`whisper`'s pre-play error.
-    pub end_reason: Arc<Mutex<Option<String>>>,
-    /// Chat-domain state (pattern registry, tablist, `tab_complete` correlation).
-    pub chat: Arc<Mutex<ChatShared>>,
-    /// Entity-domain packet decode state — see [`entity::EntityTracker`].
-    pub entities: Arc<std::sync::RwLock<entity::EntityTracker>>,
-    /// Facade-kept world/game state (clocks, weather, spawn point) — the
-    /// world-domain packet decode runs in this task so its events land in
-    /// packet order (see [`crate::world::observe_event`]).
-    pub world: Arc<RwLock<WorldState>>,
-    /// Inventory/window-domain state — see `windows::WindowTracker`.
-    pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
-    /// Typed-window packet state (container data, merchant offers) —
-    /// see `window_types::WindowDataTracker`.
-    pub window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
-    /// Recipe-book state — see `craft::RecipeBook`.
-    pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
+/// Connection policy the bridge needs beyond the shared domain state —
+/// deliberately small: domains live in [`crate::bot::BotShared`].
+pub(crate) struct BridgeOptions {
     /// `options.*` client-information fields from the builder, sent as
     /// built via `set_client_information` on `Event::Init` so the login
     /// packet carries them. `None` sends nothing, leaving azalea's
@@ -72,25 +51,28 @@ pub(crate) struct BridgeDeps {
 pub(crate) fn spawn(
     client: azalea::Client,
     mut rx: UnboundedReceiver<Event>,
-    events: broadcast::Sender<BotEvent>,
+    shared: crate::bot::BotShared,
+    options: BridgeOptions,
     mut alive: watch::Receiver<()>,
     shutdown: watch::Sender<()>,
-    deps: BridgeDeps,
 ) {
     tokio::spawn(async move {
-        let BridgeDeps {
+        let crate::bot::BotShared {
+            events,
             quit_reason,
             end_reason,
             chat,
+            world_state: world,
             entities,
-            world,
             windows,
             window_data,
             recipes,
+        } = shared;
+        let BridgeOptions {
             client_information,
             brand,
             check_timeout_interval,
-        } = deps;
+        } = options;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
         let _ = alive.borrow_and_update();

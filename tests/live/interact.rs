@@ -129,38 +129,38 @@ async fn dig_place_activate_stop() {
         .expect("chunks never loaded");
 
     // ---- dig a block in reach ---------------------------------------------
-    // the persistent fixture has drifted around the spawn (holes, edges —
-    // the bot can land on a one-wide column), so land first and then take
-    // the first guaranteed-dropping block in reach: the cell under the
-    // feet when it is real ground, else the nearest of the common droppers
+    // A leaf below spawn is diggable but might drop nothing. Prefer common
+    // ground blocks that always drop without a tool; keep the nearby search
+    // for repeat runs on a world with holes from earlier tests.
     for _ in 0..100 {
         if bot.entity().on_ground() == Some(true) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let below_pos = {
-        let feet = bot.position().to_block_pos_floor();
-        std::iter::once(BlockPos {
-            x: feet.x,
-            y: feet.y - 1,
-            z: feet.z,
-        })
-        .chain(
-            [
-                BlockKind::Dirt,
-                BlockKind::GrassBlock,
-                BlockKind::Stone,
-                BlockKind::Cobblestone,
-                BlockKind::Sand,
-                BlockKind::Gravel,
-            ]
-            .into_iter()
-            .flat_map(|kind| bot.find_blocks(FindBlocksOpts::new(kind).max_distance(4.5).count(2))),
-        )
-        .find(|pos| bot.block_at(*pos).is_some_and(|b| bot.can_dig_block(&b)))
-        .expect("no diggable block in reach of the spawn")
+    let feet = bot.position().to_block_pos_floor();
+    let underfoot = BlockPos {
+        x: feet.x,
+        y: feet.y - 1,
+        z: feet.z,
     };
+    let droppers = [
+        BlockKind::Dirt,
+        BlockKind::GrassBlock,
+        BlockKind::Cobblestone,
+        BlockKind::Sand,
+        BlockKind::Gravel,
+    ];
+    let below_pos =
+        std::iter::once(underfoot)
+            .chain(droppers.into_iter().flat_map(|kind| {
+                bot.find_blocks(FindBlocksOpts::new(kind).max_distance(4.5).count(2))
+            }))
+            .find(|pos| {
+                bot.block_at(*pos)
+                    .is_some_and(|b| droppers.contains(&b.kind()) && bot.can_dig_block(&b))
+            })
+            .expect("no tool-free dropping block in reach of spawn");
     let below = bot.block_at(below_pos).expect("dig target unloaded");
     assert!(bot.can_dig_block(&below), "dig target out of reach");
 
@@ -187,7 +187,11 @@ async fn dig_place_activate_stop() {
     // the bot fell into the hole; sweep up the drop (it can scatter out of
     // the hole cell)
     let collected = collect_drop(&bot, Duration::from_secs(6)).await;
-    assert!(collected, "the dug block's drop was never picked up");
+    assert!(
+        collected,
+        "{} at {below_pos:?} dropped no picked-up item",
+        below.name()
+    );
 
     // ---- stop_digging mid-dig ---------------------------------------------
     // pick the slowest-digging block in reach so the abort always lands

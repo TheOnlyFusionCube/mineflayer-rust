@@ -867,6 +867,7 @@ impl Bot {
             .map(|info| {
                 let entity = self.client.entity_by_uuid(info.uuid);
                 let profile_keys = self
+                    .shared
                     .entities
                     .read()
                     .unwrap()
@@ -925,8 +926,9 @@ impl Bot {
     /// `Entity.vehicle` for an arbitrary entity.
     pub fn entity_vehicle(&self, entity: &EntityRef) -> Option<EntityRef> {
         let id = *entity.get_component::<MinecraftEntityId>()?;
-        let vehicle = *self.entities.read().unwrap().vehicle_of.get(&id)?;
-        self.entities
+        let vehicle = *self.shared.entities.read().unwrap().vehicle_of.get(&id)?;
+        self.shared
+            .entities
             .write()
             .unwrap()
             .resolve(&self.client, vehicle)
@@ -940,14 +942,26 @@ impl Bot {
         // component guard across the tracker read inverts the bridge's
         // (tracker-write → ecs-read) lock order and deadlocks
         let id = entity.get_component::<MinecraftEntityId>().map(|id| *id);
-        id.and_then(|id| self.entities.read().unwrap().equipment.get(&id).cloned())
-            .unwrap_or_default()
+        id.and_then(|id| {
+            self.shared
+                .entities
+                .read()
+                .unwrap()
+                .equipment
+                .get(&id)
+                .cloned()
+        })
+        .unwrap_or_default()
     }
 
     /// `bot.fireworkRocketDuration` — estimated remaining boost ticks from
     /// the last `usedFirework`; `0` when none is active.
     pub fn firework_rocket_duration(&self) -> u32 {
-        self.entities.read().unwrap().firework_rocket_duration
+        self.shared
+            .entities
+            .read()
+            .unwrap()
+            .firework_rocket_duration
     }
 
     // -- actions ---------------------------------------------------------
@@ -1126,7 +1140,14 @@ impl Bot {
 
         if !raw {
             let id = *entity.get_component::<MinecraftEntityId>()?;
-            let attributes = self.entities.read().unwrap().attributes.get(&id).cloned();
+            let attributes = self
+                .shared
+                .entities
+                .read()
+                .unwrap()
+                .attributes
+                .get(&id)
+                .cloned();
             let armor = attributes
                 .as_ref()
                 .and_then(|a| a.get(&Attribute::Armor))
@@ -1143,6 +1164,7 @@ impl Bot {
                 == Some(EntityKind::Player)
             {
                 let scale = match self
+                    .shared
                     .entities
                     .read()
                     .unwrap()
@@ -1808,7 +1830,7 @@ mod tests {
             .ecs
             .write()
             .init_resource::<azalea::entity::indexing::EntityUuidIndex>();
-        let mut bot = Bot::new(client);
+        let bot = Bot::new(client);
         let mut tracker = EntityTracker::default();
         tracker.chat_sessions.insert(
             uuid,
@@ -1817,7 +1839,7 @@ mod tests {
                 signature: vec![8],
             },
         );
-        bot.entities = Arc::new(std::sync::RwLock::new(tracker));
+        *bot.shared.entities.write().unwrap() = tracker;
 
         let players = bot.players();
         assert_eq!(

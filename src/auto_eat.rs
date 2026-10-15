@@ -353,7 +353,7 @@ impl AutoEat<'_> {
         {
             // wake the eat's waiter the way a second consume() would —
             // it sees the generation bump and reports the cancellation
-            let mut t = self.bot.windows.lock().unwrap();
+            let mut t = self.bot.shared.windows.lock().unwrap();
             t.eat_generation += 1;
             t.eat_notify.notify_waiters();
         }
@@ -407,7 +407,7 @@ impl AutoEat<'_> {
         // `Bot::consume` — a finish packet landing between the use_item
         // write and the await can't be missed
         let (generation, notify) = {
-            let mut t = bot.windows.lock().unwrap();
+            let mut t = bot.shared.windows.lock().unwrap();
             t.eat_generation += 1;
             t.eat_notify.notify_waiters();
             (t.eat_generation, t.eat_notify.clone())
@@ -438,7 +438,7 @@ impl AutoEat<'_> {
                 "Eating timed out with a time of {} milliseconds!",
                 timeout.as_millis()
             )))
-        } else if bot.windows.lock().unwrap().eat_generation != generation {
+        } else if bot.shared.windows.lock().unwrap().eat_generation != generation {
             if cancel.load(atomic::Ordering::Relaxed) {
                 Err(Error::Operation("Eating manually canceled!".into()))
             } else {
@@ -785,7 +785,12 @@ mod tests {
 
         // the bridge's real consume-finish (entity status 9 / held-stack
         // change) fires `eat_notify`; simulate the wake directly
-        bot.windows.lock().unwrap().eat_notify.notify_waiters();
+        bot.shared
+            .windows
+            .lock()
+            .unwrap()
+            .eat_notify
+            .notify_waiters();
 
         eating.await.unwrap().unwrap();
         assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
@@ -1127,7 +1132,12 @@ mod tests {
             let mut inv = ecs.get_mut::<Inventory>(bot.client.entity).unwrap();
             *inv.inventory_menu.slot_mut(36).unwrap() = ItemStack::new(ItemKind::Stone, 1);
         }
-        bot.windows.lock().unwrap().eat_notify.notify_waiters();
+        bot.shared
+            .windows
+            .lock()
+            .unwrap()
+            .eat_notify
+            .notify_waiters();
 
         let err = eating.await.unwrap().unwrap_err();
         assert_eq!(err.to_string(), "Item switched early to: stone!");
@@ -1152,7 +1162,7 @@ mod tests {
         assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
 
         {
-            let mut t = bot.windows.lock().unwrap();
+            let mut t = bot.shared.windows.lock().unwrap();
             t.eat_generation += 1;
             t.eat_notify.notify_waiters();
         }

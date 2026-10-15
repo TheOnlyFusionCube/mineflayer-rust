@@ -84,12 +84,14 @@ beyond upstream). Current counts:
 
 `scripts/live-server.sh` boots a local vanilla **offline-mode** server
 (MC `26.1`, port `25566`, state in `.live/`) and prints `LIVE_SERVER_READY`.
+`reset` stops it, deletes the `.live/world*` dimensions, and starts a fresh
+world with seed `13371337`; use it before a deterministic live run.
 Live tests in `tests/live/` are gated behind the `live` feature and
 `#[ignore]`:
 
 ```sh
-bash scripts/live-server.sh
-cargo test --features live -- --ignored
+bash scripts/live-server.sh reset
+cargo test --features live --no-fail-fast -- --ignored --test-threads=1
 ./scripts/live-server.sh stop
 ```
 

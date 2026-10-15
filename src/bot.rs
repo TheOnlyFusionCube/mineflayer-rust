@@ -55,20 +55,11 @@ use crate::{
 #[derive(Clone)]
 pub struct Bot {
     pub(crate) client: azalea::Client,
-    events: broadcast::Sender<BotEvent>,
     /// The receiver the first [`Bot::events`] call hands out — subscribed
     /// before the bridge task started, so events that fired before
     /// `connect` returned (`Init`, `Login`, the spawn burst) are still on
     /// its ring. `None` once claimed.
     bootstrap_events: Arc<Mutex<Option<broadcast::Receiver<BotEvent>>>>,
-    /// Reason passed to [`Bot::quit`]/[`Bot::end`]; the bridge consumes it when
-    /// azalea reports the disconnect so `BotEvent::End` can carry it
-    /// (upstream: `client.end(reason)` -> `'end'` event).
-    pub(crate) quit_reason: Arc<Mutex<Option<String>>>,
-    /// The reason the last `BotEvent::End` carried — upstream chat.js's
-    /// `endReason` (`_client.once('end', ...)`), read by `chat`/`whisper`
-    /// to distinguish "never entered play" from "disconnected pre-play".
-    pub(crate) end_reason: Arc<Mutex<Option<String>>>,
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). Held only to keep the watch channel open.
     _alive: watch::Sender<()>,
@@ -84,31 +75,71 @@ pub struct Bot {
     /// sender; keeping it here leaves `shutdown` open — a wrapped client
     /// is never "ended" from our side, matching pre-signal behavior.
     _shutdown_tx: Option<watch::Sender<()>>,
-    /// Chat-domain state shared with the bridge (pattern registry, tablist
-    /// header/footer, `tab_complete` correlation) — see `chat::ChatShared`.
-    pub(crate) chat: Arc<Mutex<ChatShared>>,
-    /// Facade-kept world/game state (spawn point, clocks, weather, login
-    /// metadata) fed by [`crate::world::observe_event`] inside the bridge
-    /// task — azalea drops most of these packets upstream.
-    pub(crate) world_state: Arc<RwLock<WorldState>>,
-    /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
-    /// vehicle links), shared with the bridge task — see `entity::EntityTracker`.
-    pub(crate) entities: Arc<std::sync::RwLock<crate::entity::EntityTracker>>,
-    /// Inventory/window-domain state (current window, slot snapshots,
-    /// eat/use bookkeeping), shared with the bridge task — see
-    /// `windows::WindowTracker`.
-    pub(crate) windows: Arc<Mutex<crate::windows::WindowTracker>>,
-    /// Typed-window server state (container data, merchant offers,
-    /// readiness), shared with the bridge task — see
-    /// `window_types::WindowDataTracker`.
-    pub(crate) window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
-    /// Recipe-book state (unlocked recipes from `c_recipe_book_add`/
-    /// `c_recipe_book_remove`), shared with the bridge task — see
-    /// `craft::RecipeBook`.
-    pub(crate) recipes: Arc<Mutex<crate::craft::RecipeBook>>,
+    /// Per-domain state shared with the bridge task; `Bot` method blocks
+    /// reach domains through `self.shared` (see [`BotShared`]).
+    pub(crate) shared: Arc<BotShared>,
     /// `options.chatLengthLimit` — the split limit `chat`/`whisper` chunk
     /// outgoing messages to (set once at build; upstream has no setter).
     pub(crate) chat_length_limit: usize,
+}
+
+/// The per-domain state every [`Bot`] handle and the bridge task share.
+///
+/// One construction site: a new domain is added here and in
+/// [`BotShared::new`], instead of being threaded through `Bot`'s fields,
+/// `connect_azalea`, `Bot::new`, and the bridge's dependency bag. Each
+/// domain keeps its own lock; nothing here is a single global lock.
+#[derive(Clone)]
+pub(crate) struct BotShared {
+    /// The bot's event stream (see [`Bot::events`]).
+    pub events: broadcast::Sender<BotEvent>,
+    /// Reason passed to [`Bot::quit`]/[`Bot::end`]; the bridge consumes it
+    /// when azalea reports the disconnect so `BotEvent::End` can carry it
+    /// (upstream: `client.end(reason)` -> `'end'` event).
+    pub quit_reason: Arc<Mutex<Option<String>>>,
+    /// The reason the last `BotEvent::End` carried — upstream chat.js's
+    /// `endReason` (`_client.once('end', ...)`), read by `chat`/`whisper`
+    /// to distinguish "never entered play" from "disconnected pre-play".
+    pub end_reason: Arc<Mutex<Option<String>>>,
+    /// Chat-domain state (pattern registry, tablist header/footer,
+    /// `tab_complete` correlation) — see `chat::ChatShared`.
+    pub chat: Arc<Mutex<ChatShared>>,
+    /// Facade-kept world/game state (spawn point, clocks, weather, login
+    /// metadata) fed by [`crate::world::observe_event`] inside the bridge
+    /// task — azalea drops most of these packets upstream.
+    pub world_state: Arc<RwLock<WorldState>>,
+    /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
+    /// vehicle links) — see `entity::EntityTracker`.
+    pub entities: Arc<std::sync::RwLock<crate::entity::EntityTracker>>,
+    /// Inventory/window-domain state (current window, slot snapshots,
+    /// eat/use bookkeeping) — see `windows::WindowTracker`.
+    pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
+    /// Typed-window server state (container data, merchant offers,
+    /// readiness) — see `window_types::WindowDataTracker`.
+    pub window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
+    /// Recipe-book state (unlocked recipes from `c_recipe_book_add`/
+    /// `c_recipe_book_remove`) — see `craft::RecipeBook`.
+    pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
+}
+
+impl BotShared {
+    fn new(events: broadcast::Sender<BotEvent>) -> Self {
+        Self {
+            quit_reason: Arc::new(Mutex::new(None)),
+            end_reason: Arc::new(Mutex::new(None)),
+            chat: Arc::new(Mutex::new(ChatShared::default())),
+            world_state: Arc::new(RwLock::new(WorldState::default())),
+            entities: Arc::new(std::sync::RwLock::new(
+                crate::entity::EntityTracker::default(),
+            )),
+            windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
+                events.clone(),
+            ))),
+            window_data: Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new())),
+            recipes: Arc::new(Mutex::new(crate::craft::RecipeBook::default())),
+            events,
+        }
+    }
 }
 
 /// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
@@ -1081,62 +1112,34 @@ impl BotBuilder {
             .insert(crate::interact::InteractShared::default());
 
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        let quit_reason = Arc::new(Mutex::new(None));
-        let end_reason = Arc::new(Mutex::new(None));
-        let mut chat_shared = ChatShared::default();
-        chat_shared.default_chat_patterns = builder.default_chat_patterns;
-        let chat = Arc::new(Mutex::new(chat_shared));
+        let shared = BotShared::new(events);
+        shared.chat.lock().unwrap().default_chat_patterns = builder.default_chat_patterns;
         let (alive, alive_rx) = watch::channel(());
         let (shutdown_tx, shutdown_rx) = watch::channel(());
-        let world_state = Arc::new(RwLock::new(WorldState::default()));
-        let entities = Arc::new(std::sync::RwLock::new(
-            crate::entity::EntityTracker::default(),
-        ));
-        let windows = Arc::new(Mutex::new(crate::windows::WindowTracker::new(
-            events.clone(),
-        )));
-        let window_data = Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new()));
-        let recipes = Arc::new(Mutex::new(crate::craft::RecipeBook::default()));
         // subscribed before the bridge starts, so `Event::Init` — which
         // azalea queues before `join` returns — and everything since is on
         // the receiver the first `Bot::events()` call hands out.
-        let bootstrap_events = events.subscribe();
+        let bootstrap_events = shared.events.subscribe();
         bridge::spawn(
             client.clone(),
             rx,
-            events.clone(),
-            alive_rx,
-            shutdown_tx,
-            bridge::BridgeDeps {
-                quit_reason: quit_reason.clone(),
-                end_reason: end_reason.clone(),
-                chat: chat.clone(),
-                entities: entities.clone(),
-                world: world_state.clone(),
-                windows: windows.clone(),
-                window_data: window_data.clone(),
-                recipes: recipes.clone(),
+            shared.clone(),
+            bridge::BridgeOptions {
                 client_information: builder.client_information,
                 brand: builder.brand,
                 check_timeout_interval: builder.check_timeout_interval,
             },
+            alive_rx,
+            shutdown_tx,
         );
 
         Ok(Bot {
             client,
-            events,
             bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
-            quit_reason,
-            end_reason,
             _alive: alive,
             shutdown: shutdown_rx,
             _shutdown_tx: None,
-            chat,
-            world_state,
-            entities,
-            windows,
-            window_data,
-            recipes,
+            shared: Arc::new(shared),
             chat_length_limit: builder.chat_length_limit,
         })
     }
@@ -1201,20 +1204,10 @@ impl Bot {
         Self {
             client,
             bootstrap_events: Arc::new(Mutex::new(Some(events.subscribe()))),
-            events: events.clone(),
-            quit_reason: Arc::new(Mutex::new(None)),
-            end_reason: Arc::new(Mutex::new(None)),
             _alive: alive,
             shutdown: shutdown_rx,
             _shutdown_tx: Some(shutdown_tx),
-            chat: Arc::new(Mutex::new(ChatShared::default())),
-            world_state: Arc::new(RwLock::new(WorldState::default())),
-            entities: Arc::new(std::sync::RwLock::new(
-                crate::entity::EntityTracker::default(),
-            )),
-            windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(events))),
-            window_data: Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new())),
-            recipes: Arc::new(Mutex::new(crate::craft::RecipeBook::default())),
+            shared: Arc::new(BotShared::new(events)),
             chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
         }
     }
@@ -1240,13 +1233,13 @@ impl Bot {
         if let Some(rx) = self.bootstrap_events.lock().unwrap().take() {
             return rx;
         }
-        self.events.subscribe()
+        self.shared.events.subscribe()
     }
 
     /// `bot.quit(reason?)` — graceful disconnect. The subsequent
     /// [`BotEvent::End`] carries `reason` (default `disconnect.quitting`).
     pub fn quit(&self, reason: Option<&str>) {
-        *self.quit_reason.lock().unwrap() =
+        *self.shared.quit_reason.lock().unwrap() =
             Some(reason.unwrap_or("disconnect.quitting").to_string());
         self.client.disconnect();
     }
@@ -1254,7 +1247,7 @@ impl Bot {
     /// `bot.end(reason?)` — end the connection. The subsequent
     /// [`BotEvent::End`] carries `reason` (default `socketClosed`).
     pub fn end(&self, reason: Option<&str>) {
-        *self.quit_reason.lock().unwrap() = reason.map(str::to_string);
+        *self.shared.quit_reason.lock().unwrap() = reason.map(str::to_string);
         self.client.disconnect();
     }
 
@@ -1370,7 +1363,7 @@ impl Bot {
     /// Emit a [`BotEvent`] to all subscribers — used by domain impls for
     /// upstream's `bot.emit('error', ...)` semantics inside sync methods.
     pub(crate) fn emit_event(&self, event: BotEvent) {
-        let _ = self.events.send(event);
+        let _ = self.shared.events.send(event);
     }
 
     /// Whether we've received the login packet and are in the game state.
@@ -1408,8 +1401,8 @@ mod tests {
         // so those earliest events are still on it. Later subscribers only
         // see events sent after they attach.
         let bot = Bot::new(crate::test_util::despawned_client());
-        bot.events.send(BotEvent::Init).unwrap();
-        bot.events.send(BotEvent::Spawn).unwrap();
+        bot.shared.events.send(BotEvent::Init).unwrap();
+        bot.shared.events.send(BotEvent::Spawn).unwrap();
 
         let mut first = bot.events();
         let mut second = bot.events();
@@ -1420,7 +1413,7 @@ mod tests {
             Err(broadcast::error::TryRecvError::Empty)
         ));
         // a later send reaches both
-        bot.events.send(BotEvent::Tick).unwrap();
+        bot.shared.events.send(BotEvent::Tick).unwrap();
         assert!(matches!(first.try_recv().unwrap(), BotEvent::Tick));
         assert!(matches!(second.try_recv().unwrap(), BotEvent::Tick));
     }
