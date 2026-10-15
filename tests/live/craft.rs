@@ -42,12 +42,20 @@ async fn wait_for(
 async fn connect() -> Bot {
     // A fresh username per run: the fixture world persists player data,
     // and leftovers from an earlier run (crafted planks, a table) would
-    // fail the empty-inventory recipe gate below. The recipe book and
-    // stats likewise accrete per name.
-    let suffix = std::time::SystemTime::now()
+    // fail the empty-inventory recipe gate below. The suffix is the
+    // millisecond clock in base 36, right-padded to 10 chars — distinct
+    // for millions of years inside Minecraft's 16-char username limit.
+    let ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() % 1_000_000_000)
-        .unwrap_or(0);
+        .expect("system clock before the unix epoch")
+        .as_millis();
+    let mut suffix = ['0'; 10];
+    let mut n = ms;
+    for c in suffix.iter_mut().rev() {
+        *c = std::char::from_digit((n % 36) as u32, 36).expect("base 36 digit");
+        n /= 36;
+    }
+    let suffix: String = suffix.iter().collect();
     let bot = Bot::builder()
         .host("localhost")
         .port(25566)
