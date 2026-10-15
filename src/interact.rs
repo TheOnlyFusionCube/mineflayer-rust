@@ -213,10 +213,12 @@ impl PlacedEntity {
 
 /// Dig bookkeeping kept on the client entity.
 ///
-/// azalea's `Mining`/`MiningQueued` components already carry the target
-/// block and face; this adds the two things upstream tracks beside them:
-/// which `dig` call `stop_digging` should abort (`dig_seq`/`aborted_seq`)
-/// and `bot.lastDigTime`.
+/// upstream's `targetDigBlock`/`targetDigFace`/`lastDigTime` live in
+/// `digging.js` and settle in the same synchronous step as the dig's
+/// promise; azalea's `Mining`/`MiningQueued` components lag that by up to
+/// a tick (an instant-break dig resolves while `MiningQueued` is still
+/// queued), so the promise-visible target is owned here. `dig_seq`/
+/// `aborted_seq` drive `stop_digging`'s generation check.
 #[derive(Component, Default)]
 pub(crate) struct InteractShared {
     /// Bumped every time `dig` starts — the current dig generation.
@@ -224,6 +226,10 @@ pub(crate) struct InteractShared {
     /// `dig_seq` value at the last `stop_digging`; digs with `seq <=` this
     /// have been aborted.
     aborted_seq: u64,
+    /// `bot.targetDigBlock`/`targetDigFace` — the in-flight dig's target
+    /// and the face sent on the wire, tagged with its `dig_seq` so a
+    /// superseding dig's settle can't clear it.
+    dig_target: Option<(BlockPos, Direction, u64)>,
     /// `bot.lastDigTime` — set when a dig finishes for any reason.
     last_dig_time: Option<Instant>,
 }
@@ -389,7 +395,24 @@ impl Bot {
             shared.dig_seq += 1;
             shared.dig_seq
         };
+        // upstream sets `targetDigBlock`/`targetDigFace` synchronously at
+        // dig start; the face is the one azalea will send — the hit result
+        // when we're looking at the block, `Down` otherwise (its
+        // `handle_start_mining_block_event` rule)
+        let target_face = self
+            .client
+            .get_component::<HitResultComponent>()
+            .and_then(|h| h.as_block_hit_result_if_not_miss().cloned())
+            .filter(|b| b.block_pos == pos)
+            .map(|b| b.direction)
+            .unwrap_or(Direction::Down);
         self.client.start_mining(pos);
+        {
+            let mut ecs = self.client.ecs.write();
+            if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
+                shared.dig_target = Some((pos, target_face, my_seq));
+            }
+        }
 
         let outcome = self
             .dig_wait(
@@ -399,13 +422,7 @@ impl Bot {
             )
             .await;
 
-        // upstream's `lastDigTime = Date.now()` runs on resolve or abort
-        {
-            let mut ecs = self.client.ecs.write();
-            if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
-                shared.last_dig_time = Some(Instant::now());
-            }
-        }
+        self.settle_dig(pos, my_seq);
         match outcome {
             DigExit::Done => {
                 let new_block = self.block_at(pos).unwrap_or_else(|| block.clone());
@@ -427,6 +444,34 @@ impl Bot {
                 Err(Error::Operation(DIG_ABORTED.to_string()))
             }
             DigExit::Disconnected => Err(Error::NotConnected),
+        }
+    }
+
+    /// Settle the promise-visible dig state when a `dig` future exits:
+    /// clear the port-owned `targetDigBlock` (only while it is still this
+    /// dig's — a superseding `dig` owns it otherwise), stamp
+    /// `lastDigTime` (upstream's resolve-or-abort stamp), and drop a
+    /// queued-but-never-started mine for this block so azalea cannot begin
+    /// mining the (now broken) cell on the next tick.
+    fn settle_dig(&self, pos: BlockPos, my_seq: u64) {
+        let entity = self.client.entity;
+        let mut ecs = self.client.ecs.write();
+        let owned = {
+            let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) else {
+                return;
+            };
+            shared.last_dig_time = Some(Instant::now());
+            let owned = shared.dig_target.is_some_and(|(_, _, seq)| seq == my_seq);
+            if owned {
+                shared.dig_target = None;
+            }
+            owned
+        };
+        if owned
+            && ecs.get::<Mining>(entity).is_none()
+            && ecs.get::<MiningQueued>(entity).map(|q| q.position) == Some(pos)
+        {
+            ecs.entity_mut(entity).remove::<MiningQueued>();
         }
     }
 
@@ -518,20 +563,28 @@ impl Bot {
     /// `bot.stopDigging()` — abort the in-flight dig. The pending `dig`
     /// future emits `diggingAborted` and rejects, exactly like upstream.
     ///
-    /// Stamps the dig generation even when no `Mining`/`MiningQueued`
-    /// exists yet (a stop in the `start_mining` window still aborts the
-    /// pending `dig`), then sends azalea's `StopMiningBlockEvent` (→
-    /// `AbortDestroyBlock` packet) and drops a stale `MiningQueued`.
+    /// A stop with no dig in flight is a no-op (upstream
+    /// `if (!targetDigBlock) return`); the target is set before the wire
+    /// call, so a stop landing in the `start_mining`→`MiningQueued` window
+    /// still aborts the pending `dig`. Otherwise it stamps the abort
+    /// generation, clears the port-owned target, sends azalea's
+    /// `StopMiningBlockEvent` (→ `AbortDestroyBlock` packet) and drops a
+    /// stale `MiningQueued`.
     pub fn stop_digging(&self) {
         let entity = self.client.entity;
         let mut ecs = self.client.ecs.write();
+        {
+            let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) else {
+                return;
+            };
+            if shared.dig_target.is_none() {
+                return;
+            }
+            shared.abort_current();
+            shared.dig_target = None;
+        }
         let mining = ecs.get::<Mining>(entity).is_some();
         let queued = ecs.get::<MiningQueued>(entity).is_some();
-        // stamp before the early return: a stop landing in the
-        // `start_mining`→`MiningQueued` window must not be swallowed
-        if let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) {
-            shared.abort_current();
-        }
         if !mining && !queued {
             return;
         }
@@ -579,16 +632,18 @@ impl Bot {
         block.diggable() && within_dig_reach(block.pos.center(), self.position())
     }
 
-    /// `bot.targetDigBlock` — the block currently being dug, if any.
+    /// `bot.targetDigBlock` — the block the in-flight dig is mining, if
+    /// any. Set when `dig` starts and cleared in the same step the dig's
+    /// future settles, like upstream's `digging.js`.
     pub fn target_dig_block(&self) -> Option<Block> {
-        let (pos, _) = self.dig_target()?;
+        let (pos, _, _) = self.port_dig_target()?;
         self.block_at(pos)
     }
 
     /// `bot.targetDigFace` — the face the dig is pointed at (`0..=5`,
     /// same ordinals as upstream's `block.face`).
     pub fn target_dig_face(&self) -> Option<Direction> {
-        self.dig_target().map(|(_, dir)| dir)
+        Some(self.port_dig_target()?.1)
     }
 
     /// `bot.lastDigTime` — when the last dig finished or aborted.
@@ -807,17 +862,10 @@ impl Bot {
         .await
     }
 
-    /// The `Mining`/`MiningQueued` target, whichever is active — azalea
-    /// derives the face from `HitResultComponent` when the dig starts.
-    fn dig_target(&self) -> Option<(BlockPos, Direction)> {
+    /// The port-owned dig target — see [`InteractShared::dig_target`].
+    fn port_dig_target(&self) -> Option<(BlockPos, Direction, u64)> {
         let ecs = self.client.ecs.read();
-        let entity = self.client.entity;
-        ecs.get::<Mining>(entity)
-            .map(|m| (m.pos, m.dir))
-            .or_else(|| {
-                ecs.get::<MiningQueued>(entity)
-                    .map(|q| (q.position, q.direction))
-            })
+        ecs.get::<InteractShared>(self.client.entity)?.dig_target
     }
 
     fn block_is_air(&self, pos: BlockPos) -> bool {
@@ -1111,6 +1159,49 @@ mod tests {
         );
         assert_eq!(face_direction(Vec3::new(1., 0., 0.)), Some(Direction::East));
         assert_eq!(face_direction(Vec3::new(0., 0., 0.)), None);
+    }
+
+    /// upstream `stopDigging` is a no-op when no dig is in flight
+    /// (`if (!bot.targetDigBlock) return`).
+    #[tokio::test]
+    async fn stop_digging_without_a_target_is_a_no_op() {
+        let client = crate::test_util::live_entity_client(InteractShared::default());
+        let bot = crate::Bot::new(client);
+        bot.stop_digging();
+        let ecs = bot.client().ecs.read();
+        let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
+        assert_eq!(shared.aborted_seq, 0);
+        assert!(shared.last_dig_time.is_none());
+    }
+
+    /// The in-flight dig's target is owned by the port; `stopDigging`
+    /// clears it and stamps the abort generation in the same step
+    /// (upstream clears `targetDigBlock` as it emits `diggingAborted`).
+    #[tokio::test]
+    async fn stop_digging_clears_the_port_owned_target() {
+        let client = crate::test_util::live_entity_client(InteractShared {
+            dig_seq: 2,
+            dig_target: Some((BlockPos::new(1, 64, 2), Direction::Up, 2)),
+            ..InteractShared::default()
+        });
+        let bot = crate::Bot::new(client);
+        bot.stop_digging();
+        let ecs = bot.client().ecs.read();
+        let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
+        assert!(shared.dig_target.is_none());
+        assert_eq!(shared.aborted_seq, 2);
+        assert!(shared.last_dig_time.is_some());
+    }
+
+    /// `targetDigFace` reads the face stored when the dig started.
+    #[tokio::test]
+    async fn target_dig_face_reads_the_stored_face() {
+        let client = crate::test_util::live_entity_client(InteractShared {
+            dig_target: Some((BlockPos::new(0, 64, 0), Direction::East, 1)),
+            ..InteractShared::default()
+        });
+        let bot = crate::Bot::new(client);
+        assert_eq!(bot.target_dig_face(), Some(Direction::East));
     }
 
     /// `_genericPlace`'s cursor math: `0.5 + face·0.5` default, `half`
