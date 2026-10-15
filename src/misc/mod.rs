@@ -7,7 +7,7 @@
 //! bot entity: the bridge writes it from decoded packets, `Bot` methods
 //! read it.
 
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 // `azalea::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // crate under its real name
@@ -16,11 +16,10 @@ use azalea::{
     ClientInformation, Vec3,
     core::entity_id::MinecraftEntityId,
     ecs::prelude::Component,
-    entity::{Pose, Position, inventory::Inventory, metadata::AirSupply},
-    inventory::ItemStack,
+    entity::{Pose, Position, metadata::AirSupply},
     protocol::packets::game::{
         ClientboundGamePacket, c_game_event, c_resource_pack_push::ClientboundResourcePackPush,
-        s_player_abilities, s_player_command, s_resource_pack, s_set_creative_mode_slot,
+        s_player_command, s_resource_pack,
     },
     registry::{
         Registry,
@@ -29,27 +28,19 @@ use azalea::{
 };
 use tokio::sync::{broadcast, oneshot};
 
+mod creative;
+pub use creative::Creative;
+
 use crate::{Bot, BotEvent, Error, Result, scoreboard};
 
 /// Facade-kept bot state, stored as an ECS component on the client entity.
 ///
-/// Everything upstream keeps in JS-side objects lives here: scoreboards,
-/// display slots, teams, boss bars, the resource-pack push awaiting a reply,
-/// settings that aren't in [`ClientInformation`], and the diff baselines for
-/// pose/air events.
+/// Everything upstream keeps in JS-side objects lives here: the
+/// resource-pack push awaiting a reply, settings that aren't in
+/// [`ClientInformation`], and the diff baselines for pose/air events.
+/// Scoreboard domain state lives in `scoreboard::ScoreboardState`.
 #[derive(Component)]
 pub(crate) struct MiscState {
-    /// `bot.scoreboards` — objective name -> scoreboard.
-    pub scoreboards: HashMap<String, scoreboard::ScoreBoard>,
-    /// `ScoreBoard.positions` — display slot -> objective name.
-    pub display_slots: HashMap<scoreboard::ScoreboardSlot, String>,
-    /// `bot.teams` — team name -> team.
-    pub teams: HashMap<String, scoreboard::Team>,
-    /// `bot.teamMap` keys — member name -> team name (values are looked up
-    /// in `teams`, so the two views can't drift).
-    pub team_map: HashMap<String, String>,
-    /// Bar uuid string -> bar.
-    pub boss_bars: HashMap<String, scoreboard::BossBar>,
     /// The most recent game-phase resource-pack push that hasn't been
     /// answered yet — kept whole so accept/deny can echo the exact uuid
     /// the server sent.
@@ -72,11 +63,6 @@ pub(crate) struct MiscState {
 impl Default for MiscState {
     fn default() -> Self {
         Self {
-            scoreboards: HashMap::new(),
-            display_slots: HashMap::new(),
-            teams: HashMap::new(),
-            team_map: HashMap::new(),
-            boss_bars: HashMap::new(),
             latest_resource_pack: None,
             // upstream's default `bot.settings.difficulty`
             difficulty: 2,
@@ -85,18 +71,6 @@ impl Default for MiscState {
             fishing: None,
             creative_slots_in_flight: Default::default(),
         }
-    }
-}
-
-impl MiscState {
-    /// Objectives and teams don't survive a login (upstream clears them on
-    /// the `login` packet; the objects emit no events). Boss bars are
-    /// intentionally kept — upstream never clears them either.
-    fn reset_on_login(&mut self) {
-        self.scoreboards.clear();
-        self.display_slots.clear();
-        self.teams.clear();
-        self.team_map.clear();
     }
 }
 
@@ -169,6 +143,11 @@ fn handle_packet(client: &azalea::Client, packet: &ClientboundGamePacket) -> Vec
         _ => None,
     };
 
+    // the scoreboard domain owns its own state (and the login/respawn
+    // clear); it consumes only scoreboard packets
+    if let Some(events) = scoreboard::handle_for(client, packet) {
+        return events;
+    }
     let mut ecs = client.ecs.write();
     let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
         return vec![];
@@ -189,15 +168,7 @@ fn handle_packet_state(
     packet: &ClientboundGamePacket,
     entity_pos: Option<Vec3>,
 ) -> Vec<BotEvent> {
-    if let Some(events) = scoreboard::handle(state, packet) {
-        return events;
-    }
     match packet {
-        // a fresh login wipes objectives and teams (upstream does the same)
-        ClientboundGamePacket::Login(_) => {
-            state.reset_on_login();
-            vec![]
-        }
         ClientboundGamePacket::SetTitleText(p) => vec![BotEvent::Title {
             text: p.text.to_string(),
             kind: TitleKind::Title,
@@ -839,200 +810,6 @@ impl Bot {
         let _ = misc_mut(&self.client, |m| m.fishing = None);
         result
     }
-
-    /// `bot.creative` — the creative-mode namespace (`set_inventory_slot`,
-    /// `fly_to`, `start_flying`, …). The methods only take effect in
-    /// creative mode, same as upstream.
-    pub fn creative(&self) -> Creative {
-        Creative {
-            client: self.client.clone(),
-            events: self.events(),
-        }
-    }
-}
-
-/// `bot.creative`.
-pub struct Creative {
-    client: azalea::Client,
-    events: broadcast::Receiver<BotEvent>,
-}
-
-/// Releases a slot's `creative_slots_in_flight` entry on drop — including
-/// when the caller's future is cancelled or panics, which a trailing
-/// cleanup statement would skip and thereby poison the slot with the
-/// "calling again" error.
-struct CreativeSlotGuard {
-    client: azalea::Client,
-    slot: u16,
-}
-
-impl Drop for CreativeSlotGuard {
-    fn drop(&mut self) {
-        let _ = misc_mut(&self.client, |m| {
-            m.creative_slots_in_flight.remove(&self.slot);
-        });
-    }
-}
-
-impl Creative {
-    /// `bot.creative.setInventorySlot(slot, item)` — the
-    /// `s_set_creative_mode_slot` packet, then a wait for the server's
-    /// `container_set_slot` echo like upstream (a mismatch is a rejection,
-    /// and upstream rejects after 5s with no echo).
-    ///
-    /// Dropping the returned future (caller cancellation) releases the
-    /// slot's in-flight flag instead of leaving it stuck with "calling
-    /// again"; the wire write is not rolled back.
-    ///
-    /// Upstream asserts `0 <= slot <= 44`; slots are unsigned here.
-    pub async fn set_inventory_slot(&self, slot: u16, item: ItemStack) -> Result<()> {
-        if slot > 44 {
-            return Err(Error::Operation("slot must be <= 44".into()));
-        }
-        // no-op when the slot already holds an identical stack, like
-        // upstream's Item.equal check
-        let same = self
-            .client
-            .get_component::<Inventory>()
-            .map(|inv| inv.inventory_menu.slots().get(usize::from(slot)) == Some(&item))
-            .unwrap_or(false);
-        if same {
-            return Ok(());
-        }
-        let in_flight = misc_mut(&self.client, |m| !m.creative_slots_in_flight.insert(slot))?;
-        if in_flight {
-            return Err(Error::Operation(format!(
-                "Setting slot {slot} cancelled due to calling bot.creative.set_inventory_slot({slot}, ...) again"
-            )));
-        }
-        let _guard = CreativeSlotGuard {
-            client: self.client.clone(),
-            slot,
-        };
-        self.set_inventory_slot_inner(slot, item).await
-    }
-
-    async fn set_inventory_slot_inner(&self, slot: u16, item: ItemStack) -> Result<()> {
-        let mut rx = self.events.resubscribe();
-        self.client
-            .write_packet(s_set_creative_mode_slot::ServerboundSetCreativeModeSlot {
-                slot_num: slot,
-                item_stack: item.clone(),
-            });
-        let wait = async {
-            loop {
-                match rx.recv().await {
-                    Ok(BotEvent::Packet(packet)) => {
-                        if let ClientboundGamePacket::ContainerSetSlot(p) = &*packet
-                            && p.container_id == 0
-                            && p.slot == slot
-                        {
-                            return if p.item_stack == item {
-                                Ok(())
-                            } else {
-                                Err(Error::Operation("Server rejected".into()))
-                            };
-                        }
-                    }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return Err(Error::NotConnected),
-                }
-            }
-        };
-        match tokio::time::timeout(Duration::from_secs(5), wait).await {
-            Ok(result) => result,
-            Err(_) => Err(Error::Timeout),
-        }
-    }
-
-    /// `bot.creative.clearSlot(slot)`.
-    pub async fn clear_slot(&self, slot: u16) -> Result<()> {
-        self.set_inventory_slot(slot, ItemStack::Empty).await
-    }
-
-    /// `bot.creative.clearInventory()` — clear every occupied slot of the
-    /// player inventory concurrently, like upstream's `Promise.all` (each
-    /// slot's confirmation is independent).
-    pub async fn clear_inventory(&self) -> Result<()> {
-        let occupied: Vec<u16> = {
-            let Some(inv) = self.client.get_component::<Inventory>() else {
-                return Err(Error::NotConnected);
-            };
-            inv.inventory_menu
-                .slots()
-                .iter()
-                .enumerate()
-                .filter(|(_, item)| !item.is_empty())
-                .map(|(slot, _)| slot as u16)
-                .collect()
-        };
-        // upstream `Promise.all` rejects at the first rejection while the
-        // other promises keep settling (JS promises cannot be cancelled) —
-        // `join_all` waits for every slot for the same shape, then reports
-        // the first error rather than dropping sibling futures mid-flight
-        let clears = occupied.iter().map(|&slot| self.clear_slot(slot));
-        futures::future::join_all(clears)
-            .await
-            .into_iter()
-            .collect()
-    }
-
-    /// `bot.creative.startFlying()` — set the flying ability locally and
-    /// tell the server (`s_player_abilities`), matching what the vanilla
-    /// client does on double-jump. (Upstream zeroes `bot.physics.gravity`;
-    /// same effect.)
-    pub fn start_flying(&self) {
-        self.set_flying(true);
-    }
-
-    /// `bot.creative.stopFlying()`.
-    pub fn stop_flying(&self) {
-        self.set_flying(false);
-    }
-
-    fn set_flying(&self, flying: bool) {
-        {
-            let mut ecs = self.client.ecs.write();
-            if let Ok(mut entity) = ecs.get_entity_mut(self.client.entity)
-                && let Some(mut abilities) = entity.get_mut::<azalea::entity::PlayerAbilities>()
-            {
-                abilities.flying = flying;
-            }
-        }
-        self.client
-            .write_packet(s_player_abilities::ServerboundPlayerAbilities { is_flying: flying });
-    }
-
-    /// `bot.creative.flyTo(destination)` — a straight line like upstream:
-    /// keep flying and step the position ~0.5 blocks per 50ms until the
-    /// destination is reached.
-    pub async fn fly_to(&self, destination: Vec3) {
-        self.start_flying();
-        loop {
-            let pos = self
-                .client
-                .get_component::<Position>()
-                .map(|p| **p)
-                .unwrap_or_default();
-            let delta = destination - pos;
-            let magnitude = (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z).sqrt();
-            if magnitude <= 0.5 {
-                self.set_position(destination);
-                return;
-            }
-            self.set_position(pos + delta / magnitude * 0.5);
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    fn set_position(&self, pos: Vec3) {
-        let mut ecs = self.client.ecs.write();
-        if let Ok(mut entity) = ecs.get_entity_mut(self.client.entity)
-            && let Some(mut position) = entity.get_mut::<Position>()
-        {
-            **position = pos;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1040,23 +817,18 @@ mod tests {
     use std::io::Cursor;
 
     use azalea::{
-        core::game_type::{GameMode, OptionalGameType},
-        protocol::packets::{
-            common::CommonPlayerSpawnInfo,
-            game::{
-                c_clear_titles::ClientboundClearTitles,
-                c_game_event::{ClientboundGameEvent, EventType},
-                c_level_particles::ClientboundLevelParticles,
-                c_login::ClientboundLogin,
-                c_resource_pack_push::ClientboundResourcePackPush,
-                c_set_subtitle_text::ClientboundSetSubtitleText,
-                c_set_title_text::ClientboundSetTitleText,
-                c_set_titles_animation::ClientboundSetTitlesAnimation,
-                c_sound::{ClientboundSound, SoundSource},
-                c_sound_entity::ClientboundSoundEntity,
-            },
+        protocol::packets::game::{
+            c_clear_titles::ClientboundClearTitles,
+            c_game_event::{ClientboundGameEvent, EventType},
+            c_level_particles::ClientboundLevelParticles,
+            c_resource_pack_push::ClientboundResourcePackPush,
+            c_set_subtitle_text::ClientboundSetSubtitleText,
+            c_set_title_text::ClientboundSetTitleText,
+            c_set_titles_animation::ClientboundSetTitlesAnimation,
+            c_sound::{ClientboundSound, SoundSource},
+            c_sound_entity::ClientboundSoundEntity,
         },
-        registry::{DataRegistry, Holder, data::DimensionKind},
+        registry::Holder,
     };
 
     use super::*;
@@ -1253,83 +1025,6 @@ mod tests {
     }
 
     #[test]
-    fn login_resets_scoreboards_and_teams() {
-        let mut s = MiscState::default();
-        s.scoreboards.insert(
-            "o".into(),
-            scoreboard::ScoreBoard {
-                name: "o".into(),
-                title: "t".into(),
-                items_map: Default::default(),
-            },
-        );
-        s.display_slots
-            .insert(scoreboard::ScoreboardSlot::Sidebar, "o".into());
-        s.teams.insert(
-            "t".into(),
-            scoreboard::Team {
-                name: "t".into(),
-                display_name: "d".into(),
-                friendly_fire: false,
-                see_friendly_invisibles: false,
-                nametag_visibility: scoreboard::NameTagVisibility::Always,
-                collision_rule: scoreboard::CollisionRule::Always,
-                color: azalea::chat::style::ChatFormatting::Red,
-                prefix: "".into(),
-                suffix: "".into(),
-                members: Default::default(),
-            },
-        );
-        s.team_map.insert("m".into(), "t".into());
-        s.boss_bars.insert(
-            "b".into(),
-            scoreboard::BossBar {
-                entity_uuid: "b".into(),
-                title: "t".into(),
-                health: 1.0,
-                dividers: 0,
-                color: azalea::protocol::packets::game::c_boss_event::BossBarColor::Purple,
-                darken_sky: false,
-                dragon_bar: false,
-                create_fog: false,
-            },
-        );
-
-        let login = ClientboundLogin {
-            player_id: MinecraftEntityId(0),
-            hardcore: false,
-            levels: vec![],
-            max_players: 20,
-            chunk_radius: 2,
-            simulation_distance: 2,
-            reduced_debug_info: false,
-            show_death_screen: true,
-            do_limited_crafting: false,
-            common: CommonPlayerSpawnInfo {
-                dimension_type: DimensionKind::new_raw(0),
-                dimension: azalea::Identifier::new("minecraft:overworld"),
-                seed: 0,
-                game_type: GameMode::Survival,
-                previous_game_type: OptionalGameType(None),
-                is_debug: false,
-                is_flat: false,
-                last_death_location: None,
-                portal_cooldown: 0,
-                sea_level: 63,
-            },
-            enforces_secure_chat: false,
-        };
-        let events = handle_packet_state(&mut s, &ClientboundGamePacket::Login(login), None);
-
-        // no events, but scoreboards + teams + the member map are gone —
-        // boss bars survive, like upstream
-        assert!(events.is_empty());
-        assert!(s.scoreboards.is_empty() && s.display_slots.is_empty());
-        assert!(s.teams.is_empty() && s.team_map.is_empty());
-        assert_eq!(s.boss_bars.len(), 1);
-    }
-
-    #[test]
     fn settings_map_to_client_information() {
         let settings = Settings {
             view_distance: 5.into(),
@@ -1440,81 +1135,5 @@ mod tests {
         .await
         .expect("fish ignored End");
         assert!(matches!(result, Err(Error::NotConnected)));
-    }
-
-    fn slot_flagged(bot: &Bot, slot: u16) -> bool {
-        misc_mut(bot.client(), |m| m.creative_slots_in_flight.contains(&slot)).unwrap_or(false)
-    }
-
-    /// A cancelled `set_inventory_slot` releases its slot flag — a
-    /// trailing cleanup statement would be skipped by the drop and every
-    /// later call for the slot would fail with "calling again".
-    #[tokio::test]
-    async fn cancelled_set_inventory_slot_releases_the_in_flight_slot() {
-        use azalea::registry::builtin::ItemKind;
-
-        let mut inventory = Inventory::default();
-        *inventory.inventory_menu.slot_mut(5).unwrap() = ItemStack::new(ItemKind::Stone, 1);
-        let bot = Bot::new(crate::test_util::live_entity_client(inventory));
-        let creative = bot.creative();
-        let item = ItemStack::new(ItemKind::Dirt, 1);
-        let set = || creative.set_inventory_slot(5, item.clone());
-        // the call parks waiting for the server echo; the timeout drops it
-        let _ = tokio::time::timeout(Duration::from_millis(50), set()).await;
-        assert!(
-            !slot_flagged(&bot, 5),
-            "cancelled call left the slot flagged"
-        );
-        // a fresh call is not rejected as "calling again" — it parks again
-        let again = tokio::time::timeout(Duration::from_millis(50), set()).await;
-        assert!(again.is_err(), "second call failed early: {again:?}");
-        assert!(!slot_flagged(&bot, 5));
-    }
-
-    /// `clearInventory` settles every slot it started: the offhand range
-    /// rejection must surface only after the sibling clear completed
-    /// (upstream `Promise.all` shape), and no slot may stay flagged.
-    #[tokio::test]
-    async fn clear_inventory_settles_every_started_slot() {
-        use azalea::{
-            protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
-            registry::builtin::ItemKind,
-        };
-
-        let mut inventory = Inventory::default();
-        *inventory.inventory_menu.slot_mut(10).unwrap() = ItemStack::new(ItemKind::Stone, 1);
-        *inventory.inventory_menu.slot_mut(45).unwrap() = ItemStack::new(ItemKind::Dirt, 1);
-        let bot = Bot::new(crate::test_util::live_entity_client(inventory));
-        let bot2 = bot.clone();
-        let clear = tokio::spawn(async move { bot2.creative().clear_inventory().await });
-
-        // wait for slot 10's clear to start, then confirm it is still
-        // pending: the failing sibling must not have cancelled it or let
-        // the call return early
-        for _ in 0..200 {
-            if slot_flagged(&bot, 10) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        assert!(slot_flagged(&bot, 10), "slot 10's clear never started");
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(
-            !clear.is_finished(),
-            "clearInventory returned before the sibling settled"
-        );
-
-        // let slot 10 settle with its echo
-        bot.emit_event(BotEvent::Packet(std::sync::Arc::new(
-            ClientboundGamePacket::ContainerSetSlot(ClientboundContainerSetSlot {
-                container_id: 0,
-                state_id: 0,
-                slot: 10,
-                item_stack: ItemStack::Empty,
-            }),
-        )));
-        let res = clear.await.unwrap();
-        assert!(res.is_err(), "the offhand rejection must surface");
-        assert!(!slot_flagged(&bot, 10) && !slot_flagged(&bot, 45));
     }
 }

@@ -3,13 +3,15 @@
 //! `bot.bossBars` surface.
 //!
 //! azalea stores none of this; everything here is facade-kept state on
-//! `crate::misc::MiscState`, fed by `c_set_objective` / `c_set_score` /
+//! [`ScoreboardState`], fed by `c_set_objective` / `c_set_score` /
 //! `c_reset_score` / `c_set_display_objective` / `c_set_player_team` /
 //! `c_boss_event` packets decoded in `handle`.
 
 use std::collections::{HashMap, HashSet};
 
+// the `Component` derive needs the crate under its real name
 use azalea::chat::style::ChatFormatting;
+use azalea::ecs as bevy_ecs;
 use azalea::{
     FormattedText,
     protocol::packets::game::{
@@ -20,7 +22,68 @@ use azalea::{
     },
 };
 
-use crate::{Bot, BotEvent, misc::MiscState};
+use crate::{Bot, BotEvent};
+
+/// Scoreboard/team/boss-bar state — `bot.scoreboards`, `bot.displaySlots`
+/// (`bot.scoreboard(slot)`), `bot.teams`, `bot.teamMap`, `bot.bossBars`.
+///
+/// Upstream keeps these in JS objects owned by the scoreboard plugin; the
+/// component lives here (not in `MiscState`) so the domain owns its whole
+/// lifecycle: create, packet decode, and the login/respawn clear.
+#[derive(azalea::ecs::prelude::Component, Default)]
+pub(crate) struct ScoreboardState {
+    /// Objective name -> scoreboard.
+    pub scoreboards: HashMap<String, ScoreBoard>,
+    /// Display slot -> objective name.
+    pub display_slots: HashMap<ScoreboardSlot, String>,
+    /// Team name -> team.
+    pub teams: HashMap<String, Team>,
+    /// Member name -> team name (values are looked up in `teams`, so the
+    /// two views can't drift).
+    pub team_map: HashMap<String, String>,
+    /// Bar uuid string -> bar.
+    pub boss_bars: HashMap<String, BossBar>,
+}
+
+impl ScoreboardState {
+    /// Objectives and teams don't survive a login (upstream clears them on
+    /// the `login` packet; the objects emit no events). Boss bars are
+    /// intentionally kept — upstream never clears them either.
+    fn reset_on_login(&mut self) {
+        self.scoreboards.clear();
+        self.display_slots.clear();
+        self.teams.clear();
+        self.team_map.clear();
+    }
+}
+
+/// Lazily create the component and run `f` under the ECS write lock, like
+/// `misc_mut`.
+fn with_state<R>(client: &azalea::Client, f: impl FnOnce(&mut ScoreboardState) -> R) -> Option<R> {
+    let mut ecs = client.ecs.write();
+    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
+    if entity.get_mut::<ScoreboardState>().is_none() {
+        entity.insert(ScoreboardState::default());
+    }
+    let mut state = entity.get_mut::<ScoreboardState>()?;
+    Some(f(&mut state))
+}
+
+/// Decode a packet into scoreboard state; `Some(events)` when the packet
+/// belongs to this domain (login/respawn clear the state and emit nothing),
+/// `None` when another domain owns it.
+pub(crate) fn handle_for(
+    client: &azalea::Client,
+    packet: &ClientboundGamePacket,
+) -> Option<Vec<BotEvent>> {
+    if matches!(
+        packet,
+        ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_)
+    ) {
+        return with_state(client, |state| state.reset_on_login()).map(|_| Vec::new());
+    }
+    with_state(client, |state| handle(state, packet)).flatten()
+}
 
 /// One entry on a [`ScoreBoard`] — the `itemsMap` values (`{name, value}`,
 /// plus the optional custom display name the packet can carry).
@@ -264,7 +327,7 @@ impl Bot {
     /// upstream returns a live view.
     pub fn scoreboards(&self) -> HashMap<String, ScoreBoard> {
         self.client
-            .get_component::<MiscState>()
+            .get_component::<ScoreboardState>()
             .map(|m| m.scoreboards.clone())
             .unwrap_or_default()
     }
@@ -273,7 +336,7 @@ impl Bot {
     /// (`ScoreBoard.positions` upstream; `bot.scoreboard('sidebar')` is
     /// `bot.scoreboard(ScoreboardSlot::Sidebar)` here).
     pub fn scoreboard(&self, slot: ScoreboardSlot) -> Option<ScoreBoard> {
-        let m = self.client.get_component::<MiscState>()?;
+        let m = self.client.get_component::<ScoreboardState>()?;
         let name = m.display_slots.get(&slot)?;
         m.scoreboards.get(name).cloned()
     }
@@ -281,7 +344,7 @@ impl Bot {
     /// `bot.teams` — every known team, keyed by name. A snapshot.
     pub fn teams(&self) -> HashMap<String, Team> {
         self.client
-            .get_component::<MiscState>()
+            .get_component::<ScoreboardState>()
             .map(|m| m.teams.clone())
             .unwrap_or_default()
     }
@@ -289,7 +352,7 @@ impl Bot {
     /// `bot.teamMap` — member name → team, keyed like upstream. A snapshot.
     pub fn team_map(&self) -> HashMap<String, Team> {
         self.client
-            .get_component::<MiscState>()
+            .get_component::<ScoreboardState>()
             .map(|m| {
                 m.team_map
                     .iter()
@@ -304,7 +367,7 @@ impl Bot {
     /// `bot.bossBars` — every active boss bar. A snapshot.
     pub fn boss_bars(&self) -> Vec<BossBar> {
         self.client
-            .get_component::<MiscState>()
+            .get_component::<ScoreboardState>()
             .map(|m| m.boss_bars.values().cloned().collect())
             .unwrap_or_default()
     }
@@ -313,7 +376,7 @@ impl Bot {
 /// Apply one clientbound packet to the scoreboard/team/bossbar state.
 /// Returns the `BotEvent`s to emit, or `None` when the packet isn't ours.
 pub(crate) fn handle(
-    state: &mut MiscState,
+    state: &mut ScoreboardState,
     packet: &ClientboundGamePacket,
 ) -> Option<Vec<BotEvent>> {
     Some(match packet {
@@ -534,7 +597,7 @@ mod tests {
 
     #[test]
     fn objective_lifecycle() {
-        let mut s = MiscState::default();
+        let mut s = ScoreboardState::default();
 
         // add
         let events = handle(
@@ -653,7 +716,7 @@ mod tests {
 
     #[test]
     fn display_slot_previous_board_and_unknown_bind() {
-        let mut s = MiscState::default();
+        let mut s = ScoreboardState::default();
         let objective = |name: &str| {
             ClientboundGamePacket::SetObjective(
                 azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
@@ -700,7 +763,7 @@ mod tests {
 
     #[test]
     fn negative_scores_unwrap_and_sort_last() {
-        let mut s = MiscState::default();
+        let mut s = ScoreboardState::default();
         handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
@@ -742,7 +805,7 @@ mod tests {
 
     #[test]
     fn unknown_objective_update_is_error_event() {
-        let mut s = MiscState::default();
+        let mut s = ScoreboardState::default();
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
@@ -762,7 +825,7 @@ mod tests {
 
     #[test]
     fn team_lifecycle() {
-        let mut s = MiscState::default();
+        let mut s = ScoreboardState::default();
 
         let events = handle(
             &mut s,
@@ -847,7 +910,7 @@ mod tests {
 
     #[test]
     fn boss_bar_lifecycle() {
-        let mut s = MiscState::default();
+        let mut s = ScoreboardState::default();
         // `uuid` isn't in our dep set: build the packet id by decoding one
         // from the wire — AzBuf gives us a `Uuid` without naming the type.
         let id =
@@ -903,5 +966,97 @@ mod tests {
         let events = handle(&mut s, &packet(Operation::Remove)).unwrap();
         assert!(matches!(&events[..], [BotEvent::BossBarDeleted(b)] if b.entity_uuid == id_string));
         assert!(s.boss_bars.is_empty());
+    }
+    /// Login/respawn clear objectives, teams, and the member map — but not
+    /// boss bars, like upstream's `login` handler. The clear belongs to
+    /// the scoreboard domain (it owns the state) and runs through the same
+    /// `handle_for` entry the bridge uses.
+    #[test]
+    fn login_clears_the_domain_state_through_handle_for() {
+        use azalea::{
+            core::game_type::{GameMode, OptionalGameType},
+            protocol::packets::{common::CommonPlayerSpawnInfo, game::c_login::ClientboundLogin},
+        };
+
+        let client = crate::test_util::live_entity_client(());
+        // seed state through the component the domain owns
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(ScoreboardState {
+                scoreboards: [(
+                    "o".to_string(),
+                    ScoreBoard {
+                        name: "o".into(),
+                        title: "t".into(),
+                        items_map: Default::default(),
+                    },
+                )]
+                .into(),
+                display_slots: [(ScoreboardSlot::Sidebar, "o".to_string())].into(),
+                teams: [(
+                    "t".to_string(),
+                    Team {
+                        name: "t".into(),
+                        display_name: "d".into(),
+                        friendly_fire: false,
+                        see_friendly_invisibles: false,
+                        nametag_visibility: NameTagVisibility::Always,
+                        collision_rule: CollisionRule::Always,
+                        color: ChatFormatting::Red,
+                        prefix: "".into(),
+                        suffix: "".into(),
+                        members: Default::default(),
+                    },
+                )]
+                .into(),
+                team_map: [("m".to_string(), "t".to_string())].into(),
+                boss_bars: [(
+                    "b".to_string(),
+                    BossBar {
+                        entity_uuid: "b".into(),
+                        title: "t".into(),
+                        health: 1.0,
+                        dividers: 0,
+                        color: BossBarColor::Purple,
+                        darken_sky: false,
+                        dragon_bar: false,
+                        create_fog: false,
+                    },
+                )]
+                .into(),
+            });
+
+        let login = ClientboundGamePacket::Login(ClientboundLogin {
+            player_id: azalea::core::entity_id::MinecraftEntityId(0),
+            hardcore: false,
+            levels: vec![],
+            max_players: 20,
+            chunk_radius: 2,
+            simulation_distance: 2,
+            reduced_debug_info: false,
+            show_death_screen: true,
+            do_limited_crafting: false,
+            common: CommonPlayerSpawnInfo {
+                dimension_type: azalea::registry::DataRegistry::new_raw(0),
+                dimension: azalea::Identifier::new("minecraft:overworld"),
+                seed: 0,
+                game_type: GameMode::Survival,
+                previous_game_type: OptionalGameType(None),
+                is_debug: false,
+                is_flat: false,
+                last_death_location: None,
+                portal_cooldown: 0,
+                sea_level: 63,
+            },
+            enforces_secure_chat: false,
+        });
+        let events = handle_for(&client, &login);
+        assert!(matches!(&events, Some(v) if v.is_empty()));
+        let state = client.get_component::<ScoreboardState>().unwrap();
+        assert!(state.scoreboards.is_empty() && state.display_slots.is_empty());
+        assert!(state.teams.is_empty() && state.team_map.is_empty());
+        assert_eq!(state.boss_bars.len(), 1, "boss bars survive login");
     }
 }
