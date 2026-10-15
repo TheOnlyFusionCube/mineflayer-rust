@@ -3,3 +3,4 @@ target/
 .live/
 .DS_Store
 .worktrees/
+server.pid
