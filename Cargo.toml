@@ -90,3 +90,32 @@ required-features = ["live"]
 name = "live_plugins"
 path = "tests/live/plugins.rs"
 required-features = ["live"]
+
+# The published azalea-protocol 0.16.0 serializes `ServerboundAttack`'s
+# entity id as a fixed i32 while release MC 26.1 servers read a VarInt, so
+# every `bot.attack()` gets the client kicked ("larger than I expected").
+# Upstream fixed it in commit ddef371 ("fix attack packet was serialized
+# incorrectly (#323)"), which is on the same 0.16.0+mc26.1 release line;
+# no fixed release is published yet.
+[patch.crates-io]
+azalea = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-auth = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-block = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-block-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-brigadier = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-buf = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-buf-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-chat = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-client = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-core = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-crypto = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-entity = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-inventory = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-inventory-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-language = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-physics = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-protocol = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-protocol-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-registry = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-registry-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+azalea-world = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }

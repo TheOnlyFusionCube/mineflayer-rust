@@ -14,7 +14,7 @@ use std::{
 };
 
 use azalea::{
-    FormattedText, chat::ChatPacket,
+    FormattedText, client_chat::ChatPacket,
     protocol::packets::game::s_command_suggestion::ServerboundCommandSuggestion,
 };
 use regex::Regex;

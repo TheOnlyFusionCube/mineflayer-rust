@@ -145,7 +145,7 @@ pub enum BotEvent {
     /// `chat` — a chat packet arrived (raw payload; the derived
     /// `Message`/`MessageStr`/`Whisper`/`ChatPattern` family follows it in
     /// emission order).
-    Chat(azalea::chat::ChatPacket),
+    Chat(azalea::client_chat::ChatPacket),
     /// `physicsTick` — a game tick elapsed while the world was loaded.
     Tick,
     /// Raw clientbound packet escape hatch for APIs azalea doesn't lift
@@ -177,13 +177,13 @@ pub enum BotEvent {
     /// `whisper` — an incoming whisper addressed to the bot
     /// (`ChatPacket::is_whisper` heuristic; upstream derives this event
     /// from its deprecated default chat patterns instead).
-    Whisper(azalea::chat::ChatPacket),
+    Whisper(azalea::client_chat::ChatPacket),
     /// `message` — any incoming message (chat, system, or game_info
     /// position). The upstream `sender` UUID is on the packet
     /// (`sender_uuid()`); upstream's `verified` flag has no azalea analog.
     Message {
         /// The packet the message arrived in.
-        packet: azalea::chat::ChatPacket,
+        packet: azalea::client_chat::ChatPacket,
         /// Where the message was displayed.
         position: MessagePosition,
     },
@@ -196,7 +196,7 @@ pub enum BotEvent {
         /// Where the message was displayed.
         position: MessagePosition,
         /// The packet the message arrived in.
-        packet: azalea::chat::ChatPacket,
+        packet: azalea::client_chat::ChatPacket,
     },
     /// `actionBar` — game_info/overlay text, from mc26's dedicated
     /// `c_set_action_bar_text` packet or an overlay system-chat packet.
@@ -1477,7 +1477,7 @@ mod tests {
         let _ = BotEvent::Error("boom".to_string());
         let _ = BotEvent::Tick;
         let _ = BotEvent::ChunkColumnLoad(ChunkPos::new(0, 0));
-        let _ = |p: azalea::chat::ChatPacket| BotEvent::Chat(p);
+        let _ = |p: azalea::client_chat::ChatPacket| BotEvent::Chat(p);
         let _ = |p: Arc<ClientboundGamePacket>| BotEvent::Packet(p);
         let _ = |i: PlayerInfo| BotEvent::PlayerJoined(i);
     }

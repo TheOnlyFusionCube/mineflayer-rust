@@ -12,7 +12,7 @@ use std::{
 
 use azalea::{
     ClientInformation, Event,
-    chat::ChatPacket,
+    client_chat::ChatPacket,
     player::GameProfileComponent,
     protocol::packets::game::{ClientboundGamePacket, c_system_chat::ClientboundSystemChat},
 };
@@ -920,7 +920,7 @@ mod tests {
             &mut s,
             &qr,
             &client,
-            Event::Chat(azalea::chat::ChatPacket::new("<a> hi")),
+            Event::Chat(azalea::client_chat::ChatPacket::new("<a> hi")),
         );
         assert!(
             matches!(&out[..],
@@ -1014,7 +1014,7 @@ mod tests {
             &mut s,
             &qr,
             &client,
-            Event::Chat(azalea::chat::ChatPacket::new("it worked")),
+            Event::Chat(azalea::client_chat::ChatPacket::new("it worked")),
         );
         assert!(
             out.iter()
