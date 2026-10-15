@@ -36,10 +36,15 @@ use azalea::{
     },
     interact::{BlockStatePredictionHandler, pick::HitResultComponent},
     local_player::WorldHolder,
-    mining::{Mining, MiningQueued, MiningSystems, StopMiningBlockEvent},
+    mining::{
+        MineBlockPos, MineBlockProgressEvent, MineProgress, Mining, MiningQueued, MiningSystems,
+        StopMiningBlockEvent,
+    },
+    packet::game::SendGamePacketEvent,
     physics::{clip::traverse_blocks, collision::BlockWithShape},
     protocol::packets::game::{
         s_interact::InteractionHand,
+        s_player_action::{Action as PlayerAction, ServerboundPlayerAction},
         s_use_item::ServerboundUseItem,
         s_use_item_on::{BlockHit, ServerboundUseItemOn},
     },
@@ -270,6 +275,13 @@ impl InteractShared {
     }
 
     fn mark_aborted_engine_dig(&mut self, pos: BlockPos, seq: u64) {
+        // a stale abort exit (dig A resuming after dig B was stopped) must
+        // not clobber the newer generation's marker: the reconciliation
+        // would discard it as superseded and B's pending start would
+        // escape unguarded
+        if self.dig_seq != seq {
+            return;
+        }
         self.aborted_dig = Some(AbortedEngineDig {
             pos,
             seq,
@@ -325,7 +337,33 @@ pub(crate) fn reconcile_aborted_dig(world: &mut World) {
             world.entity_mut(entity).remove::<MiningQueued>();
         }
         if mining {
-            world.write_message(StopMiningBlockEvent { entity });
+            // azalea's stop handler runs in `Update`, but this pass runs in
+            // `GameTick` ahead of the mining chain: enqueueing the event
+            // alone would let `continue_mining_block` progress (or insta-
+            // finish) the block for the rest of this tick, so the handler's
+            // effects are applied synchronously — same shape as
+            // `handle_stop_mining_block_event`
+            let abort_pos = world.get::<MineBlockPos>(entity).and_then(|pos| pos.0);
+            world.entity_mut(entity).remove::<Mining>();
+            if let Some(mut progress) = world.get_mut::<MineProgress>(entity) {
+                progress.0 = 0.;
+            }
+            if let Some(abort_pos) = abort_pos {
+                world.trigger(SendGamePacketEvent::new(
+                    entity,
+                    ServerboundPlayerAction {
+                        action: PlayerAction::AbortDestroyBlock,
+                        pos: abort_pos,
+                        direction: Direction::Down,
+                        seq: 0,
+                    },
+                ));
+            }
+            world.write_message(MineBlockProgressEvent {
+                entity,
+                position: abort_pos.unwrap_or(target),
+                destroy_stage: None,
+            });
         }
         let Some(mut shared) = world.get_mut::<InteractShared>(entity) else {
             continue;
@@ -1408,6 +1446,7 @@ mod tests {
     fn aborted_world(aborted: Option<AbortedEngineDig>, dig_seq: u64) -> (World, Entity) {
         let mut world = World::new();
         world.init_resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>();
+        world.init_resource::<bevy_ecs::message::Messages<MineBlockProgressEvent>>();
         let entity = world
             .spawn(InteractShared {
                 dig_seq,
@@ -1455,33 +1494,76 @@ mod tests {
         assert_eq!(messages.len(), 0);
     }
 
-    /// A live `Mining` at the aborted position gets the engine stop.
+    /// A live `Mining` at the aborted position is retired by the pass
+    /// itself — Mining removed, progress reset, the abort packet sent —
+    /// before the mining chain below can progress (or insta-finish) it in
+    /// the same tick (azalea's own stop handler runs a schedule later).
     #[test]
-    fn reconcile_stops_live_mining_for_the_aborted_generation() {
-        use azalea::mining::Mining;
+    fn reconcile_retires_live_mining_in_span() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use azalea::ecs::observer::On;
 
         let pos = BlockPos::new(4, 64, 5);
         let (mut world, entity) = aborted_world(aborted_marker(pos, 3), 3);
-        world.entity_mut(entity).insert(Mining {
-            pos,
-            dir: Direction::Down,
-            force: true,
+        world.entity_mut(entity).insert((
+            Mining {
+                pos,
+                dir: Direction::Down,
+                force: true,
+            },
+            MineProgress(0.4),
+            MineBlockPos(Some(pos)),
+        ));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let counter = aborts.clone();
+        world.add_observer(move |_: On<SendGamePacketEvent>| {
+            counter.fetch_add(1, Ordering::SeqCst);
         });
         reconcile_aborted_dig(&mut world);
+        assert!(
+            world.get::<Mining>(entity).is_none(),
+            "Mining survived the pass"
+        );
+        assert_eq!(world.get::<MineProgress>(entity).unwrap().0, 0.);
+        assert_eq!(aborts.load(Ordering::SeqCst), 1);
         assert_eq!(
             world
-                .resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>()
+                .resource::<bevy_ecs::message::Messages<MineBlockProgressEvent>>()
                 .len(),
             1
         );
         // a second run is quiet: the marker is gone and nothing new fires
         reconcile_aborted_dig(&mut world);
+        assert_eq!(aborts.load(Ordering::SeqCst), 1);
         assert_eq!(
             world
-                .resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>()
+                .resource::<bevy_ecs::message::Messages<MineBlockProgressEvent>>()
                 .len(),
             1
         );
+    }
+
+    /// A stale abort exit (dig A resuming after dig B was stopped) must not
+    /// clobber the newer generation's marker.
+    #[test]
+    fn marker_publication_yields_to_a_newer_generation() {
+        let pos_a = BlockPos::new(1, 64, 1);
+        let pos_b = BlockPos::new(2, 64, 2);
+        let mut shared = InteractShared {
+            dig_seq: 2,
+            aborted_dig: aborted_marker(pos_b, 2),
+            ..Default::default()
+        };
+        shared.mark_aborted_engine_dig(pos_a, 1);
+        assert_eq!(shared.aborted_dig.map(|a| a.pos), Some(pos_b));
+        assert_eq!(shared.aborted_dig.map(|a| a.seq), Some(2));
+        // the owning generation re-marks freely
+        shared.mark_aborted_engine_dig(pos_a, 2);
+        assert_eq!(shared.aborted_dig.map(|a| a.pos), Some(pos_a));
     }
 
     /// A newer generation owns the position: its engine state must survive,
