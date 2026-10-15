@@ -277,12 +277,6 @@ async fn collect_tool_pvp() {
     // Logs are preferred (they feed the tool phase); ask for 2 so the
     // count loop iterates and one log can restore the hole.
     // ----------------------------------------------------------------
-    let mut collect_tap = tap(&bot, |e| {
-        matches!(
-            e,
-            BotEvent::CollectBlockFound(_) | BotEvent::Collected(_) | BotEvent::CollectDone { .. }
-        )
-    });
     let (collected_kind, collected, mut collect_tap) = 'kinds: {
         for kind in LOGS.iter().chain(FALLBACK_DIGGABLE.iter()) {
             // logs first ask for 2 (exercise the count loop), then 1 — a

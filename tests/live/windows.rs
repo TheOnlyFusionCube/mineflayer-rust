@@ -129,8 +129,7 @@ async fn typed_window_openers_and_guards() {
     // the block check like upstream's assert order
     let err = bot
         .set_command_block(feet, "say hi", CommandBlockOpts::default())
-        .err()
-        .expect("survival bot cannot set command blocks");
+        .expect_err("survival bot cannot set command blocks");
     eprintln!("set_command_block(survival): {err}");
 
     // writeBook guards: slot range first, then "no book found"
@@ -144,14 +143,12 @@ async fn typed_window_openers_and_guards() {
     let err = bot
         .write_book(empty_slot as i32, vec!["x".into()])
         .await
-        .err()
-        .expect("empty slot has no book");
+        .expect_err("empty slot has no book");
     eprintln!("write_book(empty slot): {err}");
     let err = bot
         .sign_book(empty_slot as i32, vec!["x".into()], "u9bot", "t")
         .await
-        .err()
-        .expect("empty slot has no book to sign");
+        .expect_err("empty slot has no book to sign");
     eprintln!("sign_book(empty slot): {err}");
 
     // ---- openers on the wrong block: the window never opens ----

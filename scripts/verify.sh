@@ -23,6 +23,9 @@ run_step() {
 
 run_step "fmt"    cargo fmt --check
 run_step "clippy" cargo clippy --all-targets -- -D warnings
+# the live tests compile only with the feature; lint them too (their
+# warnings otherwise stay invisible to this gate)
+run_step "clippy (live)" cargo clippy --features live --all-targets -- -D warnings
 run_step "test"   cargo test
 run_step "build"  cargo build
 
