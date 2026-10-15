@@ -1068,13 +1068,19 @@ fn decode_packet(
             {
                 let mut state = state.write().unwrap();
                 state.game_time = p.game_time;
-                client.with_registry_holder(|registries| {
-                    for (clock, clock_state) in &p.clock_updates {
-                        if let Some(key) = clock.key_owned(registries) {
-                            state.clocks.insert(key.into_ident(), clock_state.clone());
+                // `with_registry_holder` panics when the local player has
+                // been torn down (it reaches `Client::world` internally) —
+                // a `set_time` racing a disconnect must not take the client
+                // thread down with it
+                if client.get_component::<WorldHolder>().is_some() {
+                    client.with_registry_holder(|registries| {
+                        for (clock, clock_state) in &p.clock_updates {
+                            if let Some(key) = clock.key_owned(registries) {
+                                state.clocks.insert(key.into_ident(), clock_state.clone());
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
             vec![BotEvent::Time]
         }

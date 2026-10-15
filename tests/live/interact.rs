@@ -30,7 +30,8 @@ use azalea::{
     registry::builtin::{BlockKind, EntityKind},
 };
 use mineflayer::{
-    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, entity::EntityExt,
+    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, Goal,
+    entity::EntityExt,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
@@ -56,45 +57,72 @@ async fn wait_for(
 }
 
 /// Point the held item at the first non-empty hotbar slot; false while the
-/// inventory is still empty (the drop hasn't been picked up yet).
+/// True once the player holds any item anywhere in the player slots (a
+/// fresh player's first pickup lands in the main inventory, not the
+/// hotbar); equips it when it is in the hotbar so callers can use it.
 fn select_any_item(bot: &Bot) -> bool {
-    let slot = bot.client().get_component::<Inventory>().and_then(|inv| {
+    // resolve the slot under the Inventory read guard, then drop it before
+    // any write-taking call (`set_selected_hotbar_slot` needs the ECS write
+    // lock; holding the guard across it deadlocks)
+    let found = {
+        let Some(inv) = bot.client().get_component::<Inventory>() else {
+            return false;
+        };
         let menu = inv.menu();
-        let range = menu.hotbar_slots_range();
-        range
+        let hotbar = menu.hotbar_slots_range();
+        let player = menu.player_slots_range();
+        player
             .clone()
             .find(|&i| menu.slot(i).is_some_and(|s| s.is_present()))
-            .map(|i| (i - range.start()) as u8)
-    });
-    match slot {
-        Some(i) => {
-            bot.client().set_selected_hotbar_slot(i);
-            true
-        }
-        None => false,
+            .map(|slot| (slot, hotbar))
+    };
+    let Some((slot, hotbar)) = found else {
+        return false;
+    };
+    if hotbar.contains(&slot) {
+        bot.client()
+            .set_selected_hotbar_slot((slot - hotbar.start()) as u8);
     }
+    true
 }
 
 /// Walk toward the nearest `item` entity (the dug block's drop can scatter
 /// a block or two) until something lands in the hotbar.
 async fn collect_drop(bot: &Bot, timeout: Duration) -> bool {
-    let until = std::time::Instant::now() + timeout;
+    let started = std::time::Instant::now();
+    let until = started + timeout;
     let mut walking = false;
     while std::time::Instant::now() < until {
         if select_any_item(bot) {
             break;
         }
-        if let Some(drop) = bot.nearest_entity(|e| {
-            e.get_component::<EntityKindComponent>()
-                .is_some_and(|k| k.0 == EntityKind::Item)
-        }) && let Some(pos) = drop.get_component::<Position>().map(|p| **p)
-        {
-            if !walking {
-                bot.set_control_state(Control::Forward, true);
-                bot.set_control_state(Control::Jump, true);
-                walking = true;
-            }
-            bot.client().look_at(pos);
+        // walk toward the drop's item entity when it is tracked; the drop
+        // can also be underneath us without a visible entity, so fall back
+        // to the bot's own feet position (the dug cell is where we stand)
+        let target = bot
+            .nearest_entity(|e| {
+                e.get_component::<EntityKindComponent>()
+                    .is_some_and(|k| k.0 == EntityKind::Item)
+            })
+            .and_then(|e| e.get_component::<Position>().map(|p| **p))
+            .or_else(|| {
+                let feet = bot.position();
+                Some(azalea::Vec3::new(feet.x, feet.y + 0.5, feet.z))
+            });
+        if target.is_some() && !walking {
+            bot.set_control_state(Control::Forward, true);
+            bot.set_control_state(Control::Jump, true);
+            walking = true;
+        }
+        // wiggle the look so forward isn't pinned into a wall
+        if let Some(pos) = target {
+            let turn = (started.elapsed().as_millis() / 300) % 2 == 1;
+            let aim = if turn {
+                azalea::Vec3::new(pos.x + 1.5, pos.y, pos.z)
+            } else {
+                pos
+            };
+            bot.client().look_at(aim);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -128,6 +156,7 @@ async fn dig_place_activate_stop() {
         .await
         .expect("chunks never loaded");
 
+    eprintln!("[phase] dig target selection");
     // ---- dig a block in reach ---------------------------------------------
     // A leaf below spawn is diggable but might drop nothing. Prefer common
     // ground blocks that always drop without a tool; keep the nearby search
@@ -144,6 +173,11 @@ async fn dig_place_activate_stop() {
         y: feet.y - 1,
         z: feet.z,
     };
+    // A fresh-seed spawn can sit on a forest canopy: dig straight down
+    // through non-droppers (leaves, logs) until the cell underfoot is a
+    // tool-free dropper, then that cell is the dig target. Mirrors
+    // examples/digger's column descent and keeps the drop within pickup
+    // reach — the bot falls onto it.
     let droppers = [
         BlockKind::Dirt,
         BlockKind::GrassBlock,
@@ -151,24 +185,60 @@ async fn dig_place_activate_stop() {
         BlockKind::Sand,
         BlockKind::Gravel,
     ];
-    let below_pos =
-        std::iter::once(underfoot)
-            .chain(droppers.into_iter().flat_map(|kind| {
-                bot.find_blocks(FindBlocksOpts::new(kind).max_distance(4.5).count(2))
-            }))
-            .find(|pos| {
-                bot.block_at(*pos)
-                    .is_some_and(|b| droppers.contains(&b.kind()) && bot.can_dig_block(&b))
-            })
-            .expect("no tool-free dropping block in reach of spawn");
+    let mut below_pos = None;
+    for attempt in 0..80 {
+        let feet = bot.position().to_block_pos_floor();
+        let under = BlockPos {
+            x: feet.x,
+            y: feet.y - 1,
+            z: feet.z,
+        };
+        eprintln!("[descent {attempt}] feet={feet:?} under={under:?}");
+        let Some(b) = bot.block_at(under) else {
+            // chunks under us aren't loaded yet — let the fall settle
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
+        if b.state.is_air() || !bot.can_dig_block(&b) {
+            // mid-fall through a canopy gap, or the cell is out of reach
+            // until the bot lands — keep waiting
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            continue;
+        }
+        if droppers.contains(&b.kind()) {
+            below_pos = Some(under);
+            break;
+        }
+        if !b.diggable() {
+            break;
+        }
+        bot.dig(&b).await.expect("descent dig failed");
+        for _ in 0..30 {
+            if bot.block_at(under).is_some_and(|b| b.state.is_air()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // let the fall into the hole land before the next layer
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    let below_pos = below_pos.expect("no tool-free dropping block under the spawn column");
     let below = bot.block_at(below_pos).expect("dig target unloaded");
     assert!(bot.can_dig_block(&below), "dig target out of reach");
-
+    eprintln!(
+        "[main dig] at {below_pos:?} kind={} pos={:?}",
+        below.name(),
+        bot.position()
+    );
+    let t0 = std::time::Instant::now();
     bot.dig(&below).await.expect("dig failed");
+    eprintln!("[main dig] done after {:?}", t0.elapsed());
+    // match the target position: the descent's digs left DiggingCompleted
+    // events in the stream
     match wait_for(
         &mut rx,
         Duration::from_secs(5),
-        |e| matches!(e, BotEvent::DiggingCompleted(_)),
+        |e| matches!(e, BotEvent::DiggingCompleted(b) if b.pos == below_pos),
         "diggingCompleted",
     )
     .await
@@ -186,13 +256,15 @@ async fn dig_place_activate_stop() {
 
     // the bot fell into the hole; sweep up the drop (it can scatter out of
     // the hole cell)
-    let collected = collect_drop(&bot, Duration::from_secs(6)).await;
+    let collected = collect_drop(&bot, Duration::from_secs(8)).await;
     assert!(
         collected,
-        "{} at {below_pos:?} dropped no picked-up item",
-        below.name()
+        "{} at {below_pos:?} dropped no picked-up item (bot at {:?})",
+        below.name(),
+        bot.position()
     );
 
+    eprintln!("[phase] stop_digging mid-dig");
     // ---- stop_digging mid-dig ---------------------------------------------
     // pick the slowest-digging block in reach so the abort always lands
     // mid-dig; aborting leaves the block intact so nothing needs restoring
@@ -202,29 +274,42 @@ async fn dig_place_activate_stop() {
         y: feet2.y - 1,
         z: feet2.z,
     };
-    let mut candidates = vec![below2_pos];
-    for kind in [
-        BlockKind::Obsidian,
-        BlockKind::Deepslate,
-        BlockKind::Stone,
-        BlockKind::Cobblestone,
-        BlockKind::Sandstone,
-        BlockKind::StoneBricks,
-        BlockKind::EndStone,
-    ] {
-        candidates.extend(bot.find_blocks(FindBlocksOpts::new(kind).max_distance(4.).count(2)));
+    // the hole we are standing in can briefly have no loaded/reachable
+    // neighbours; rescan a few times before giving up
+    let mut found = None;
+    for _ in 0..6 {
+        let mut candidates = vec![below2_pos];
+        for kind in [
+            BlockKind::Obsidian,
+            BlockKind::Deepslate,
+            BlockKind::Stone,
+            BlockKind::Cobblestone,
+            BlockKind::Sandstone,
+            BlockKind::StoneBricks,
+            BlockKind::EndStone,
+            BlockKind::Dirt,
+            BlockKind::GrassBlock,
+            BlockKind::Gravel,
+            BlockKind::Sand,
+        ] {
+            candidates.extend(bot.find_blocks(FindBlocksOpts::new(kind).max_distance(4.).count(2)));
+        }
+        found = candidates
+            .iter()
+            .filter_map(|&p| {
+                let b = bot.block_at(p)?;
+                b.diggable()
+                    .then(|| bot.dig_time(&b))
+                    .flatten()
+                    .map(|t| (p, t))
+            })
+            .max_by_key(|(_, t)| *t);
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
-    let (abort_pos, abort_dig_time) = candidates
-        .iter()
-        .filter_map(|&p| {
-            let b = bot.block_at(p)?;
-            b.diggable()
-                .then(|| bot.dig_time(&b))
-                .flatten()
-                .map(|t| (p, t))
-        })
-        .max_by_key(|(_, t)| *t)
-        .expect("no diggable block in reach for the abort test");
+    let (abort_pos, abort_dig_time) = found.expect("no diggable block in reach for the abort test");
     assert!(
         abort_dig_time >= Duration::from_millis(600),
         "nothing slow enough to abort-dig (best {abort_dig_time:?} at {abort_pos})"
@@ -276,6 +361,7 @@ async fn dig_place_activate_stop() {
         "aborted dig still broke the block"
     );
 
+    eprintln!("[phase] hop out of hole");
     // ---- hop out of the first hole ----------------------------------------
     // face the original ground level and auto-jump out
     bot.client().look_at(Vec3::new(
@@ -297,6 +383,7 @@ async fn dig_place_activate_stop() {
     bot.set_control_state(Control::Jump, false);
     assert!(out, "bot couldn't climb out of the hole");
 
+    eprintln!("[phase] place drop back");
     // ---- place the drop back into the hole --------------------------------
     // reference = a solid side-wall of the hole, face pointing into it so
     // `dest` is the empty hole cell itself.
@@ -375,6 +462,7 @@ async fn dig_place_activate_stop() {
         "block_at doesn't see the placed block"
     );
 
+    eprintln!("[phase] activate_block");
     // ---- activate_block ----------------------------------------------------
     // right-click the block we just placed (no item / nothing happens
     // server-side — the use_item_on wire path is what we're exercising)
