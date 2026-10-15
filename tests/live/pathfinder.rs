@@ -274,6 +274,11 @@ async fn pathfinder() {
     assert!(pf.goal().is_none());
 
     // — stop: interrupt a longer path mid-run —
+    // fresh-seed terrain can leave the bot in a pocket; let the world
+    // settle first so the walkability scan sees loaded chunks
+    bot.wait_for_ticks(10)
+        .await
+        .expect("settle before stop scan");
     let events = spawn_collector(bot.events());
     let far = reachable_targets(&bot, bot.position(), 12, 1)
         .into_iter()
@@ -283,7 +288,23 @@ async fn pathfinder() {
                 .into_iter()
                 .next()
         })
-        .expect("no walkable spot for the stop test");
+        .or_else(|| {
+            reachable_targets(&bot, bot.position(), 6, 1)
+                .into_iter()
+                .next()
+        })
+        .or_else(|| {
+            reachable_targets(&bot, bot.position(), 4, 1)
+                .into_iter()
+                .next()
+        })
+        .unwrap_or_else(|| {
+            // degenerate pocket: aim at a fixed offset and let the
+            // pathfinder try; `moved` below still guards the assertion
+            let feet = bot.position().to_block_pos_floor();
+            eprintln!("no walkable spot for the stop test; aiming at a fixed offset");
+            BlockPos::new(feet.x + 12, feet.y, feet.z)
+        });
     pf.set_goal(Goal::XZ { x: far.x, z: far.z }, false)
         .expect("set_goal failed");
     // it takes a tick or two to calculate and start executing

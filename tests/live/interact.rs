@@ -91,38 +91,57 @@ async fn collect_drop(bot: &Bot, timeout: Duration) -> bool {
     let started = std::time::Instant::now();
     let until = started + timeout;
     let mut walking = false;
+    // let the server's break + item spawn land first
+    bot.wait_for_ticks(3)
+        .await
+        .expect("settle before the drop sweep");
     while std::time::Instant::now() < until {
         if select_any_item(bot) {
             break;
         }
-        // walk toward the drop's item entity when it is tracked; the drop
-        // can also be underneath us without a visible entity, so fall back
-        // to the bot's own feet position (the dug cell is where we stand)
-        let target = bot
+        // walk toward a drop's item entity only when it is close (ours);
+        // the dug block's drop may also be under us without a visible
+        // entity, so otherwise stand still on the dug cell — chasing a
+        // distant stale item would climb the bot away from the real drop
+        let here = bot.position();
+        if started.elapsed().as_millis() % 1000 < 100 {
+            let items: Vec<String> = bot
+                .entities()
+                .into_values()
+                .filter(|e| {
+                    e.get_component::<EntityKindComponent>()
+                        .is_some_and(|k| k.0 == EntityKind::Item)
+                })
+                .filter_map(|e| e.get_component::<Position>().map(|p| **p))
+                .filter(|p| (p.x - here.x).hypot(p.z - here.z) < 8.0)
+                .map(|p| format!("({:.1},{:.1},{:.1})", p.x, p.y, p.z))
+                .collect();
+            eprintln!(
+                "[collect {:?}] bot={:?} items_near={items:?}",
+                started.elapsed(),
+                here
+            );
+        }
+        let nearby = bot
             .nearest_entity(|e| {
                 e.get_component::<EntityKindComponent>()
                     .is_some_and(|k| k.0 == EntityKind::Item)
             })
             .and_then(|e| e.get_component::<Position>().map(|p| **p))
-            .or_else(|| {
-                let feet = bot.position();
-                Some(azalea::Vec3::new(feet.x, feet.y + 0.5, feet.z))
-            });
-        if target.is_some() && !walking {
+            .filter(|p| (p.x - here.x).hypot(p.z - here.z) < 4.0);
+        // walk straight at the tracked drop (or straight down through our
+        // own cell when it isn't tracked yet) with a steady aim — forward
+        // off the edge drops into the hole; jumping or wiggling the aim
+        // just bounces the bot on the rim of a one-wide hole
+        let close = nearby.is_some_and(|p| (p.x - here.x).hypot(p.z - here.z) < 2.5);
+        let target = nearby.unwrap_or(azalea::Vec3::new(here.x, here.y - 2.0, here.z));
+        if !walking {
             bot.set_control_state(Control::Forward, true);
-            bot.set_control_state(Control::Jump, true);
             walking = true;
         }
-        // wiggle the look so forward isn't pinned into a wall
-        if let Some(pos) = target {
-            let turn = (started.elapsed().as_millis() / 300) % 2 == 1;
-            let aim = if turn {
-                azalea::Vec3::new(pos.x + 1.5, pos.y, pos.z)
-            } else {
-                pos
-            };
-            bot.client().look_at(aim);
-        }
+        // hop only while the drop is still a walk away (crossing terrain)
+        bot.set_control_state(Control::Jump, !close);
+        bot.client().look_at(target);
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     if walking {
