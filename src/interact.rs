@@ -406,13 +406,15 @@ impl Bot {
             .filter(|b| b.block_pos == pos)
             .map(|b| b.direction)
             .unwrap_or(Direction::Down);
-        self.client.start_mining(pos);
+        // store the target before the wire call: a `stop_digging` landing
+        // between the two must still see the dig in flight
         {
             let mut ecs = self.client.ecs.write();
             if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
                 shared.dig_target = Some((pos, target_face, my_seq));
             }
         }
+        self.client.start_mining(pos);
 
         let outcome = self
             .dig_wait(
@@ -422,6 +424,14 @@ impl Bot {
             )
             .await;
 
+        // an aborted dig must not leave the engine mining: `start_mining`
+        // is an enqueued message azalea may process after an early
+        // `stop_digging` return, and a timed-out dig is still mining at
+        // this point — retire any engine operation still aimed at `pos`
+        // before hiding the target
+        if matches!(outcome, DigExit::Aborted(_)) {
+            self.retire_engine_dig(pos, my_seq).await;
+        }
         self.settle_dig(pos, my_seq);
         match outcome {
             DigExit::Done => {
@@ -444,6 +454,50 @@ impl Bot {
                 Err(Error::Operation(DIG_ABORTED.to_string()))
             }
             DigExit::Disconnected => Err(Error::NotConnected),
+        }
+    }
+
+    /// Retire any engine mining still aimed at `pos` for the aborted
+    /// generation `my_seq`: drop a materialized `MiningQueued` and send the
+    /// engine's stop for a live `Mining`. Polls briefly because azalea may
+    /// process the dig's `StartMiningBlockEvent` *after* `stop_digging`
+    /// returned (the start is an enqueued message), and bails the moment a
+    /// newer dig owns the generation so it can never cancel a replacement.
+    async fn retire_engine_dig(&self, pos: BlockPos, my_seq: u64) {
+        let entity = self.client.entity;
+        for _ in 0..4 {
+            let (queued, mining) = {
+                let ecs = self.client.ecs.read();
+                if ecs
+                    .get::<InteractShared>(entity)
+                    .is_some_and(|s| s.dig_seq != my_seq)
+                {
+                    return;
+                }
+                (
+                    ecs.get::<MiningQueued>(entity).map(|q| q.position) == Some(pos),
+                    ecs.get::<Mining>(entity).map(|m| m.pos) == Some(pos),
+                )
+            };
+            if !queued && !mining {
+                return;
+            }
+            {
+                let mut ecs = self.client.ecs.write();
+                if queued {
+                    ecs.entity_mut(entity).remove::<MiningQueued>();
+                }
+                if mining {
+                    // a second stop for the same cell is a wire-level no-op
+                    // on the server; duplicates only occur if `stop_digging`
+                    // already sent one and azalea has not processed it yet
+                    ecs.write_message(StopMiningBlockEvent { entity });
+                }
+            }
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(200), async {
+                self.wait_for_ticks(1).await.ok();
+            })
+            .await;
         }
     }
 
@@ -573,18 +627,21 @@ impl Bot {
     pub fn stop_digging(&self) {
         let entity = self.client.entity;
         let mut ecs = self.client.ecs.write();
+        let mining = ecs.get::<Mining>(entity).is_some();
+        let queued = ecs.get::<MiningQueued>(entity).is_some();
         {
             let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) else {
                 return;
             };
-            if shared.dig_target.is_none() {
+            // upstream `if (!targetDigBlock) return` — but engine state
+            // outlives the target (a timed-out dig), and that must stay
+            // stoppable: only a fully idle stop is a no-op
+            if shared.dig_target.is_none() && !mining && !queued {
                 return;
             }
             shared.abort_current();
             shared.dig_target = None;
         }
-        let mining = ecs.get::<Mining>(entity).is_some();
-        let queued = ecs.get::<MiningQueued>(entity).is_some();
         if !mining && !queued {
             return;
         }
@@ -1172,6 +1229,70 @@ mod tests {
         let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
         assert_eq!(shared.aborted_seq, 0);
         assert!(shared.last_dig_time.is_none());
+    }
+
+    /// A stop must still reach engine state that outlived the target (a
+    /// timed-out dig): with no target but a live `MiningQueued`, the stop
+    /// is not a no-op and drops the queued mine.
+    #[tokio::test]
+    async fn stop_digging_reaches_engine_leftovers_without_a_target() {
+        use azalea::mining::MiningQueued;
+
+        let client = crate::test_util::live_entity_client((
+            InteractShared::default(),
+            MiningQueued {
+                position: BlockPos::new(1, 64, 2),
+                direction: Direction::Down,
+                force: true,
+            },
+        ));
+        let bot = crate::Bot::new(client);
+        bot.stop_digging();
+        let ecs = bot.client().ecs.read();
+        assert!(
+            ecs.get::<MiningQueued>(bot.client().entity).is_none(),
+            "stop left the queued engine mine behind"
+        );
+    }
+
+    /// `retire_engine_dig` cancels a materialized queued mine for the
+    /// aborted generation and bails once a newer dig owns it.
+    #[tokio::test]
+    async fn retire_engine_dig_clears_only_the_owning_generation() {
+        use azalea::mining::MiningQueued;
+
+        let pos = BlockPos::new(3, 64, 4);
+        let queued = MiningQueued {
+            position: pos,
+            direction: Direction::Down,
+            force: true,
+        };
+        let client = crate::test_util::tick_client((
+            InteractShared {
+                dig_seq: 1,
+                ..Default::default()
+            },
+            queued.clone(),
+        ));
+        let (bot, _shutdown) = crate::test_util::bot_with_shutdown(client);
+        bot.retire_engine_dig(pos, 1).await;
+        {
+            let ecs = bot.client().ecs.read();
+            assert!(ecs.get::<MiningQueued>(bot.client().entity).is_none());
+        }
+
+        // a newer dig owns the generation: the queued mine must survive
+        let client = crate::test_util::tick_client((
+            InteractShared {
+                dig_seq: 2,
+                ..Default::default()
+            },
+            queued,
+        ));
+        let (bot, _shutdown) = crate::test_util::bot_with_shutdown(client);
+        bot.retire_engine_dig(pos, 1).await;
+        let ecs = bot.client().ecs.read();
+        assert!(ecs.get::<MiningQueued>(bot.client().entity).is_some());
     }
 
     /// The in-flight dig's target is owned by the port; `stopDigging`
