@@ -30,6 +30,7 @@ Output contract requested from the model:
 import argparse
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -80,16 +81,69 @@ def log(msg):
 
 def parse_brief(path):
     text = open(path).read()
-    files = []
+    files, writable = [], []
     section = None
     for line in text.splitlines():
         if line.startswith("## "):
             section = line[3:].strip().lower()
             continue
         m = re.match(r"^-\s+([A-Za-z0-9_./-]+)\s*$", line.strip())
-        if m and section == "context files":
+        if not m:
+            continue
+        if section == "context files":
             files.append(m.group(1))
-    return text, files
+        elif section == "writable":
+            writable.append(m.group(1))
+    return text, files, writable
+
+
+def safe_repo_path(rel, writable):
+    """Validate a model-provided repo-relative path: it must match the
+    writable allowlist, be one of the brief's declared wheelhouse files,
+    resolve inside the working tree, and contain no traversal parts."""
+    if not WRITABLE_RE.match(rel) or ".." in pathlib.PurePosixPath(rel).parts:
+        return None
+    if rel not in writable:
+        return None
+    target = (pathlib.Path(ROOT) / rel).resolve()
+    root = pathlib.Path(ROOT).resolve()
+    if not target.is_file() or root not in target.parents:
+        return None
+    return rel
+
+
+def strict_patch(rel, diff):
+    """Rebuild a single-file patch for `rel`: validate every file header a
+    model may have emitted (they must all name `rel`) and replace them with
+    synthesized headers, so a block labelled with one path cannot patch
+    another (the runner rebuilds and reads the tree it verifies)."""
+    lines = diff.splitlines()
+    try:
+        first_hunk = next(i for i, l in enumerate(lines) if l.startswith("@@"))
+    except StopIteration:
+        return None
+    header, body = lines[:first_hunk], lines[first_hunk:]
+    for line in header:
+        m = re.match(r"^diff --git a/(\S+) b/(\S+)$", line)
+        if m:
+            if m.group(1) != rel or m.group(2) != rel:
+                return None
+            continue
+        m = re.match(r"^(?:---|\+\+\+) (?:(?:a|b)/)?(\S.*)$", line)
+        if m:
+            if m.group(1).strip() != rel:
+                return None
+            continue
+        if line.strip() not in ("", "index", "new file mode", "deleted file mode"):
+            # unknown header junk is tolerated only when it carries no path
+            # we cannot check (`index abc..def` hashes are fine)
+            if not line.startswith("index "):
+                return None
+    # a smuggled `diff --git` section can only appear at hunk level; hunk
+    # content lines always start with ` `, `+`, `-`, `@@` or `\`
+    if any(l.startswith("diff --git ") for l in body):
+        return None
+    return f"--- a/{rel}\n+++ b/{rel}\n" + "\n".join(body) + "\n"
 
 
 def call_model(user_content, timeout):
@@ -145,7 +199,7 @@ def main():
 
     os.makedirs(STATE, exist_ok=True)
     unit = os.path.splitext(os.path.basename(args.brief))[0]
-    brief_text, context_files = parse_brief(args.brief)
+    brief_text, context_files, writable = parse_brief(args.brief)
 
     parts = [brief_text, "\n## Context Files (verbatim)\n"]
     for rel in context_files:
@@ -172,20 +226,31 @@ def main():
         log(f"[{unit}] no change blocks returned; nothing to apply")
         return
 
-    for rel, diff in patches.items():
-        if not WRITABLE_RE.match(rel) or not os.path.exists(os.path.join(ROOT, rel)):
-            log(f"[{unit}] refusing path: {rel}")
+    # validate every block before writing any of them
+    for rel in list(files) + list(patches):
+        if safe_repo_path(rel, writable) is None:
+            log(f"[{unit}] refusing path (not writable/contained): {rel}")
             sys.exit(3)
-        # models often emit bare hunks (`@@ ... @@`) — synthesize the
-        # file headers `git apply` needs when they are missing
-        diff_text = diff
-        if not re.match(r"^\s*(diff --git|--- )", diff_text):
-            diff_text = f"--- a/{rel}\n+++ b/{rel}\n{diff_text}"
+
+    for rel, diff in patches.items():
+        diff_text = strict_patch(rel, diff)
+        if diff_text is None:
+            log(f"[{unit}] refusing patch for {rel}: headers name another file or no hunks")
+            sys.exit(3)
         tmp = os.path.join(STATE, f"{unit}-{rel.replace('/', '_')}.patch")
         with open(tmp, "w") as f:
-            f.write(diff_text + "\n")
+            f.write(diff_text)
         r = subprocess.run(
-            ["git", "apply", "--whitespace=nowarn", "--recount", tmp],
+            [
+                "git",
+                "apply",
+                "--whitespace=nowarn",
+                "--recount",
+                # belt and braces: even a smuggled section cannot write
+                # outside the validated path
+                f"--include={rel}",
+                tmp,
+            ],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -196,9 +261,6 @@ def main():
         log(f"[{unit}] patched {rel} ({len(diff)} chars)")
 
     for rel, content in files.items():
-        if not WRITABLE_RE.match(rel) or not os.path.exists(os.path.join(ROOT, rel)):
-            log(f"[{unit}] refusing path: {rel}")
-            sys.exit(3)
         with open(os.path.join(ROOT, rel), "w") as f:
             f.write(content)
         log(f"[{unit}] wrote {rel} ({len(content)} chars)")
