@@ -215,9 +215,15 @@ impl Block {
         }
     }
 
-    /// `block.diggable` — false for bedrock-like indestructible blocks.
+    /// `block.diggable` — the prismarine `diggable` flag: false for
+    /// bedrock-like blocks (`hardness < 0`) and the air kinds (hardness 0
+    /// but flagged undiggable in the data); fluids stay diggable like
+    /// upstream.
     pub fn diggable(&self) -> bool {
-        self.behavior().destroy_time >= 0.
+        !matches!(
+            self.kind(),
+            BlockKind::Air | BlockKind::VoidAir | BlockKind::CaveAir
+        ) && self.behavior().destroy_time >= 0.
     }
 
     /// `block.material`/`block.harvestTools` backing data — azalea's
@@ -1219,6 +1225,21 @@ mod tests {
 
     fn stone() -> BlockState {
         BlockState::from(BlockKind::Stone)
+    }
+
+    /// prismarine's `diggable` flag: the air kinds are undiggable despite
+    /// hardness 0; bedrock-like blocks are undiggable; fluids stay
+    /// diggable like upstream's data.
+    #[test]
+    fn diggable_matches_the_prismarine_flag() {
+        let client = crate::test_util::despawned_client();
+        let block = |kind| Block::new(&client, BlockPos::new(0, 64, 0), BlockState::from(kind));
+        for kind in [BlockKind::Air, BlockKind::VoidAir, BlockKind::CaveAir] {
+            assert!(!block(kind).diggable(), "{kind:?} must not be diggable");
+        }
+        for kind in [BlockKind::Stone, BlockKind::Water, BlockKind::ShortGrass] {
+            assert!(block(kind).diggable(), "{kind:?} must be diggable");
+        }
     }
 
     /// A 3×3-chunk `World` for tests. Returns the `PartialChunkStorage`
