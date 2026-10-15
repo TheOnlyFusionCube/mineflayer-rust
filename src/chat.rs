@@ -217,7 +217,7 @@ impl ChatMessage {
 
     /// `ChatMessage.fromNotch(str)` — parse a legacy `§`-coded string.
     pub fn from_notch(text: &str) -> Self {
-        Self::new(azalea_chat::text_component::legacy_color_code_to_text_component(text))
+        Self::new(azalea::chat::text_component::legacy_color_code_to_text_component(text))
     }
 
     /// `msg.toAnsi()` — the plain-text render with ANSI style escapes.
@@ -248,7 +248,7 @@ impl ChatMessage {
     }
 
     /// `msg.with` — the translation arguments, when translatable.
-    pub fn with(&self) -> Option<&[azalea_chat::translatable_component::PrimitiveOrComponent]> {
+    pub fn with(&self) -> Option<&[azalea::chat::translatable_component::PrimitiveOrComponent]> {
         match &self.inner {
             FormattedText::Translatable(c) => Some(&c.args),
             _ => None,
@@ -262,7 +262,7 @@ impl ChatMessage {
 
     /// `msg`'s style — upstream's `color`/`bold`/`clickEvent`/`hoverEvent`
     /// fields all live on azalea's `Style`.
-    pub fn style(&self) -> &azalea_chat::style::Style {
+    pub fn style(&self) -> &azalea::chat::style::Style {
         &self.inner.get_base().style
     }
 

@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use azalea::chat::style::ChatFormatting;
 use azalea::{
     FormattedText,
     protocol::packets::game::{
@@ -18,7 +19,6 @@ use azalea::{
         c_set_objective, c_set_player_team,
     },
 };
-use azalea_chat::style::ChatFormatting;
 
 use crate::{Bot, BotEvent, misc::MiscState};
 
@@ -190,7 +190,7 @@ impl Team {
     /// `team.displayName(member)` — `prefix + colored member + suffix` as a
     /// chat component.
     pub fn member_display_name(&self, member: &str) -> FormattedText {
-        use azalea_chat::{
+        use azalea::chat::{
             base_component::BaseComponent,
             style::{Style, TextColor},
             text_component::TextComponent,
@@ -545,7 +545,7 @@ mod tests {
                     method: Method::Add {
                         display_name: "My Objective".into(),
                         render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                        number_format: azalea::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
@@ -565,7 +565,7 @@ mod tests {
                     method: Method::Change {
                         display_name: "Renamed".into(),
                         render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                        number_format: azalea::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
@@ -661,7 +661,7 @@ mod tests {
                     method: Method::Add {
                         display_name: name.into(),
                         render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                        number_format: azalea::chat::numbers::NumberFormat::Blank,
                     },
                 },
             )
@@ -709,7 +709,7 @@ mod tests {
                     method: Method::Add {
                         display_name: "x".into(),
                         render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                        number_format: azalea::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
@@ -751,7 +751,7 @@ mod tests {
                     method: Method::Change {
                         display_name: "x".into(),
                         render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea_chat::numbers::NumberFormat::Blank,
+                        number_format: azalea::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),

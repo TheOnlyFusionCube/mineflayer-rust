@@ -51,8 +51,8 @@ pub(crate) struct MiscState {
     /// Bar uuid string -> bar.
     pub boss_bars: HashMap<String, scoreboard::BossBar>,
     /// The most recent game-phase resource-pack push that hasn't been
-    /// answered yet (kept whole so accept/deny reuse the wire uuid — `uuid`
-    /// isn't in our dep set, so we never name the type).
+    /// answered yet — kept whole so accept/deny can echo the exact uuid
+    /// the server sent.
     pub latest_resource_pack: Option<ClientboundResourcePackPush>,
     /// `bot.settings.difficulty` — stored client-side like upstream; it is
     /// not a `ClientInformation` field.
@@ -1274,7 +1274,7 @@ mod tests {
                 see_friendly_invisibles: false,
                 nametag_visibility: scoreboard::NameTagVisibility::Always,
                 collision_rule: scoreboard::CollisionRule::Always,
-                color: azalea_chat::style::ChatFormatting::Red,
+                color: azalea::chat::style::ChatFormatting::Red,
                 prefix: "".into(),
                 suffix: "".into(),
                 members: Default::default(),

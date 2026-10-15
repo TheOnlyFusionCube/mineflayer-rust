@@ -12,9 +12,6 @@ live = []
 
 [dependencies]
 azalea = "0.16"
-# chat-component types (Style, ChatFormatting, TextColor) used by the
-# scoreboard/team API — not re-exported through azalea::chat
-azalea-chat = "0.16"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 thiserror = "2"
 futures = "0.3"
@@ -24,9 +21,6 @@ serde_json = "1"
 uuid = "1"
 
 [dev-dependencies]
-# azalea types (BlockPos, ItemStack, HumanoidArm, …) appear in the public
-# API, so live tests need the crate itself
-azalea = "0.16"
 # unit tests construct `Arc<RwLock<World>>` for `WorldHolder::new` — same
 # version azalea-client compiles its `shared` field with
 parking_lot = "0.12"
