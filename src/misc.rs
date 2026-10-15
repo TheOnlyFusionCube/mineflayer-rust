@@ -950,18 +950,18 @@ impl Creative {
     /// player inventory concurrently, like upstream's `Promise.all` (each
     /// slot's confirmation is independent).
     pub async fn clear_inventory(&self) -> Result<()> {
-        let Some(inv) = self.client.get_component::<Inventory>() else {
-            return Err(Error::NotConnected);
+        let occupied: Vec<u16> = {
+            let Some(inv) = self.client.get_component::<Inventory>() else {
+                return Err(Error::NotConnected);
+            };
+            inv.inventory_menu
+                .slots()
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| !item.is_empty())
+                .map(|(slot, _)| slot as u16)
+                .collect()
         };
-        let occupied: Vec<u16> = inv
-            .inventory_menu
-            .slots()
-            .iter()
-            .enumerate()
-            .filter(|(_, item)| !item.is_empty())
-            .map(|(slot, _)| slot as u16)
-            .collect();
-        drop(inv);
         // upstream `Promise.all` rejects at the first rejection while the
         // other promises keep settling (JS promises cannot be cancelled) —
         // `join_all` waits for every slot for the same shape, then reports
@@ -1436,5 +1436,84 @@ mod tests {
         .await
         .expect("fish ignored End");
         assert!(matches!(result, Err(Error::NotConnected)));
+    }
+
+    fn slot_flagged(bot: &Bot, slot: u16) -> bool {
+        misc_mut(&bot.client(), |m| {
+            m.creative_slots_in_flight.contains(&slot)
+        })
+        .unwrap_or(false)
+    }
+
+    /// A cancelled `set_inventory_slot` releases its slot flag — a
+    /// trailing cleanup statement would be skipped by the drop and every
+    /// later call for the slot would fail with "calling again".
+    #[tokio::test]
+    async fn cancelled_set_inventory_slot_releases_the_in_flight_slot() {
+        use azalea::registry::builtin::ItemKind;
+
+        let mut inventory = Inventory::default();
+        *inventory.inventory_menu.slot_mut(5).unwrap() = ItemStack::new(ItemKind::Stone, 1);
+        let bot = Bot::new(crate::test_util::live_entity_client(inventory));
+        let creative = bot.creative();
+        let item = ItemStack::new(ItemKind::Dirt, 1);
+        let set = || creative.set_inventory_slot(5, item.clone());
+        // the call parks waiting for the server echo; the timeout drops it
+        let _ = tokio::time::timeout(Duration::from_millis(50), set()).await;
+        assert!(
+            !slot_flagged(&bot, 5),
+            "cancelled call left the slot flagged"
+        );
+        // a fresh call is not rejected as "calling again" — it parks again
+        let again = tokio::time::timeout(Duration::from_millis(50), set()).await;
+        assert!(again.is_err(), "second call failed early: {again:?}");
+        assert!(!slot_flagged(&bot, 5));
+    }
+
+    /// `clearInventory` settles every slot it started: the offhand range
+    /// rejection must surface only after the sibling clear completed
+    /// (upstream `Promise.all` shape), and no slot may stay flagged.
+    #[tokio::test]
+    async fn clear_inventory_settles_every_started_slot() {
+        use azalea::{
+            protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
+            registry::builtin::ItemKind,
+        };
+
+        let mut inventory = Inventory::default();
+        *inventory.inventory_menu.slot_mut(10).unwrap() = ItemStack::new(ItemKind::Stone, 1);
+        *inventory.inventory_menu.slot_mut(45).unwrap() = ItemStack::new(ItemKind::Dirt, 1);
+        let bot = Bot::new(crate::test_util::live_entity_client(inventory));
+        let bot2 = bot.clone();
+        let clear = tokio::spawn(async move { bot2.creative().clear_inventory().await });
+
+        // wait for slot 10's clear to start, then confirm it is still
+        // pending: the failing sibling must not have cancelled it or let
+        // the call return early
+        for _ in 0..200 {
+            if slot_flagged(&bot, 10) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(slot_flagged(&bot, 10), "slot 10's clear never started");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !clear.is_finished(),
+            "clearInventory returned before the sibling settled"
+        );
+
+        // let slot 10 settle with its echo
+        bot.emit_event(BotEvent::Packet(std::sync::Arc::new(
+            ClientboundGamePacket::ContainerSetSlot(ClientboundContainerSetSlot {
+                container_id: 0,
+                state_id: 0,
+                slot: 10,
+                item_stack: ItemStack::Empty,
+            }),
+        )));
+        let res = clear.await.unwrap();
+        assert!(res.is_err(), "the offhand rejection must surface");
+        assert!(!slot_flagged(&bot, 10) && !slot_flagged(&bot, 45));
     }
 }
