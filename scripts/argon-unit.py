@@ -105,8 +105,17 @@ def safe_repo_path(rel, writable):
         return None
     if rel not in writable:
         return None
-    target = (pathlib.Path(ROOT) / rel).resolve()
     root = pathlib.Path(ROOT).resolve()
+    parts = pathlib.PurePosixPath(rel).parts
+    walk = root
+    for part in parts:
+        walk = walk / part
+        # a symlink anywhere on the path could point outside the tree the
+        # runner may write to (the resolve() containment check cannot see
+        # that, since the resolved target may still live under the root)
+        if walk.is_symlink():
+            return None
+    target = (root / rel).resolve()
     if not target.is_file() or root not in target.parents:
         return None
     return rel
@@ -226,17 +235,22 @@ def main():
         log(f"[{unit}] no change blocks returned; nothing to apply")
         return
 
-    # validate every block before writing any of them
+    # validate every block — paths and patch bodies — before anything is
+    # written, so a malformed later block cannot leave earlier edits behind
     for rel in list(files) + list(patches):
         if safe_repo_path(rel, writable) is None:
             log(f"[{unit}] refusing path (not writable/contained): {rel}")
             sys.exit(3)
-
+    diff_texts = {}
     for rel, diff in patches.items():
         diff_text = strict_patch(rel, diff)
         if diff_text is None:
             log(f"[{unit}] refusing patch for {rel}: headers name another file or no hunks")
             sys.exit(3)
+        diff_texts[rel] = diff_text
+
+    for rel, diff in patches.items():
+        diff_text = diff_texts[rel]
         tmp = os.path.join(STATE, f"{unit}-{rel.replace('/', '_')}.patch")
         with open(tmp, "w") as f:
             f.write(diff_text)

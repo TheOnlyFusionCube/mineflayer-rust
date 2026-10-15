@@ -38,6 +38,18 @@ check("absolute path rejected", safe("/etc/passwd", ["/etc/passwd"]) is None)
 check("path outside brief Writable rejected", safe("src/chat.rs", ["src/bot.rs"]) is None)
 check("allowed path accepted", safe("src/chat.rs", ["src/chat.rs"]) == "src/chat.rs")
 
+# an allowlisted in-root symlink pointing outside the Writable tree
+with tempfile.TemporaryDirectory() as td:
+    os.makedirs(os.path.join(td, "src"), exist_ok=True)
+    open(os.path.join(td, "scripts_verify.sh"), "w").write("x")
+    os.symlink(os.path.join(td, "scripts_verify.sh"), os.path.join(td, "src", "chat.rs"))
+    real_root = ns["ROOT"]
+    ns["ROOT"] = td
+    try:
+        check("symlinked path rejected", safe("src/chat.rs", ["src/chat.rs"]) is None)
+    finally:
+        ns["ROOT"] = real_root
+
 patch_to_verify = "--- a/scripts/verify.sh\n+++ b/scripts/verify.sh\n@@ -1,1 +1,1 @@\n-x\n+y"
 check("mismatched patch headers rejected", strict("src/chat.rs", patch_to_verify) is None)
 
