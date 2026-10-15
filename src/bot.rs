@@ -1163,13 +1163,9 @@ async fn join_azalea(
 
     let address = address.resolve().await?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = azalea::app::App::new();
-    app.add_plugins((
-        azalea::DefaultPlugins,
-        azalea::bot::DefaultBotPlugins,
-        azalea::swarm::DefaultSwarmPlugins,
-    ));
-    app.add_plugins(crate::interact::DigAbortPlugin);
+    // app construction (default plugins + the dig-abort reconciler) lives
+    // in `client_app` so tests run the production wiring — see its contract
+    let mut app = crate::client_app::app();
     let (ecs_lock, start_running_systems, _appexit_rx) = azalea::start_ecs_runner(app.main_mut());
     start_running_systems();
     let client = azalea::Client::start_client(azalea::StartClientOpts {

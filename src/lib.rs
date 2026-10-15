@@ -25,6 +25,7 @@ mod error;
 
 pub mod auto_eat;
 pub mod chat;
+pub(crate) mod client_app;
 pub mod collect;
 pub mod craft;
 pub mod entity;
