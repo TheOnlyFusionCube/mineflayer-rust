@@ -48,10 +48,9 @@ pub(crate) struct BridgeDeps {
     pub window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
     /// Recipe-book state — see `craft::RecipeBook`.
     pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
-    /// `options.*` client-information fields from the builder, sent via
-    /// `set_client_information` on `Event::Init` so the login packet carries
-    /// them (the `view_distance` spawn param is folded in — see
-    /// [`init_client_information`]). `None` sends nothing, leaving azalea's
+    /// `options.*` client-information fields from the builder, sent as
+    /// built via `set_client_information` on `Event::Init` so the login
+    /// packet carries them. `None` sends nothing, leaving azalea's
     /// defaults on the wire.
     pub client_information: Option<ClientInformation>,
     /// `options.brand` — sent as the `minecraft:brand` custom payload on
@@ -74,7 +73,6 @@ pub(crate) fn spawn(
     client: azalea::Client,
     mut rx: UnboundedReceiver<Event>,
     events: broadcast::Sender<BotEvent>,
-    view_distance: Option<u8>,
     mut alive: watch::Receiver<()>,
     shutdown: watch::Sender<()>,
     deps: BridgeDeps,
@@ -111,10 +109,9 @@ pub(crate) fn spawn(
                     // Client information must be set on Init so the login
                     // packet already carries it (azalea docs).
                     if let Event::Init = &event
-                        && let Some(info) =
-                            init_client_information(&client_information, view_distance)
+                        && let Some(info) = &client_information
                     {
-                        client.set_client_information(info);
+                        client.set_client_information(info.clone());
                     }
                     // `options.brand` — upstream writes it on the login
                     // packet; ours overwrites azalea's config-phase
@@ -411,34 +408,6 @@ fn translate(
     }
 }
 
-/// The `ClientInformation` to send on `Event::Init`: the builder's merged
-/// `options.*` struct, with the signature-frozen `view_distance` spawn param
-/// taking precedence (it and `BotBuilder::view_distance` are the same
-/// value — the param exists because `spawn`'s signature is frozen).
-/// `None` = nothing to send; azalea ships its own defaults.
-fn init_client_information(
-    from_options: &Option<ClientInformation>,
-    view_distance: Option<u8>,
-) -> Option<ClientInformation> {
-    match (from_options, view_distance) {
-        (Some(info), vd) => Some(ClientInformation {
-            view_distance: vd.unwrap_or(info.view_distance),
-            ..info.clone()
-        }),
-        (None, Some(vd)) => Some(ClientInformation {
-            view_distance: vd,
-            ..ClientInformation::default()
-        }),
-        (None, None) => None,
-    }
-}
-
-/// Lifecycle `BotEvent`s decoded from raw packets — upstream hooks these
-/// packets directly, while azalea lifts them into `Event`s that fire only
-/// once per entity lifetime (`Event::Spawn`/`Event::Login` never refire
-/// in 0.16: `SentSpawnEvent`/`MinecraftEntityId` are never removed —
-/// verified against events.rs and a live `Simulation`). Per-packet
-/// semantics have to live here.
 fn lifecycle_packet_events(
     state: &mut BridgeState,
     packet: &ClientboundGamePacket,
@@ -895,46 +864,6 @@ mod tests {
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         assert!(translate(&mut s, &qr, &client, Event::KeepAlive(42)).is_empty());
-    }
-
-    #[test]
-    fn init_client_information_merge() {
-        use azalea::protocol::common::client_information::{ChatVisibility, ParticleStatus};
-
-        // nothing set -> nothing sent (azalea's defaults go out on login)
-        assert_eq!(init_client_information(&None, None), None);
-        // only view_distance -> the pre-P1 path
-        assert_eq!(
-            init_client_information(&None, Some(4)),
-            Some(ClientInformation {
-                view_distance: 4,
-                ..ClientInformation::default()
-            })
-        );
-        // options struct alone -> sent as built
-        let info = ClientInformation {
-            chat_visibility: ChatVisibility::System,
-            chat_colors: false,
-            allows_listing: true,
-            particle_status: ParticleStatus::Minimal,
-            ..ClientInformation::default()
-        };
-        assert_eq!(
-            init_client_information(&Some(info.clone()), None),
-            Some(info.clone())
-        );
-        // the spawn param wins view_distance over the options struct
-        assert_eq!(
-            init_client_information(&Some(info), Some(12)),
-            Some(ClientInformation {
-                view_distance: 12,
-                chat_visibility: ChatVisibility::System,
-                chat_colors: false,
-                allows_listing: true,
-                particle_status: ParticleStatus::Minimal,
-                ..ClientInformation::default()
-            })
-        );
     }
 
     #[test]

@@ -773,13 +773,11 @@ pub struct BotBuilder {
     username: String,
     /// `options.auth` (default `Offline { username }`).
     auth: Option<Auth>,
-    /// `options.viewDistance` — applied via `set_client_information` on
-    /// `Event::Init`, so the login packet already carries it.
-    view_distance: Option<u8>,
-    /// The `options.*` client-information fields (`chat`, `colorsEnabled`,
-    /// `skinParts`, `mainHand`, `enableTextFiltering`, `enableServerListing`,
-    /// `particleStatus`) — merged over azalea's [`ClientInformation`]
-    /// defaults and sent on `Event::Init`; `None` until one of them is set.
+    /// The `options.*` client-information fields (`dialogDistance`/
+    /// `viewDistance`, `chat`, `colorsEnabled`, `skinParts`, `mainHand`,
+    /// `enableTextFiltering`, `enableServerListing`, `particleStatus`) —
+    /// merged over azalea's [`ClientInformation`] defaults and sent on
+    /// `Event::Init`; `None` until one of them is set.
     client_information: Option<ClientInformation>,
     /// `options.brand` — sent as the `minecraft:brand` custom payload on
     /// `Event::Login`, overwriting the `"vanilla"` azalea already sent
@@ -850,7 +848,6 @@ impl Default for BotBuilder {
             port: 25565,
             username: "Player".to_string(),
             auth: None,
-            view_distance: None,
             client_information: None,
             brand: None,
             difficulty: 2,
@@ -887,7 +884,7 @@ impl BotBuilder {
     /// ([`ViewDistance::Far`]/[`ViewDistance::Normal`]/
     /// [`ViewDistance::Short`]/[`ViewDistance::Tiny`] → 12/10/8/6).
     pub fn view_distance(mut self, view_distance: impl Into<ViewDistance>) -> Self {
-        self.view_distance = Some(view_distance.into().chunks());
+        self.client_information_mut().view_distance = view_distance.into().chunks();
         self
     }
 
@@ -1108,7 +1105,6 @@ impl BotBuilder {
             client.clone(),
             rx,
             events.clone(),
-            builder.view_distance,
             alive_rx,
             shutdown_tx,
             bridge::BridgeDeps {
@@ -1436,7 +1432,7 @@ mod tests {
         assert_eq!(b.port, 25565);
         assert_eq!(b.username, "Player");
         assert!(b.auth.is_none());
-        assert!(b.view_distance.is_none());
+        assert!(b.client_information.is_none());
         let b = b
             .host("example.org")
             .port(25566)
@@ -1445,9 +1441,15 @@ mod tests {
         assert_eq!(b.host, "example.org");
         assert_eq!(b.port, 25566);
         assert_eq!(b.username, "x");
-        assert_eq!(b.view_distance, Some(4));
+        assert_eq!(b.client_information.as_ref().unwrap().view_distance, 4);
         // upstream's named presets resolve to their chunk counts
-        assert_eq!(b.view_distance(ViewDistance::Far).view_distance, Some(12));
+        assert_eq!(
+            b.view_distance(ViewDistance::Far)
+                .client_information
+                .unwrap()
+                .view_distance,
+            12
+        );
     }
 
     #[test]
@@ -1490,6 +1492,24 @@ mod tests {
         // from upstream for view_distance)
         assert_eq!(info.view_distance, 8);
         assert_eq!(info.language, "en_us");
+    }
+
+    #[test]
+    fn builder_view_distance_is_a_client_information_field() {
+        // both setter orders land in the one stored struct: the field the
+        // bridge sends on `Event::Init` is the only representation
+        let b = Bot::builder()
+            .chat(ChatVisibility::Hidden)
+            .view_distance(ViewDistance::Far);
+        let info = b.client_information.as_ref().unwrap();
+        assert_eq!(info.view_distance, 12);
+        assert_eq!(info.chat_visibility, ChatVisibility::Hidden);
+        let b = Bot::builder()
+            .view_distance(ViewDistance::Tiny)
+            .chat(ChatVisibility::System);
+        let info = b.client_information.as_ref().unwrap();
+        assert_eq!(info.view_distance, 6);
+        assert_eq!(info.chat_visibility, ChatVisibility::System);
     }
 
     #[test]
