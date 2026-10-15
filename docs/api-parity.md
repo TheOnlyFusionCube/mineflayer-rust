@@ -369,7 +369,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
 | `bot.dig(block, forceLook, digFace)` | interact | `bot.dig(block).await` / `bot.dig_opts(block, ForceLook, DigFace).await` | diverges | `start_mining` + `Mining` watch; resolves on air, `'Digging aborted'` on stop/interrupt/timeout — the timeout is additive: upstream waits for the air blockUpdate with no deadline, ours bounds the wait at dig_time + 10 s (`DIG_FINISH_GRACE`) and returns `Error::Timeout` |
-| `bot.stopDigging()` | interact | `bot.stop_digging()` | ported | `StopMiningBlockEvent` → AbortDestroyBlock + `MiningQueued` drop |
+| `bot.stopDigging()` | interact | `bot.stop_digging()` | ported | `StopMiningBlockEvent` → AbortDestroyBlock + `MiningQueued` drop; unlike upstream's `if (!targetDigBlock) return`, a stop still reaches engine state a timed-out dig left behind (no target), and a start still queued for the aborted dig is cancelled at the next tick's mining head |
 | `bot.digTime(block)` | interact | `bot.dig_time(block) -> Option<Duration>` | diverges | `None` = upstream `Infinity`; azalea `get_mine_progress`, `ceil(1/p)` ticks → ms |
 | `bot.canDigBlock(block)` | interact | `bot.can_dig_block(block) -> bool` | ported | diggable && eye-to-center ≤ 5.1 |
 | `bot.placeBlock(ref, faceVec)` | interact | `bot.place_block(block, face).await -> Result<Block>` / `bot.place_block_opts(block, face, &PlaceOpts).await` | ported | same blockUpdate ack→dest gate, "still unchanged" refusal, and 5s bound as upstream (`onceWithCleanup(timeout: 5000)`); plain `place_block` = upstream's `{swingArm: 'right'}` default |

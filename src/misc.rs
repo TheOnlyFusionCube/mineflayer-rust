@@ -880,6 +880,10 @@ impl Creative {
     /// `container_set_slot` echo like upstream (a mismatch is a rejection,
     /// and upstream rejects after 5s with no echo).
     ///
+    /// Dropping the returned future (caller cancellation) releases the
+    /// slot's in-flight flag instead of leaving it stuck with "calling
+    /// again"; the wire write is not rolled back.
+    ///
     /// Upstream asserts `0 <= slot <= 44`; slots are unsigned here.
     pub async fn set_inventory_slot(&self, slot: u16, item: ItemStack) -> Result<()> {
         if slot > 44 {
