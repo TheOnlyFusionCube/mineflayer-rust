@@ -962,6 +962,11 @@ fn set_content_events(
     });
     let mut out = Vec::new();
 
+    // Adopt when this packet resolves the active menu (see patch_state_id).
+    if p.container_id == active_inventory_id(client) {
+        patch_state_id(client, p.state_id);
+    }
+
     if p.container_id == 0 {
         for (i, stack) in p.items.iter().enumerate() {
             let old = snapshot_set(&mut t, 0, i, stack.clone());
@@ -1086,6 +1091,33 @@ fn patch_carried(client: &azalea::Client, stack: &ItemStack) {
     }
 }
 
+/// Protocol id of the menu clicks target — azalea's `Inventory.id`
+/// (0 = the player window, which `WindowTracker` mirrors in `pending`/
+/// `current`).
+fn active_inventory_id(client: &azalea::Client) -> i32 {
+    client
+        .get_component::<Inventory>()
+        .map(|inv| inv.id)
+        .unwrap_or(0)
+}
+
+/// Adopt a packet's `state_id` for the active menu — vanilla's
+/// `initializeContents` / `setItem(slot, stateId, item)` update the active
+/// menu's id, and upstream mineflayer mirrors it with a global
+/// `stateId = packet.stateId` listener over `set_slot`/`window_items`.
+/// azalea adopts one only from non-hotbar `set_slot` writes: hotbar writes
+/// into an idle window 0 skip it and `container_set_content` never carries
+/// it, so after a pickup or a full resync our clicks go out stale. The
+/// server answers a stale id with a full resync instead of a slot diff,
+/// and a resync landing mid-choreography (craft -> grab -> deposit)
+/// clobbers the cursor the next click is gated on.
+fn patch_state_id(client: &azalea::Client, state_id: u32) {
+    let mut ecs = client.ecs.write();
+    if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
+        inv.state_id = state_id;
+    }
+}
+
 /// `container_set_slot` — single-slot write. `container_id` -1 is the
 /// cursor (applied by azalea, no event upstream), -2 and 0 hit the player
 /// window, anything else resolves the open *or pending* container (or a
@@ -1104,6 +1136,12 @@ fn set_slot_events(
             .unwrap_or(0)
     });
     let mut out = Vec::new();
+
+    // Adopt when this packet resolves the active menu — hotbar writes into
+    // an idle window 0 included (see patch_state_id).
+    if p.container_id == active_inventory_id(client) {
+        patch_state_id(client, p.state_id);
+    }
 
     match p.container_id {
         -1 => {
@@ -1258,6 +1296,14 @@ mod tests {
         crate::test_util::live_entity_client(Inventory::default())
     }
 
+    fn client_with(inv: Inventory) -> azalea::Client {
+        crate::test_util::live_entity_client(inv)
+    }
+
+    fn state_id_of(client: &azalea::Client) -> u32 {
+        client.get_component::<Inventory>().unwrap().state_id
+    }
+
     fn open_screen(id: i32) -> Event {
         packet_event(ClientboundGamePacket::OpenScreen(ClientboundOpenScreen {
             container_id: id,
@@ -1267,10 +1313,14 @@ mod tests {
     }
 
     fn set_content(id: i32, items: Vec<ItemStack>) -> Event {
+        set_content_sid(id, 0, items)
+    }
+
+    fn set_content_sid(id: i32, state_id: u32, items: Vec<ItemStack>) -> Event {
         packet_event(ClientboundGamePacket::ContainerSetContent(
             ClientboundContainerSetContent {
                 container_id: id,
-                state_id: 0,
+                state_id,
                 items,
                 carried_item: ItemStack::Empty,
             },
@@ -1278,10 +1328,14 @@ mod tests {
     }
 
     fn set_slot(id: i32, slot: u16, stack: ItemStack) -> Event {
+        set_slot_sid(id, 0, slot, stack)
+    }
+
+    fn set_slot_sid(id: i32, state_id: u32, slot: u16, stack: ItemStack) -> Event {
         packet_event(ClientboundGamePacket::ContainerSetSlot(
             ClientboundContainerSetSlot {
                 container_id: id,
-                state_id: 0,
+                state_id,
                 slot,
                 item_stack: stack,
             },
@@ -1324,6 +1378,98 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    /// The live-craft regression: clicks carried a stale `state_id`
+    /// because azalea adopts one only from non-hotbar `set_slot` writes —
+    /// never from `container_set_content`, and never from hotbar writes.
+    /// The server answers a stale id with a full resync instead of a slot
+    /// diff, and a resync landing mid-choreography (craft -> grab ->
+    /// deposit) clobbers the cursor the next click is gated on. Vanilla
+    /// adopts the id from packets resolving the active menu
+    /// (`initializeContents` / `setItem(slot, stateId, item)`); upstream
+    /// mineflayer tracks it globally from every `set_slot`/`window_items`.
+    #[test]
+    fn state_id_adopts_from_active_menu_packets() {
+        let t = tracker();
+        let client = client();
+
+        // hotbar set_slot into an idle window 0 adopts (azalea skips these)
+        observe_event(
+            &t,
+            &client,
+            &set_slot_sid(0, 9, 36, ItemStack::new(ItemKind::OakLog, 1)),
+        );
+        assert_eq!(state_id_of(&client), 9);
+
+        // resolved window-0 bulk content adopts (azalea never does)
+        observe_event(
+            &t,
+            &client,
+            &set_content_sid(0, 12, vec![ItemStack::Empty; 46]),
+        );
+        assert_eq!(state_id_of(&client), 12);
+
+        // an unrelated window's bulk content buffers without adopting
+        observe_event(
+            &t,
+            &client,
+            &set_content_sid(7, 40, vec![ItemStack::Empty; 63]),
+        );
+        assert_eq!(state_id_of(&client), 12);
+
+        // cursor packets (`-1`) never initialize a menu — no adoption
+        observe_event(
+            &t,
+            &client,
+            &set_slot_sid(-1, 77, 0, ItemStack::new(ItemKind::OakLog, 1)),
+        );
+        assert_eq!(state_id_of(&client), 12);
+    }
+
+    /// While a container is open, only its own packets move the tracked
+    /// id — the id-0 hotbar specials and window-0 bulk resyncs must not
+    /// (vanilla gates adoption on the active menu).
+    #[test]
+    fn state_id_tracks_the_open_container() {
+        let t = tracker();
+        let inv = Inventory {
+            id: 5,
+            container_menu: Some(Menu::from_kind(MenuKind::Generic9x3)),
+            ..Inventory::default()
+        };
+        let client = client_with(inv);
+        observe_event(&t, &client, &open_screen(5));
+
+        // the open container's set_slot and bulk content adopt
+        observe_event(
+            &t,
+            &client,
+            &set_slot_sid(5, 4, 2, ItemStack::new(ItemKind::Stone, 1)),
+        );
+        assert_eq!(state_id_of(&client), 4);
+        observe_event(
+            &t,
+            &client,
+            &set_content_sid(5, 3, vec![ItemStack::Empty; 63]),
+        );
+        assert_eq!(state_id_of(&client), 3);
+
+        // an id-0 hotbar write while the container is open does not
+        observe_event(
+            &t,
+            &client,
+            &set_slot_sid(0, 9, 36, ItemStack::new(ItemKind::OakLog, 1)),
+        );
+        assert_eq!(state_id_of(&client), 3);
+
+        // nor does an id-0 bulk resync of the player window
+        observe_event(
+            &t,
+            &client,
+            &set_content_sid(0, 21, vec![ItemStack::Empty; 46]),
+        );
+        assert_eq!(state_id_of(&client), 3);
     }
 
     /// Upstream `setWindowItems:{windowId}` — fires once per resolved
