@@ -1439,10 +1439,7 @@ mod tests {
     }
 
     fn slot_flagged(bot: &Bot, slot: u16) -> bool {
-        misc_mut(&bot.client(), |m| {
-            m.creative_slots_in_flight.contains(&slot)
-        })
-        .unwrap_or(false)
+        misc_mut(bot.client(), |m| m.creative_slots_in_flight.contains(&slot)).unwrap_or(false)
     }
 
     /// A cancelled `set_inventory_slot` releases its slot flag — a

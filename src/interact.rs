@@ -467,8 +467,7 @@ impl Bot {
     /// newer dig owns the generation so it can never cancel a replacement.
     async fn retire_engine_dig(&self, pos: BlockPos, my_seq: u64) {
         let entity = self.client.entity;
-        let mut ticks_waited = 0;
-        for _ in 0..5 {
+        for ticks_waited in 0..5 {
             let complete = {
                 // one lock section: reading the state and cancelling it
                 // must not interleave with an Update moving the engine
@@ -504,7 +503,6 @@ impl Bot {
                 self.wait_for_ticks(1).await.ok();
             })
             .await;
-            ticks_waited += 1;
         }
     }
 
