@@ -30,8 +30,7 @@ use azalea::{
     registry::builtin::{BlockKind, EntityKind},
 };
 use mineflayer::{
-    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, Goal,
-    entity::EntityExt,
+    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, entity::EntityExt,
 };
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
@@ -167,12 +166,6 @@ async fn dig_place_activate_stop() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let feet = bot.position().to_block_pos_floor();
-    let underfoot = BlockPos {
-        x: feet.x,
-        y: feet.y - 1,
-        z: feet.z,
-    };
     // A fresh-seed spawn can sit on a forest canopy: dig straight down
     // through non-droppers (leaves, logs) until the cell underfoot is a
     // tool-free dropper, then that cell is the dig target. Mirrors
