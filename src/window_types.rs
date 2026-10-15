@@ -147,20 +147,33 @@ const ANVIL_COST_WAIT: Duration = Duration::from_millis(1500);
 /// packet listeners on `close`).
 #[derive(Default)]
 pub(crate) struct WindowDataTracker {
-    /// `open_screen` menu kind per window id — used to route
-    /// `container_set_data` into the right typed event.
-    kinds: HashMap<i32, MenuKind>,
-    /// `container_set_data` values per window id (property → value,
-    /// already sign-extended from the wire's u16).
-    data: HashMap<i32, HashMap<u16, i16>>,
-    /// Decoded `merchant_offers` per window id.
-    offers: HashMap<i32, Vec<VillagerTrade>>,
+    /// One record per open window id; a record is created on first touch
+    /// (packets can race ahead of `open_screen`) and dies whole.
+    windows: HashMap<i32, WindowRecord>,
+}
+
+/// Everything server-pushed for one window id — kind, data properties,
+/// merchant offers, the selected trade, and the readiness latch. One
+/// record per id means one lifecycle (create, replace on a fresh
+/// `open_screen`, remove on close/replace/login) instead of five tables
+/// kept in lockstep.
+#[derive(Default)]
+struct WindowRecord {
+    /// `open_screen` menu kind — routes `container_set_data` into the
+    /// right typed event. `None` until the screen packet arrives.
+    kind: Option<MenuKind>,
+    /// `container_set_data` values (property → value, already
+    /// sign-extended from the wire's u16).
+    data: HashMap<u16, i16>,
+    /// Decoded `merchant_offers` — `Some` once the packet arrived
+    /// (possibly empty), which is what `open_villager` waits on.
+    offers: Option<Vec<VillagerTrade>>,
     /// The trade index `trade`/`Villager::trade` last selected
     /// (upstream `villager.selectedTrade`).
-    selected_trade: HashMap<i32, usize>,
-    /// Readiness latches — `ready` events fire on the false→true edge
-    /// only, like upstream's `if (!ready) { ready = true; emit('ready') }`.
-    ready_sent: HashSet<i32>,
+    selected_trade: Option<usize>,
+    /// Readiness latch — `ready` events fire on the false→true edge only,
+    /// like upstream's `if (!ready) { ready = true; emit('ready') }`.
+    ready: bool,
 }
 
 impl WindowDataTracker {
@@ -170,16 +183,12 @@ impl WindowDataTracker {
 
     /// Everything stored for a closed or displaced window dies with it.
     fn clear_window(&mut self, id: i32) {
-        self.kinds.remove(&id);
-        self.data.remove(&id);
-        self.offers.remove(&id);
-        self.selected_trade.remove(&id);
-        self.ready_sent.remove(&id);
+        self.windows.remove(&id);
     }
 
     /// Read one `container_set_data` value for a window.
     fn data(&self, window_id: i32, property: u16) -> Option<i16> {
-        self.data.get(&window_id)?.get(&property).copied()
+        self.windows.get(&window_id)?.data.get(&property).copied()
     }
 }
 
@@ -200,7 +209,7 @@ pub(crate) fn observe_event(
             // per-window listeners attach to the new window object.
             let mut t = tracker.lock().unwrap();
             t.clear_window(p.container_id);
-            t.kinds.insert(p.container_id, p.menu_type);
+            t.windows.entry(p.container_id).or_default().kind = Some(p.menu_type);
             Vec::new()
         }
         ClientboundGamePacket::ContainerSetData(p) => {
@@ -208,16 +217,14 @@ pub(crate) fn observe_event(
             // the wire field is a signed short read as u16 — recover the
             // sign so `-1` enchant clues compare correctly
             let value = p.value as i16;
-            t.data
-                .entry(p.container_id)
-                .or_default()
-                .insert(p.id, value);
+            let record = t.windows.entry(p.container_id).or_default();
+            record.data.insert(p.id, value);
             let mut out = vec![BotEvent::WindowDataUpdate {
                 window_id: p.container_id,
                 property: p.id,
                 value,
             }];
-            match t.kinds.get(&p.container_id) {
+            match record.kind {
                 Some(MenuKind::Furnace | MenuKind::BlastFurnace | MenuKind::Smoker) => {
                     out.push(BotEvent::FurnaceUpdate {
                         window_id: p.container_id,
@@ -226,14 +233,14 @@ pub(crate) fn observe_event(
                 Some(MenuKind::Enchantment) => {
                     // 'ready' = all three level costs known and >= 0
                     // (upstream resets to not-ready if any goes -1)
-                    let data = &t.data[&p.container_id];
-                    let ready = (0..3).all(|i| data.get(&i).is_some_and(|v| *v >= 0));
-                    if ready && t.ready_sent.insert(p.container_id) {
+                    let ready = (0..3).all(|i| record.data.get(&i).is_some_and(|v| *v >= 0));
+                    if ready && !record.ready {
+                        record.ready = true;
                         out.push(BotEvent::EnchantmentTableReady {
                             window_id: p.container_id,
                         });
                     } else if !ready {
-                        t.ready_sent.remove(&p.container_id);
+                        record.ready = false;
                     }
                 }
                 _ => {}
@@ -242,8 +249,10 @@ pub(crate) fn observe_event(
         }
         ClientboundGamePacket::MerchantOffers(p) => {
             let mut t = tracker.lock().unwrap();
-            t.offers.insert(p.container_id, decode_offers(&p.offers));
-            if t.ready_sent.insert(p.container_id) {
+            let record = t.windows.entry(p.container_id).or_default();
+            record.offers = Some(decode_offers(&p.offers));
+            if !record.ready {
+                record.ready = true;
                 vec![BotEvent::VillagerReady {
                     window_id: p.container_id,
                 }]
@@ -256,12 +265,7 @@ pub(crate) fn observe_event(
             Vec::new()
         }
         ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_) => {
-            let mut t = tracker.lock().unwrap();
-            t.kinds.clear();
-            t.data.clear();
-            t.offers.clear();
-            t.selected_trade.clear();
-            t.ready_sent.clear();
+            tracker.lock().unwrap().windows.clear();
             Vec::new()
         }
         _ => Vec::new(),
@@ -459,9 +463,9 @@ impl Furnace {
             .window_data
             .lock()
             .unwrap()
-            .data
+            .windows
             .get(&self.window.id())
-            .cloned()
+            .map(|record| record.data.clone())
     }
 
     /// `furnace.inputItem()` — slot 0.
@@ -622,9 +626,9 @@ impl EnchantmentTable {
             .window_data
             .lock()
             .unwrap()
-            .data
+            .windows
             .get(&self.window.id())
-            .cloned()
+            .map(|record| record.data.clone())
             .unwrap_or_default();
         self.bot
             .client
@@ -698,9 +702,9 @@ impl EnchantmentTable {
             .window_data
             .lock()
             .unwrap()
-            .data
+            .windows
             .get(&self.window.id())
-            .is_some_and(|d| (0..3).all(|i| d.get(&i).is_some_and(|v| *v >= 0)))
+            .is_some_and(|record| (0..3).all(|i| record.data.get(&i).is_some_and(|v| *v >= 0)))
     }
 
     /// `enchantmentTable.takeTargetItem()` — move the target item back
@@ -981,19 +985,17 @@ impl Villager {
             .window_data
             .lock()
             .unwrap()
-            .offers
+            .windows
             .get(&self.window.id())
-            .cloned()
+            .and_then(|record| record.offers.clone())
             .unwrap_or_default()
     }
 
     /// `villager.selectedTrade` — the offer `trade` last selected.
     pub fn selected_trade(&self) -> Option<VillagerTrade> {
         let t = self.bot.shared.window_data.lock().unwrap();
-        t.offers
-            .get(&self.window.id())?
-            .get(*t.selected_trade.get(&self.window.id())?)
-            .cloned()
+        let record = t.windows.get(&self.window.id())?;
+        record.offers.as_ref()?.get(record.selected_trade?).cloned()
     }
 
     /// `villager.trade(index, count)` — same as `bot.trade(villager, …)`.
@@ -1130,8 +1132,9 @@ impl Bot {
             .window_data
             .lock()
             .unwrap()
-            .offers
-            .contains_key(&id);
+            .windows
+            .get(&id)
+            .is_some_and(|record| record.offers.is_some());
         if !has_offers {
             await_event(
                 &mut rx,
@@ -1145,8 +1148,9 @@ impl Bot {
             .window_data
             .lock()
             .unwrap()
-            .offers
-            .contains_key(&id)
+            .windows
+            .get(&id)
+            .is_some_and(|record| record.offers.is_some())
         {
             Ok(Villager {
                 window,
@@ -1169,9 +1173,13 @@ impl Bot {
 
         let (trade, count) = {
             let mut t = self.shared.window_data.lock().unwrap();
-            let offers = t
-                .offers
+            let record = t
+                .windows
                 .get_mut(&id)
+                .ok_or_else(|| Error::Operation("villager has no trades yet".into()))?;
+            let offers = record
+                .offers
+                .as_mut()
                 .ok_or_else(|| Error::Operation("villager has no trades yet".into()))?;
             let trade = offers
                 .get(index)
@@ -1187,7 +1195,7 @@ impl Bot {
                     "cannot trade {count} times, only {remaining} uses left"
                 )));
             }
-            t.selected_trade.insert(id, index);
+            record.selected_trade = Some(index);
             (trade, count)
         };
 
@@ -1222,8 +1230,9 @@ impl Bot {
             {
                 let mut t = self.shared.window_data.lock().unwrap();
                 if let Some(t) = t
-                    .offers
+                    .windows
                     .get_mut(&id)
+                    .and_then(|record| record.offers.as_mut())
                     .and_then(|offers| offers.get_mut(index))
                 {
                     t.uses += 1;
@@ -1605,7 +1614,7 @@ mod tests {
                 ClientboundContainerClose { container_id: 1 },
             )),
         );
-        assert!(!tracker.lock().unwrap().data.contains_key(&1));
+        assert!(!tracker.lock().unwrap().windows.contains_key(&1));
     }
 
     fn offer(
