@@ -219,6 +219,11 @@ Those three sites read the menu inside a component query, so the vector is never
 
 **Acceptance.** The test returns `Error::NotConnected` and does not panic.
 
+**Status:** done. `equip_empty` uses `.ok_or(Error::NotConnected)?`. The
+baseline panicked on `slots[36]` with an empty vector; the test reproduces
+that and passes after the change. The other `slots().unwrap_or_default()`
+sites only iterate (no indexing), so they stay.
+
 ### A4. `transfer` accepts a count of zero or less (P1)
 
 **Problem.**

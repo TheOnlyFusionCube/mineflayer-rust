@@ -602,7 +602,10 @@ impl Bot {
     /// Upstream `equipEmpty` — empty the hand.
     async fn equip_empty(&self) -> Result<()> {
         let inventory = self.inventory();
-        let slots = inventory.slots().unwrap_or_default();
+        // the quick-bar index below needs the real slot list; a missing
+        // Inventory (disconnected/despawned) is `NotConnected`, not an
+        // empty vector to index into
+        let slots = inventory.slots().ok_or(Error::NotConnected)?;
         for i in 0..9usize {
             if slots[QUICK_BAR_START + i].is_empty() {
                 return self.set_quick_bar_slot(i as u8).await;
@@ -1082,6 +1085,16 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
 mod tests {
     use super::*;
     use azalea::inventory::{components::Damage, operations::CloneClick};
+
+    /// `unequip(Hand)` on a despawned client must return `NotConnected`.
+    /// The baseline read `slots().unwrap_or_default()` and indexed the
+    /// empty vector (`slots[QUICK_BAR_START]`), which panicked.
+    #[tokio::test]
+    async fn unequip_hand_without_inventory_is_not_connected() {
+        let bot = Bot::new(crate::test_util::despawned_client());
+        let err = bot.unequip(EquipDest::Hand).await.unwrap_err();
+        assert!(matches!(err, Error::NotConnected), "got {err:?}");
+    }
 
     #[test]
     fn player_inventory_slot_to_window_mapping() {
