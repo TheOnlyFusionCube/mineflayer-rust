@@ -758,8 +758,10 @@ run: one `tests/live/main.rs` binary, 14 passed, 116 s.
 Each A item gives its test. Do not merge an A item without its test.
 
 **Status:** done. Each of A1 to A9 has its regression test in its commit.
-The tests for A1 to A6 and A8 were shown to fail on the baseline code, and
-the A7 test was shown to fail without its guard.
+The tests for A1, A3, A5, A6, and A8 were shown to fail on the baseline
+code, and the A7 test fails without its guard. The A2 test uses a control
+handle that keeps the channel open. The A4 and A9 tests were not run
+against the baseline code.
 
 ### E3. More doctests on the main entry points (P3)
 
