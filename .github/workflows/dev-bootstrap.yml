@@ -10,29 +10,35 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
-      - name: Install compiler and fetch public reference data
+      - name: Build an offline development environment from public sources
         run: |
           set -eux
           rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
-          mkdir -p bundle/reference bundle/crate/src
+          mkdir -p bundle/reference bundle/crate/src bundle/crate/.cargo
           printf 'fn main() {}\n' > bundle/crate/src/main.rs
+          printf '[resolver]\nincompatible-rust-versions = "fallback"\n' > bundle/crate/.cargo/config.toml
           cat > bundle/crate/Cargo.toml <<'EOF'
           [package]
           name = "mineflayer-rs"
           version = "0.1.0-alpha.1"
           edition = "2021"
+          rust-version = "1.85"
           [dependencies]
           flate2 = "=1.1.0"
           serde_json = "=1.0.140"
           serde = { version = "=1.0.219", features = ["derive"] }
           aes = "=0.8.4"
-          rsa = { version = "=0.9.8", features = ["sha1"] }
+          cfb8 = "=0.8.1"
+          rsa = { version = "=0.9.10", features = ["sha1", "sha2"] }
           sha1 = "=0.10.6"
+          sha2 = "=0.10.9"
           md-5 = "=0.10.6"
           rand = "=0.8.5"
-          reqwest = { version = "=0.12.15", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+          reqwest = { version = "=0.12.28", default-features = false, features = ["blocking", "json", "rustls-tls"] }
           regex = "=1.11.1"
           uuid = { version = "=1.16.0", features = ["v3", "v4", "serde"] }
+          zeroize = "1.8"
+          base64 = "=0.22.1"
           [dev-dependencies]
           proptest = "=1.6.0"
           EOF
@@ -41,16 +47,19 @@ jobs:
           cargo +1.85.1 vendor ../vendor > ../vendor-config.toml
           cargo +1.85.1 check
           cd ../..
-          git clone --depth 1 https://github.com/PrismarineJS/mineflayer.git bundle/reference/mineflayer
-          git clone --depth 1 https://github.com/PrismarineJS/minecraft-data.git bundle/reference/minecraft-data
-          git clone --depth 1 https://github.com/PrismarineJS/prismarine-physics.git bundle/reference/prismarine-physics
-          git clone --depth 1 https://github.com/PrismarineJS/node-minecraft-protocol.git bundle/reference/node-minecraft-protocol
-          git clone --depth 1 https://github.com/PrismarineJS/prismarine-windows.git bundle/reference/prismarine-windows
+          git init bundle/reference/mineflayer
+          git -C bundle/reference/mineflayer remote add origin https://github.com/PrismarineJS/mineflayer.git
+          git -C bundle/reference/mineflayer fetch --depth 1 origin 7b4bb8d2b56be9cdb832474af873acd37e609746
+          git -C bundle/reference/mineflayer checkout FETCH_HEAD
+          for repo in minecraft-data prismarine-physics node-minecraft-protocol prismarine-windows; do
+            git clone --depth 1 "https://github.com/PrismarineJS/$repo.git" "bundle/reference/$repo"
+          done
           for d in bundle/reference/*; do git -C "$d" rev-parse HEAD > "$d/UPSTREAM_COMMIT"; rm -rf "$d/.git"; done
           cp -a "$HOME/.rustup/toolchains/1.85.1-x86_64-unknown-linux-gnu" bundle/toolchain
           rm -rf bundle/toolchain/share/doc bundle/crate/target
-          tar -cJf development-bundle.tar.xz bundle
-      - uses: actions/upload-artifact@v4
+          XZ_OPT='-T0 -1' tar -cJf development-bundle.tar.xz bundle
+          sha256sum development-bundle.tar.xz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: development-bundle
           path: development-bundle.tar.xz
