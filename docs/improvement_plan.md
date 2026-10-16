@@ -489,6 +489,16 @@ a kick" with no kick or end event for 4 s after the attack.
 
 **Acceptance.** The examples and the live tests compile with the new types.
 
+**Status:** done, in four commits (B5.1 to B5.4).
+`player_by_uuid` takes a `Uuid` (re-exported as `mineflayer::Uuid`).
+`spawn_point` returns `Option<BlockPos>`. `bounding_box` returns the
+`BoundingBox` enum, and `as_str()` gives the upstream string. The new
+`Block::short_name` gives upstream's name without a namespace, and the
+examples use it. The new `click_window_operation` takes an azalea
+`ClickOperation` (re-exported). The integer and the typed click use one
+rule for the crafting wait. The examples and both clippy feature sets
+compile, and the parity rows are updated.
+
 ### B6. `async fn` that never waits (P3)
 
 **Problem.**

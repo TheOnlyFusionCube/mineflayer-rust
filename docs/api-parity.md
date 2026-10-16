@@ -278,7 +278,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.deactivateItem()` | inventory | `bot.deactivate_item()` | ported | `s_player_action` ReleaseUseItem + clears `usingHeldItem` |
 | `bot.simpleClick.leftMouse(slot)` | inventory | `bot.simple_click_left(slot).await` | ported | — |
 | `bot.simpleClick.rightMouse(slot)` | inventory | `bot.simple_click_right(slot).await` | ported | — |
-| `bot.clickWindow(slot,btn,mode)` | inventory | `bot.click_window(slot: i32, btn, mode).await` | ported | modes 0–4 → `ClickOperation` (3 = middle/clone click); -999 outside; modes 5/6 (quick-craft/pickup-all) error; crafting-region clicks await the result resync like `waitForWindowUpdate` |
+| `bot.clickWindow(slot,btn,mode)` | inventory | `bot.click_window(slot: i32, btn, mode).await` | ported | modes 0–4 → `ClickOperation` (3 = middle/clone click); -999 outside; modes 5/6 (quick-craft/pickup-all) error; crafting-region clicks await the result resync like `waitForWindowUpdate`; `bot.click_window_operation(ClickOperation)` is the typed form (any azalea click, including the drag/quick-craft modes the integer form refuses) |
 | `bot.putSelectedItemRange(..)` | inventory | `bot.put_selected_item_range(start, end, &window, reserved).await` | ported | merge not-full → first empty → reserved → toss leftover |
 | `bot.putAway(slot)` | inventory | `bot.put_away(slot).await` | ported | shift-click when there's room; else pickup + place; awaits `updateSlot` for the slot |
 | `bot.closeWindow(window)` | inventory | `bot.close_window(&window)` / `window.close()` | ported | `copyInventory` of the player region + `container_close`; idempotent; `windowClose` once |

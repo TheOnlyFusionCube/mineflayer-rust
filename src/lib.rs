@@ -62,6 +62,7 @@ pub use azalea;
 // users should not need their own azalea dependency to call them.
 // `ItemKind`/`MenuKind`/`DataComponentPatch` appear in the public
 // inventory API (toss/transfer/deposit/Window::menu_kind).
+pub use azalea::inventory::operations::ClickOperation;
 /// `BotBuilder::proxy` — azalea's SOCKS5 proxy type (`options.agent`-analog).
 pub use azalea::protocol::connect::Proxy;
 pub use azalea::{

@@ -305,6 +305,15 @@ impl Bot {
         click_window_on(&window, slot, mouse_button, mode, self.subscribe()).await
     }
 
+    /// [`Bot::click_window`] with a typed azalea [`ClickOperation`] in
+    /// place of upstream's `(slot, mouseButton, mode)` integer codes. The
+    /// same crafting-result wait applies.
+    pub async fn click_window_operation(&self, operation: ClickOperation) -> Result<()> {
+        let window = self.current_window().unwrap_or_else(|| self.inventory());
+        click_operation_on(&window, operation, self.subscribe()).await;
+        Ok(())
+    }
+
     /// `bot.putAway(slot)` — put one slot's stack back into the window's
     /// player-inventory region: a shift-click when there's room
     /// (matching not-full stack or empty slot) and the slot isn't a
@@ -779,10 +788,8 @@ pub(crate) async fn click_window_on(
     slot: i32,
     mouse_button: u8,
     mode: u8,
-    mut events: broadcast::Receiver<BotEvent>,
+    events: broadcast::Receiver<BotEvent>,
 ) -> Result<()> {
-    let waits_for_craft_result = (window.id() == 0 && (0..=4).contains(&slot))
-        || (window.menu_kind() == Some(MenuKind::Crafting) && (0..=9).contains(&slot));
     let op = match slot {
         -999 => match mouse_button {
             0 => ClickOperation::Pickup(PickupClick::LeftOutside),
@@ -792,11 +799,32 @@ pub(crate) async fn click_window_on(
         s if s < 0 => return Err(Error::InvalidArgument(format!("invalid slot {s}"))),
         s => click_operation(s as u16, mouse_button, mode)?,
     };
+    click_operation_on(window, op, events).await;
+    Ok(())
+}
+
+/// Whether a click on `slot` lands on the crafting region: slots 0..=4 of
+/// the player window or 0..=9 of a crafting table. An outside click
+/// (`None`, slot -999 on the wire) never waits.
+fn waits_for_craft_result(window_id: i32, menu_kind: Option<MenuKind>, slot: Option<u16>) -> bool {
+    slot.is_some_and(|slot| {
+        (window_id == 0 && slot <= 4) || (menu_kind == Some(MenuKind::Crafting) && slot <= 9)
+    })
+}
+
+/// Send one click, then — like upstream's `waitForWindowUpdate` — wait
+/// for the crafting-result resync when the click lands on the crafting
+/// region (slots 0..=4 of the player window, 0..=9 of a crafting table).
+async fn click_operation_on(
+    window: &Window,
+    op: ClickOperation,
+    mut events: broadcast::Receiver<BotEvent>,
+) {
+    let waits = waits_for_craft_result(window.id(), window.menu_kind(), op.slot_num());
     window.click(op);
-    if waits_for_craft_result {
+    if waits {
         wait_for_slot_update(&mut events, window.id(), 0).await;
     }
-    Ok(())
 }
 
 /// Await the [`BotEvent::WindowUpdateSlot`] for `window_id`/`slot` —
@@ -827,6 +855,34 @@ mod tests {
     /// `unequip(Hand)` on a despawned client must return `NotConnected`.
     /// The baseline read `slots().unwrap_or_default()` and indexed the
     /// empty vector (`slots[QUICK_BAR_START]`), which panicked.
+    /// The integer `click_window` and the typed `click_window_operation`
+    /// share one crafting-wait rule, keyed on the operation's slot (B5).
+    #[test]
+    fn crafting_wait_rule_follows_the_operation_slot() {
+        assert!(waits_for_craft_result(0, None, Some(0)));
+        assert!(waits_for_craft_result(0, None, Some(4)));
+        assert!(!waits_for_craft_result(0, None, Some(5)));
+        assert!(waits_for_craft_result(3, Some(MenuKind::Crafting), Some(9)));
+        assert!(!waits_for_craft_result(
+            3,
+            Some(MenuKind::Crafting),
+            Some(10)
+        ));
+        assert!(!waits_for_craft_result(
+            3,
+            Some(MenuKind::Generic9x3),
+            Some(0)
+        ));
+        // outside clicks (-999) never wait
+        assert!(!waits_for_craft_result(0, None, None));
+        let pickup = click_operation(0, 0, 0).unwrap();
+        assert_eq!(pickup.slot_num(), Some(0));
+        assert_eq!(
+            ClickOperation::Pickup(PickupClick::LeftOutside).slot_num(),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn unequip_hand_without_inventory_is_not_connected() {
         let bot = Bot::new(crate::test_util::despawned_client());
