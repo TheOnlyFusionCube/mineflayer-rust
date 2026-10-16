@@ -20,6 +20,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LIVE_DIR="$ROOT/.live"
 PORT=25566
+RCON_PORT=25576
 MANIFEST_URL="https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 BOOT_TIMEOUT_SECS=120
 
@@ -231,12 +232,19 @@ start_server() {
     fi
 
     printf 'eula=true\n' > "$LIVE_DIR/eula.txt"
+    # RCON is for this script only: bound to localhost (server-ip) with a
+    # fresh random password per start, written only into the ignored .live/.
+    rcon_password="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
     cat > "$LIVE_DIR/server.properties" <<EOF
 online-mode=false
+server-ip=127.0.0.1
 server-port=$PORT
 level-seed=13371337
 sync-chunk-writes=false
 spawn-protection=0
+enable-rcon=true
+rcon.port=$RCON_PORT
+rcon.password=$rcon_password
 EOF
 
     : > "$LIVE_DIR/server.log"
@@ -254,6 +262,14 @@ EOF
         fi
         if grep -q 'Done (' "$LIVE_DIR/server.log" 2>/dev/null; then
             grep 'Done (' "$LIVE_DIR/server.log" | tail -1
+            # every join at the world spawn: vanilla scatters joins over a
+            # 21x21 area (spawn radius 10), which made the live tests depend
+            # on random terrain (E5)
+            # (MC 26.1 names the rule respawn_radius; older names as fallback)
+            rcon "gamerule respawn_radius 0" || rcon "gamerule spawnRadius 0" || {
+                echo "error: could not set the spawn radius over RCON" >&2
+                exit 1
+            }
             echo "LIVE_SERVER_READY"
             return
         fi
@@ -264,6 +280,41 @@ EOF
     echo "error: server did not reach 'Done' within ${BOOT_TIMEOUT_SECS}s; last log lines:" >&2
     tail -20 "$LIVE_DIR/server.log" >&2
     exit 1
+}
+
+# Send one console command over RCON (localhost only); print the reply.
+# Fails when the server reports an unknown or incorrect command.
+rcon() {
+    python3 - "$RCON_PORT" "$(sed -n 's/^rcon.password=//p' "$LIVE_DIR/server.properties")" "$1" <<'PY'
+import socket, struct, sys, time
+port, password, command = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+def packet(req, kind, body):
+    data = struct.pack('<ii', req, kind) + body.encode() + b'\x00\x00'
+    return struct.pack('<i', len(data)) + data
+def read(sock):
+    size = struct.unpack('<i', sock.recv(4))[0]
+    data = b''
+    while len(data) < size:
+        data += sock.recv(size - len(data))
+    req, _ = struct.unpack('<ii', data[:8])
+    return req, data[8:-2].decode(errors='replace')
+for attempt in range(20):
+    try:
+        sock = socket.create_connection(('127.0.0.1', port), timeout=5)
+        break
+    except OSError:
+        time.sleep(0.5)
+else:
+    sys.exit('rcon: no connection')
+sock.sendall(packet(1, 3, password))
+if read(sock)[0] == -1:
+    sys.exit('rcon: login refused')
+sock.sendall(packet(2, 2, command))
+reply = read(sock)[1]
+print(f'rcon> {command}: {reply}')
+low = reply.lower()
+sys.exit(1 if ('unknown' in low or 'incorrect' in low or 'error' in low) else 0)
+PY
 }
 
 case "${1:-start}" in

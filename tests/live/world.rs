@@ -69,31 +69,31 @@ async fn world_blocks() {
     assert_eq!(below.bounding_box(), mineflayer::BoundingBox::Block);
     assert_eq!(below.state_id(), below.state.id() as u32);
 
-    // `findBlocks` — grass or dirt within 16, closest-first.
-    let found = bot.find_blocks(
-        FindBlocksOpts::new([BlockKind::GrassBlock, BlockKind::Dirt])
-            .max_distance(16.)
-            .count(4),
+    // `findBlocks` — grass, dirt, or the kind under the feet within 16,
+    // closest-first. The block under the feet always matches, so the check
+    // does not depend on the spawn terrain (E5: a spawn with no grass or
+    // dirt within 16 failed 1 run in 10).
+    let kinds = [BlockKind::GrassBlock, BlockKind::Dirt, below.kind()];
+    let found = bot.find_blocks(FindBlocksOpts::new(kinds).max_distance(16.).count(4));
+    assert!(
+        found.contains(&below_pos) || found.len() == 4,
+        "find_blocks missed the block under the feet {below_pos:?} ({}): {found:?}",
+        below.name()
     );
-    assert!(!found.is_empty(), "no grass/dirt found near spawn");
     let distances: Vec<f64> = found.iter().map(|p| p.distance_to(feet)).collect();
     let mut sorted = distances.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(distances, sorted, "find_blocks isn't closest-first");
 
     // `findBlock` returns the closest hit as a `Block`.
-    let nearest = bot.find_block(
-        FindBlocksOpts::new([BlockKind::GrassBlock, BlockKind::Dirt]).max_distance(16.),
-    );
+    let nearest = bot.find_block(FindBlocksOpts::new(kinds).max_distance(16.));
     assert_eq!(nearest.map(|b| b.pos), found.first().copied());
 
     // predicate matching — same result, spelled as a `Fn(&Block)`.
     let pred_found = bot.find_blocks(
-        FindBlocksOpts::new(|b: &mineflayer::Block| {
-            b.kind() == BlockKind::GrassBlock || b.kind() == BlockKind::Dirt
-        })
-        .max_distance(16.)
-        .count(4),
+        FindBlocksOpts::new(move |b: &mineflayer::Block| kinds.contains(&b.kind()))
+            .max_distance(16.)
+            .count(4),
     );
     assert!(
         !pred_found.is_empty(),

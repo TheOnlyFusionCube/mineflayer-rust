@@ -12,7 +12,7 @@
 use std::time::Duration;
 
 use crate::common::{collect_until, horizontal_distance};
-use mineflayer::{Bot, BotEvent, Control};
+use mineflayer::{Bot, BotEvent, Control, Vec3};
 
 #[tokio::test]
 #[ignore = "requires the live fixture server on localhost:25566"]
@@ -59,27 +59,27 @@ async fn movement() {
     )
     .await;
     bot.wait_for_ticks(60).await.expect("wait_for_ticks");
-    // the persistent fixture can wall off the spawn on some headings —
-    // sweep the compass until a heading really walks
-    let mut moved = bot.position();
-    for heading in 0..4 {
-        if horizontal_distance(start, moved) > 1.0 {
+    // a random spawn point can be walled off on some headings (trees,
+    // 2-block steps) — sweep 8 headings and judge each by its own progress
+    // (E5: judging every heading against the spawn point failed 1 run in 10)
+    let mut walked = horizontal_distance(start, bot.position()) > 1.0;
+    let mut tries = Vec::new();
+    for heading in 0..8 {
+        if walked {
             break;
         }
         let base = bot.position();
-        let target = match heading {
-            0 => base.east(5.0),
-            1 => base.south(5.0),
-            2 => base.west(5.0),
-            _ => base.north(5.0),
-        };
+        let angle = f64::from(heading) * std::f64::consts::FRAC_PI_4;
+        let target = Vec3::new(base.x + 5. * angle.cos(), base.y, base.z + 5. * angle.sin());
         bot.look_at(target, false).await.expect("look_at failed");
-        bot.wait_for_ticks(40).await.expect("wait_for_ticks");
-        moved = bot.position();
+        bot.wait_for_ticks(30).await.expect("wait_for_ticks");
+        let progress = horizontal_distance(base, bot.position());
+        tries.push((heading, progress));
+        walked = progress > 1.0;
     }
     assert!(
-        horizontal_distance(start, moved) > 1.0,
-        "bot never walked on any heading: {start:?} -> {moved:?}"
+        walked,
+        "bot never walked on any heading from {start:?}: (heading, progress) {tries:?}"
     );
     bot.set_control_state(Control::Jump, false);
 
