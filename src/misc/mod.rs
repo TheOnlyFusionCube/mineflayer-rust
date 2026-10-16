@@ -79,11 +79,12 @@ impl Default for MiscState {
 /// diffs for `Sleep`/`Wake`/`Breath`.
 pub(crate) fn after_event(
     client: &azalea::Client,
+    scoreboard: &parking_lot::Mutex<scoreboard::ScoreboardState>,
     bot_event: &BotEvent,
     events: &broadcast::Sender<BotEvent>,
 ) {
     let extra = match bot_event {
-        BotEvent::Packet(packet) => handle_packet(client, packet),
+        BotEvent::Packet(packet) => handle_packet(client, scoreboard, packet),
         BotEvent::Tick => tick_diffs(client),
         _ => return,
     };
@@ -135,7 +136,11 @@ fn tick_diffs(client: &azalea::Client) -> Vec<BotEvent> {
 }
 
 /// Decode a clientbound packet into misc-domain state changes + events.
-fn handle_packet(client: &azalea::Client, packet: &ClientboundGamePacket) -> Vec<BotEvent> {
+fn handle_packet(
+    client: &azalea::Client,
+    scoreboard: &parking_lot::Mutex<scoreboard::ScoreboardState>,
+    packet: &ClientboundGamePacket,
+) -> Vec<BotEvent> {
     // Entity sounds carry a minecraft entity id instead of a position —
     // resolve it here so the pure handler stays free of ECS access.
     let entity_pos = match packet {
@@ -145,7 +150,7 @@ fn handle_packet(client: &azalea::Client, packet: &ClientboundGamePacket) -> Vec
 
     // the scoreboard domain owns its own state (and the login/respawn
     // clear); it consumes only scoreboard packets
-    if let Some(events) = scoreboard::handle_for(client, packet) {
+    if let Some(events) = scoreboard::handle_for(scoreboard, packet) {
         return events;
     }
     let mut ecs = client.ecs.write();
@@ -1100,6 +1105,7 @@ mod tests {
         // it is despawned the lookup must miss, not panic.
         let out = handle_packet(
             &client,
+            &Default::default(),
             &ClientboundGamePacket::SoundEntity(ClientboundSoundEntity {
                 sound: Holder::Reference(SoundEvent::EntityFishingBobberSplash),
                 source: SoundSource::Neutral,

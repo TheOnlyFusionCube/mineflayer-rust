@@ -9,9 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-// the `Component` derive needs the crate under its real name
 use azalea::chat::style::ChatFormatting;
-use azalea::ecs as bevy_ecs;
 use azalea::{
     FormattedText,
     protocol::packets::game::{
@@ -22,15 +20,19 @@ use azalea::{
     },
 };
 
+use parking_lot::Mutex;
+
 use crate::{Bot, BotEvent};
 
 /// Scoreboard/team/boss-bar state — `bot.scoreboards`, `bot.displaySlots`
 /// (`bot.scoreboard(slot)`), `bot.teams`, `bot.teamMap`, `bot.bossBars`.
 ///
-/// Upstream keeps these in JS objects owned by the scoreboard plugin; the
-/// component lives here (not in `MiscState`) so the domain owns its whole
-/// lifecycle: create, packet decode, and the login/respawn clear.
-#[derive(azalea::ecs::prelude::Component, Default)]
+/// Upstream keeps these in JS objects owned by the scoreboard plugin. Only
+/// the bridge writes this state and `Bot` reads it without any azalea
+/// component, so it lives in `BotShared` (the storage rule there), not on
+/// the client entity; the domain still owns its whole lifecycle: packet
+/// decode and the login/respawn clear.
+#[derive(Default)]
 pub(crate) struct ScoreboardState {
     /// Objective name -> scoreboard.
     pub scoreboards: HashMap<String, ScoreBoard>,
@@ -57,32 +59,21 @@ impl ScoreboardState {
     }
 }
 
-/// Lazily create the component and run `f` under the ECS write lock, like
-/// `misc_mut`.
-fn with_state<R>(client: &azalea::Client, f: impl FnOnce(&mut ScoreboardState) -> R) -> Option<R> {
-    let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
-    if entity.get_mut::<ScoreboardState>().is_none() {
-        entity.insert(ScoreboardState::default());
-    }
-    let mut state = entity.get_mut::<ScoreboardState>()?;
-    Some(f(&mut state))
-}
-
 /// Decode a packet into scoreboard state; `Some(events)` when the packet
 /// belongs to this domain (login/respawn clear the state and emit nothing),
 /// `None` when another domain owns it.
 pub(crate) fn handle_for(
-    client: &azalea::Client,
+    state: &Mutex<ScoreboardState>,
     packet: &ClientboundGamePacket,
 ) -> Option<Vec<BotEvent>> {
     if matches!(
         packet,
         ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_)
     ) {
-        return with_state(client, |state| state.reset_on_login()).map(|_| Vec::new());
+        state.lock().reset_on_login();
+        return Some(Vec::new());
     }
-    with_state(client, |state| handle(state, packet)).flatten()
+    handle(&mut state.lock(), packet)
 }
 
 /// One entry on a [`ScoreBoard`] — the `itemsMap` values (`{name, value}`,
@@ -326,50 +317,44 @@ impl Bot {
     /// `bot.scoreboards` — every known objective, keyed by name. A snapshot;
     /// upstream returns a live view.
     pub fn scoreboards(&self) -> HashMap<String, ScoreBoard> {
-        self.client
-            .get_component::<ScoreboardState>()
-            .map(|m| m.scoreboards.clone())
-            .unwrap_or_default()
+        {
+            let m = self.shared.scoreboard.lock();
+            m.scoreboards.clone()
+        }
     }
 
     /// `bot.scoreboard` — the objective currently bound to a display slot
     /// (`ScoreBoard.positions` upstream; `bot.scoreboard('sidebar')` is
     /// `bot.scoreboard(ScoreboardSlot::Sidebar)` here).
     pub fn scoreboard(&self, slot: ScoreboardSlot) -> Option<ScoreBoard> {
-        let m = self.client.get_component::<ScoreboardState>()?;
+        let m = self.shared.scoreboard.lock();
         let name = m.display_slots.get(&slot)?;
         m.scoreboards.get(name).cloned()
     }
 
     /// `bot.teams` — every known team, keyed by name. A snapshot.
     pub fn teams(&self) -> HashMap<String, Team> {
-        self.client
-            .get_component::<ScoreboardState>()
-            .map(|m| m.teams.clone())
-            .unwrap_or_default()
+        {
+            let m = self.shared.scoreboard.lock();
+            m.teams.clone()
+        }
     }
 
     /// `bot.teamMap` — member name → team, keyed like upstream. A snapshot.
     pub fn team_map(&self) -> HashMap<String, Team> {
-        self.client
-            .get_component::<ScoreboardState>()
-            .map(|m| {
-                m.team_map
-                    .iter()
-                    .filter_map(|(member, team)| {
-                        m.teams.get(team).map(|t| (member.clone(), t.clone()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        let m = self.shared.scoreboard.lock();
+        m.team_map
+            .iter()
+            .filter_map(|(member, team)| m.teams.get(team).map(|t| (member.clone(), t.clone())))
+            .collect()
     }
 
     /// `bot.bossBars` — every active boss bar. A snapshot.
     pub fn boss_bars(&self) -> Vec<BossBar> {
-        self.client
-            .get_component::<ScoreboardState>()
-            .map(|m| m.boss_bars.values().cloned().collect())
-            .unwrap_or_default()
+        {
+            let m = self.shared.scoreboard.lock();
+            m.boss_bars.values().cloned().collect()
+        }
     }
 }
 
@@ -978,55 +963,50 @@ mod tests {
             protocol::packets::{common::CommonPlayerSpawnInfo, game::c_login::ClientboundLogin},
         };
 
-        let client = crate::test_util::live_entity_client(());
-        // seed state through the component the domain owns
-        client
-            .ecs
-            .write()
-            .entity_mut(client.entity)
-            .insert(ScoreboardState {
-                scoreboards: [(
-                    "o".to_string(),
-                    ScoreBoard {
-                        name: "o".into(),
-                        title: "t".into(),
-                        items_map: Default::default(),
-                    },
-                )]
-                .into(),
-                display_slots: [(ScoreboardSlot::Sidebar, "o".to_string())].into(),
-                teams: [(
-                    "t".to_string(),
-                    Team {
-                        name: "t".into(),
-                        display_name: "d".into(),
-                        friendly_fire: false,
-                        see_friendly_invisibles: false,
-                        nametag_visibility: NameTagVisibility::Always,
-                        collision_rule: CollisionRule::Always,
-                        color: ChatFormatting::Red,
-                        prefix: "".into(),
-                        suffix: "".into(),
-                        members: Default::default(),
-                    },
-                )]
-                .into(),
-                team_map: [("m".to_string(), "t".to_string())].into(),
-                boss_bars: [(
-                    "b".to_string(),
-                    BossBar {
-                        entity_uuid: "b".into(),
-                        title: "t".into(),
-                        health: 1.0,
-                        dividers: 0,
-                        color: BossBarColor::Purple,
-                        darken_sky: false,
-                        dragon_bar: false,
-                        create_fog: false,
-                    },
-                )]
-                .into(),
-            });
+        // seed the state the domain owns
+        let state = Mutex::new(ScoreboardState {
+            scoreboards: [(
+                "o".to_string(),
+                ScoreBoard {
+                    name: "o".into(),
+                    title: "t".into(),
+                    items_map: Default::default(),
+                },
+            )]
+            .into(),
+            display_slots: [(ScoreboardSlot::Sidebar, "o".to_string())].into(),
+            teams: [(
+                "t".to_string(),
+                Team {
+                    name: "t".into(),
+                    display_name: "d".into(),
+                    friendly_fire: false,
+                    see_friendly_invisibles: false,
+                    nametag_visibility: NameTagVisibility::Always,
+                    collision_rule: CollisionRule::Always,
+                    color: ChatFormatting::Red,
+                    prefix: "".into(),
+                    suffix: "".into(),
+                    members: Default::default(),
+                },
+            )]
+            .into(),
+            team_map: [("m".to_string(), "t".to_string())].into(),
+            boss_bars: [(
+                "b".to_string(),
+                BossBar {
+                    entity_uuid: "b".into(),
+                    title: "t".into(),
+                    health: 1.0,
+                    dividers: 0,
+                    color: BossBarColor::Purple,
+                    darken_sky: false,
+                    dragon_bar: false,
+                    create_fog: false,
+                },
+            )]
+            .into(),
+        });
 
         let login = ClientboundGamePacket::Login(ClientboundLogin {
             player_id: azalea::core::entity_id::MinecraftEntityId(0),
@@ -1052,9 +1032,9 @@ mod tests {
             },
             enforces_secure_chat: false,
         });
-        let events = handle_for(&client, &login);
+        let events = handle_for(&state, &login);
         assert!(matches!(&events, Some(v) if v.is_empty()));
-        let state = client.get_component::<ScoreboardState>().unwrap();
+        let state = state.lock();
         assert!(state.scoreboards.is_empty() && state.display_slots.is_empty());
         assert!(state.teams.is_empty() && state.team_map.is_empty());
         assert_eq!(state.boss_bars.len(), 1, "boss bars survive login");

@@ -108,6 +108,8 @@ pub struct CollectOpts {
 /// Facade state azalea has no slot for — the plugin's mutable fields
 /// (`chestLocations`, `itemFilter`, `movements`) plus the cancellation
 /// bookkeeping for `cancelTask`/`append`.
+/// Stored as an ECS component created on first use — rule 2 of the
+/// storage rule on `bot::BotShared`.
 #[derive(Component)]
 struct CollectState {
     /// The in-flight collects' generation — `collect` snapshots it,

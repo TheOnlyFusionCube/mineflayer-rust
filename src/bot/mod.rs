@@ -65,6 +65,21 @@ pub struct Bot {
 /// [`BotShared::new`], instead of being threaded through `Bot`'s fields,
 /// `connect_azalea`, `Bot::new`, and the bridge's dependency bag. Each
 /// domain keeps its own lock; nothing here is a single global lock.
+///
+/// Storage rule — where new per-bot state goes:
+///
+/// 1. **ECS component on the client entity** when an ECS system reads it
+///    (`interact::InteractShared`, read by the dig-abort plugin) or when
+///    it must be read in the same ECS access as azalea components
+///    (`misc::MiscState` with `Pose`/`AirSupply`,
+///    `pathfinder::PathfinderFacade` with azalea's `Pathfinder`).
+/// 2. **ECS component, created on first use** for the plugin-analog state
+///    (`tool`, `pvp`, `collect`, `auto_eat`): a plugin that is never used
+///    allocates nothing, and the state goes away with the entity.
+/// 3. **Here** for everything else: state that the bridge writes from
+///    packets and `Bot` handles read, with no azalea component involved
+///    (chat, world, entities, windows, typed windows, recipes,
+///    scoreboard). A domain lock here never needs the ECS lock to read.
 #[derive(Clone)]
 pub(crate) struct BotShared {
     /// The bot's event stream (see [`Bot::events`]).
@@ -96,6 +111,8 @@ pub(crate) struct BotShared {
     /// Recipe-book state (unlocked recipes from `c_recipe_book_add`/
     /// `c_recipe_book_remove`) — see `craft::RecipeBook`.
     pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
+    /// Scoreboard/team/boss-bar state — see `scoreboard::ScoreboardState`.
+    pub scoreboard: Arc<Mutex<crate::scoreboard::ScoreboardState>>,
 }
 
 /// Lock rule (see docs/PORT-PLAN.md, B9). Two lock families meet here:
@@ -124,6 +141,7 @@ impl BotShared {
             ))),
             window_data: Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new())),
             recipes: Arc::new(Mutex::new(crate::craft::RecipeBook::default())),
+            scoreboard: Arc::new(Mutex::new(crate::scoreboard::ScoreboardState::default())),
             events,
         }
     }

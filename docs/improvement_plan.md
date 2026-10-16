@@ -679,6 +679,14 @@ No document tells which location to use for new state.
 
 **Acceptance.** The rule is written, and each item obeys it or has a comment with the reason.
 
+**Status:** done. The rule is on `BotShared` (`src/bot/mod.rs`) and has
+three cases: an ECS system or an ECS query reads the state, plugin state
+created on first use, or `BotShared` for all other state. One item broke
+the rule: `ScoreboardState` was an ECS component, but only the bridge
+writes it and no azalea component is read with it. It is now
+`BotShared::scoreboard`, so a scoreboard packet does not take the ECS
+write lock. The four plugin states have a comment that names rule 2.
+
 ## 7. Phase E: tests
 
 ### E1. One live test binary with shared helpers (P2)

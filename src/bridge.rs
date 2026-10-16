@@ -67,6 +67,7 @@ pub(crate) fn spawn(
             windows,
             window_data,
             recipes,
+            scoreboard,
         } = shared;
         let BridgeOptions {
             client_information,
@@ -160,7 +161,7 @@ pub(crate) fn spawn(
                         // misc domains (scoreboards, sounds, …) decode Packet
                         // events into facade state + their own BotEvents,
                         // emitted after the source event itself.
-                        crate::misc::after_event(&client, &bot_event, &events);
+                        crate::misc::after_event(&client, &scoreboard, &bot_event, &events);
                     }
                     for bot_event in movement_events {
                         let _ = events.send(bot_event);

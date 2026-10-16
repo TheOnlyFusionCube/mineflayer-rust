@@ -66,6 +66,8 @@ pub struct EquipOpts {
 
 /// Facade state azalea has no slot for — upstream's
 /// `Tool.chestLocations` array.
+/// Stored as an ECS component created on first use — rule 2 of the
+/// storage rule on `bot::BotShared`.
 #[derive(Component, Default)]
 struct ToolState {
     /// `chestLocations` — positions of chests `getFromChest` may pull

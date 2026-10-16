@@ -133,6 +133,8 @@ impl Default for PvpOpts {
 /// flag for its driver task, and the option fields — the same shape
 /// [`crate::pathfinder`] uses for its watcher
 /// (`PathfinderFacade.watcher_cancel`).
+/// Stored as an ECS component created on first use — rule 2 of the
+/// storage rule on `bot::BotShared`.
 #[derive(Component, Default)]
 struct PvpState {
     /// The entity `attack` is driving at; `bot.pvp.target`.

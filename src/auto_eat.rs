@@ -182,6 +182,8 @@ pub struct EatOpts {
 /// Facade state azalea has no slot for: the opts, the enabled/eating
 /// flags, the in-flight eat's cancel flag, and the monitor driver's
 /// cancel flag — the same shape [`crate::pvp`] uses for its driver.
+/// Stored as an ECS component created on first use — rule 2 of the
+/// storage rule on `bot::BotShared`.
 #[derive(Component, Default)]
 struct AutoEatState {
     opts: AutoEatOpts,
