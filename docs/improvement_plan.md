@@ -513,6 +513,12 @@ A caller must use `.await` without a reason.
 
 **Acceptance.** Each `async fn` in the public API waits for something, or has a comment with the parity reason.
 
+**Status:** done. The rule is in the `inventory` module documentation.
+The four functions are now plain `fn`. They are synchronous upstream too.
+`cancel_eat` now calls `deactivate_item` directly and does not start a
+task. A scan of every `pub async fn` found only these four with no wait.
+`cancel_task`, `fish`, and `goto` wait inside `tokio::select!`.
+
 ### B7. One shared event-wait helper (P2)
 
 **Problem.**

@@ -91,9 +91,9 @@ async fn inventory_reads_and_quickbar() {
     assert_eq!(bot.equipment_dest_slot(EquipDest::OffHand), 45);
 
     // activate_item on an empty hand is a silent no-op (upstream)
-    bot.activate_item(false).await;
+    bot.activate_item(false);
     assert!(!bot.using_held_item());
-    bot.deactivate_item().await;
+    bot.deactivate_item();
 
     // click_window validation: bad mode errors, -999 outside-click is ok
     assert!(bot.click_window(0, 0, 7).await.is_err());

@@ -824,7 +824,7 @@ impl Bot {
             if result.is_ok() {
                 self.sync_window(&window).await;
             }
-            self.close_window(&window).await;
+            self.close_window(&window);
         }
         result
     }

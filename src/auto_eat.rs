@@ -363,10 +363,8 @@ impl AutoEat<'_> {
             t.eat_generation += 1;
             t.eat_notify.notify_waiters();
         }
-        // upstream deactivateItem() in cancelEat; deactivate_item is
-        // async here, so the packet write goes on the runtime
-        let bot = self.bot.clone();
-        tokio::spawn(async move { bot.deactivate_item().await });
+        // upstream deactivateItem() in cancelEat
+        self.bot.deactivate_item();
     }
 
     /// Everything between the `is_eating` claim and its release:
@@ -427,8 +425,8 @@ impl AutoEat<'_> {
         notified.as_mut().enable();
 
         // sanitize any prior use state before activating, like upstream
-        bot.deactivate_item().await;
-        bot.activate_item(offhand).await;
+        bot.deactivate_item();
+        bot.activate_item(offhand);
         bot.emit_event(BotEvent::EatStart {
             food: food.clone(),
             offhand,

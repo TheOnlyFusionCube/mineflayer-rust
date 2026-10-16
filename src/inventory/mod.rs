@@ -6,6 +6,11 @@
 //! toss) follows upstream `inventory.js`/`simple_inventory.js` closely;
 //! where upstream clicks through `clickWindow` we send the equivalent
 //! azalea [`ClickOperation`] on the same window.
+//!
+//! A method here is `async` only when it waits for something (a server
+//! reply, a tick, a window event). `update_held_item`, `close_window`,
+//! `activate_item`, and `deactivate_item` are synchronous upstream and
+//! only write a packet or emit an event, so they are plain `fn`.
 
 use std::{ops::Range, time::Duration};
 
@@ -250,7 +255,7 @@ impl Bot {
         }
         self.client.set_selected_hotbar_slot(slot);
         self.shared.windows.lock().selected_hotbar = Some(slot);
-        self.update_held_item().await;
+        self.update_held_item();
         Ok(())
     }
 
@@ -269,7 +274,7 @@ impl Bot {
     /// `bot.updateHeldItem()` — re-emit [`BotEvent::HeldItemChanged`].
     /// Real changes are also emitted packet-side; upstream calls this
     /// after click choreography.
-    pub async fn update_held_item(&self) {
+    pub fn update_held_item(&self) {
         self.emit_event(BotEvent::HeldItemChanged(self.held_item()));
     }
 
@@ -402,7 +407,7 @@ impl Bot {
     /// player-inventory region back like upstream's `copyInventory`, and
     /// emit [`BotEvent::WindowClose`]. Idempotent; the server ack is
     /// deduplicated.
-    pub async fn close_window(&self, window: &Window) {
+    pub fn close_window(&self, window: &Window) {
         window.close();
     }
 
@@ -413,7 +418,7 @@ impl Bot {
         self.click_window(i32::from(item.slot), 0, 0).await?;
         self.click_window(-999, 0, 0).await?;
         let window = self.current_window().unwrap_or_else(|| self.inventory());
-        self.close_window(&window).await;
+        self.close_window(&window);
         Ok(())
     }
 
@@ -449,7 +454,7 @@ impl Bot {
     pub async fn move_slot_item(&self, source_slot: i32, dest_slot: i32) -> Result<()> {
         self.click_window(source_slot, 0, 0).await?;
         self.click_window(dest_slot, 0, 0).await?;
-        self.update_held_item().await;
+        self.update_held_item();
         // if we're holding an item, put it back where the source item was
         if self.inventory().selected_item().is_some() {
             self.click_window(source_slot, 0, 0).await?;
@@ -577,7 +582,7 @@ impl Bot {
     /// send `use_item` for the main or off hand and set `using_held_item`
     /// (the packet is not sent for an empty hand — upstream returns
     /// early the same way).
-    pub async fn activate_item(&self, off_hand: bool) {
+    pub fn activate_item(&self, off_hand: bool) {
         let has_item = if off_hand {
             self.inventory()
                 .slot(45)
@@ -614,7 +619,7 @@ impl Bot {
 
     /// `bot.deactivateItem()` — release the held item (`player_action`
     /// status 5 / `ReleaseUseItem`) and clear `using_held_item`.
-    pub async fn deactivate_item(&self) {
+    pub fn deactivate_item(&self) {
         self.shared.windows.lock().using_held_item = false;
         self.client.write_packet(ServerboundPlayerAction {
             action: s_player_action::Action::ReleaseUseItem,
@@ -662,7 +667,7 @@ impl Bot {
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        self.activate_item(false).await;
+        self.activate_item(false);
         if tokio::time::timeout(Duration::from_millis(2500), notified)
             .await
             .is_err()
