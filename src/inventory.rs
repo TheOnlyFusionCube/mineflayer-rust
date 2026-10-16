@@ -949,6 +949,12 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
         .clone()
         .ok_or_else(|| Error::Operation("transfer requires a window".into()))?;
     let mut count = options.effective_count();
+    if count < 0 {
+        // upstream's loop only stops at exactly zero (`count -= 1` walks a
+        // negative count away from it and clicks until the source runs
+        // out); refuse instead of clicking unbounded
+        return Err(Error::Operation("transfer count must be >= 0".into()));
+    }
     let kind = options.kind;
     let metadata = options.metadata;
     let nbt = options.nbt;
@@ -1085,6 +1091,32 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
 mod tests {
     use super::*;
     use azalea::inventory::{components::Damage, operations::CloneClick};
+
+    /// A negative `count` must error before any click. Zero keeps
+    /// upstream's behavior: the `count === 0` branch runs the cursor
+    /// cleanup and completes.
+    #[tokio::test]
+    async fn transfer_rejects_negative_counts_and_noops_zero() {
+        let bot = Bot::new(crate::test_util::despawned_client());
+        let opts = |count: i32| TransferOpts {
+            window: Some(bot.inventory()),
+            kind: azalea::registry::builtin::ItemKind::Stone,
+            metadata: None,
+            nbt: None,
+            count: Some(count),
+            source_start: 9,
+            source_end: Some(36),
+            dest_start: -999,
+            dest_end: None,
+        };
+        let err = transfer(opts(-1)).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::Operation(m) if m.contains(">= 0")),
+            "got {err:?}"
+        );
+        // zero completes without an error, like upstream
+        transfer(opts(0)).await.unwrap();
+    }
 
     /// `unequip(Hand)` on a despawned client must return `NotConnected`.
     /// The baseline read `slots().unwrap_or_default()` and indexed the

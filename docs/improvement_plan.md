@@ -241,6 +241,13 @@ The loop moves and drops items until the source has no items.
 
 **Acceptance.** A negative count returns an error. No click occurs.
 
+**Status:** done. A negative count returns
+`Operation("transfer count must be >= 0")` before any click. The planned
+"error when less than 1" was narrowed to negative only after the upstream
+comparison step: upstream's `count === 0` branch is a made-up no-op
+(cursor cleanup, no clicks), and the parity row now records both
+behaviors (negative = divergence, zero = upstream no-op).
+
 ### A5. User callbacks run while the world lock is held (P1) (confirm first)
 
 **Problem.**
