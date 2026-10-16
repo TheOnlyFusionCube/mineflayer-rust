@@ -148,7 +148,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.findBlock(options)` | world | `bot.find_block(FindBlocksOpts) -> Option<Block>` | ported | — |
 | `bot.updateSign(block, text, back)` | world | `bot.update_sign(&block, text, back) -> Result<()>` | diverges | write-only: sends s_sign_update (front/back); sign text unreadable (no block-entity storage — U11) |
 | `bot.world` | world | `bot.world() -> Option<WorldRef>` | diverges | WorldRef wraps the client (parking_lot lock type isn't nameable); get_block_state/block_at/raycast/find_blocks/set_block_state |
-| `bot.spawnPoint` | world | `bot.spawn_point() -> BlockPos` | ported | c_set_default_spawn_position decoded in packet bridge |
+| `bot.spawnPoint` | world | `bot.spawn_point() -> Option<BlockPos>` | ported | c_set_default_spawn_position decoded in packet bridge; `None` before the packet (upstream: `undefined`) |
 | `bot._updateBlockState (internal)` | world | `n/a` | wontfix | azalea applies block updates to the world itself |
 | `bot._getBlockAtEyeLevel (internal)` | world | `n/a` | wontfix | internal helper; eye raycasts go through `block_at_cursor` |
 | `event('blockUpdate')` | world | `BotEvent::BlockUpdate { old, new }` | diverges | c_block_update + c_section_blocks_update decoded; `old` comes from a bounded per-position update history (`WorldState.last_block_updates`, 2¹⁶ entries, cleared on login/respawn and per-position on chunk unload) — the bridge decodes the packet only after azalea's `Update` pass applied the change to the live world, so a live read can't answer; a never-before-updated position still reports `old == new` (the post-apply read), `None` when unloaded |

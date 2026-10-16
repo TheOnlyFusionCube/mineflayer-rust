@@ -857,15 +857,15 @@ impl Bot {
     }
 
     /// `bot.spawnPoint` — decoded from `c_set_default_spawn_position`
-    /// (azalea drops it). `BlockPos::default()` until the packet arrives.
-    pub fn spawn_point(&self) -> BlockPos {
+    /// (azalea drops it). `None` until the packet arrives (upstream reads
+    /// an unset spawn point as `undefined`, not the origin).
+    pub fn spawn_point(&self) -> Option<BlockPos> {
         self.shared
             .world_state
             .read()
             .spawn_point
             .as_ref()
             .map(|g| g.pos)
-            .unwrap_or_default()
     }
 
     /// `bot.time` — `None` until the first `set_time` packet.
@@ -1319,6 +1319,14 @@ mod tests {
         assert_eq!(loc.biome_block_index, 4 + 16 * 13);
         // chunkYIndex floors the *unfloored* absolute y / 16
         assert_eq!(loc.chunk_y_index, 4);
+    }
+
+    /// Before `c_set_default_spawn_position` the spawn point is unknown,
+    /// not the origin (B5).
+    #[test]
+    fn spawn_point_is_none_before_the_packet() {
+        let bot = Bot::new(crate::test_util::despawned_client());
+        assert_eq!(bot.spawn_point(), None);
     }
 
     #[test]
