@@ -259,15 +259,26 @@ async fn recipe_book_and_craft() {
             eprintln!("not enough planks for the crafting table — stopping at planks");
             break;
         }
+        let mut tap = bot.events();
+        let started = std::time::Instant::now();
         bot.craft(&table_recipes[0], None, None)
             .await
             .expect("crafting-table craft failed");
+        let appeared = until(Duration::from_secs(5), || {
+            count_of(&bot, ItemKind::CraftingTable) >= 1
+        })
+        .await;
         assert!(
-            until(Duration::from_secs(5), || {
-                count_of(&bot, ItemKind::CraftingTable) >= 1
-            })
-            .await,
-            "crafting table never appeared in inventory"
+            appeared,
+            "crafting table never appeared in inventory after {:?}; inventory: {:?}; \
+             last events: {:?}",
+            started.elapsed(),
+            bot.inventory()
+                .inventory_items()
+                .iter()
+                .map(|i| (i.name(), i.count(), i.slot))
+                .collect::<Vec<_>>(),
+            crate::common::drain_recent(&mut tap),
         );
         crafted_table = true;
         break;
