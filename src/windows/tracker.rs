@@ -96,6 +96,8 @@ impl WindowTracker {
     /// Held-item signature change → finish any in-flight eat and clear
     /// `using_held_item` (the upstream `heldItemChanged` listener only
     /// reacts to type/count changes).
+    /// lock rule: called with the tracker lock held; the ECS read below
+    /// is brief (domain lock → ECS lock is the allowed direction).
     fn held_sig_changed(&mut self, client: &azalea::Client) {
         let sig = held_signature(client, self.selected_hotbar);
         if sig != self.last_held {
@@ -109,6 +111,9 @@ impl WindowTracker {
 /// `(kind, count)` of the currently held stack, `None` when empty or the
 /// component is missing (pre-login). `sel` overrides the ECS selection
 /// while `set_selected_hotbar_slot`'s component write is still pending.
+///
+/// lock rule: callers hold the tracker lock; the ECS read is brief
+/// (domain lock → ECS lock is the allowed direction).
 fn held_signature(client: &azalea::Client, sel: Option<u8>) -> Option<(ItemKind, i32)> {
     let inv = client.get_component::<Inventory>()?;
     let sel = sel.unwrap_or(inv.selected_hotbar_slot);
@@ -124,6 +129,8 @@ fn held_signature(client: &azalea::Client, sel: Option<u8>) -> Option<(ItemKind,
 
 /// The held stack as an [`Item`] with its absolute window slot, `None`
 /// when the hand is empty or the component is gone.
+/// lock rule: callers hold the tracker lock; the ECS read is brief
+/// (domain lock → ECS lock is the allowed direction).
 pub(crate) fn held_item(client: &azalea::Client, sel: u8) -> Option<Item> {
     let inv = client.get_component::<Inventory>()?;
     let index = crate::inventory::QUICK_BAR_START + usize::from(sel);
@@ -192,6 +199,8 @@ pub(crate) fn observe_event(
                 // slot data arrived before the open packet (upstream's
                 // prepareWindow sync branch). azalea dropped that early
                 // content — write it into the fresh menu now.
+                // lock rule: the tracker lock is held while this ECS
+                // guard is taken — allowed direction, keep it brief.
                 {
                     let mut ecs = client.ecs.write();
                     if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
@@ -264,6 +273,8 @@ pub(crate) fn observe_event(
             }
             // upstream's held_item_slot handler only emits when the slot
             // actually changed
+            // lock rule: tracker lock held while `held_sig_changed` /
+            // `held_item` take brief ECS reads — allowed direction.
             let mut t = tracker.lock();
             let changed = u32::from(sel(&t)) != p.slot;
             t.selected_hotbar = Some(p.slot as u8);
@@ -278,6 +289,8 @@ pub(crate) fn observe_event(
             let win_slot = player_inventory_slot_to_window(p.slot);
             // azalea drops this packet entirely — apply it ourselves to
             // the player menu, then report it like a `set_slot`.
+            // lock rule: this ECS guard must close before the tracker lock
+            // below (never hold the ECS lock while taking a domain lock).
             {
                 let mut ecs = client.ecs.write();
                 if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
@@ -300,6 +313,8 @@ pub(crate) fn observe_event(
             ]
         }
         ClientboundGamePacket::EntityEvent(p) => {
+            // lock rule: tracker lock held while `get_component` takes a
+            // brief ECS read — allowed direction.
             let mut t = tracker.lock();
             // upstream clears usingHeldItem on every entity_status packet
             t.using_held_item = false;
@@ -316,6 +331,8 @@ pub(crate) fn observe_event(
         ClientboundGamePacket::Cooldown(p) => {
             // upstream finishes eating when the cooldown is for the held
             // item — or whenever heldItem is null
+            // lock rule: tracker lock held across `held_signature`'s ECS
+            // read — allowed direction.
             let mut t = tracker.lock();
             let held = held_signature(client, t.selected_hotbar);
             if held.is_some_and(|(kind, _)| kind != p.item) {
@@ -370,6 +387,9 @@ fn set_content_events(
     client: &azalea::Client,
     p: &azalea::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
 ) -> Vec<BotEvent> {
+    // lock rule: tracker lock held while ECS reads (`get_component`,
+    // `patch_carried`, `held_sig_changed`, `held_item`) and the short
+    // `patch_state_id` ECS write run — allowed direction.
     let mut t = tracker.lock();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client
@@ -511,6 +531,7 @@ fn patch_carried(client: &azalea::Client, stack: &ItemStack) {
 /// Protocol id of the menu clicks target — azalea's `Inventory.id`
 /// (0 = the player window, which `WindowTracker` mirrors in `pending`/
 /// `current`).
+/// lock rule: callers hold the tracker lock; the ECS read is brief.
 fn active_inventory_id(client: &azalea::Client) -> i32 {
     client
         .get_component::<Inventory>()
@@ -529,6 +550,8 @@ fn active_inventory_id(client: &azalea::Client) -> i32 {
 /// and a resync landing mid-choreography (craft -> grab -> deposit)
 /// clobbers the cursor the next click is gated on.
 fn patch_state_id(client: &azalea::Client, state_id: u32) {
+    // lock rule: callers hold the tracker lock; this ECS write is brief
+    // (domain lock → ECS lock is the allowed direction).
     let mut ecs = client.ecs.write();
     if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
         inv.state_id = state_id;
@@ -545,6 +568,10 @@ fn set_slot_events(
     client: &azalea::Client,
     p: &azalea::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
 ) -> Vec<BotEvent> {
+    // lock rule: the tracker lock is held while ECS reads (and, through
+    // `patch_state_id`, one short ECS write) are taken — allowed
+    // direction; the ECS guards are brief and `t` is never held across
+    // an ECS guard's lifetime.
     let mut t = tracker.lock();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client

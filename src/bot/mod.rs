@@ -107,6 +107,19 @@ pub(crate) struct BotShared {
     pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
 }
 
+/// Lock rule (see docs/PORT-PLAN.md, B9). Two lock families meet here:
+/// the domain locks in [`BotShared`] and azalea's ECS lock
+/// (`client.ecs.read()/write()`, `get_component`, `entity_mut`,
+/// `client.world()`).
+///
+/// 1. A domain lock **may** be held while the ECS lock is taken. The
+///    window observer and the world-state observer do this, and it is
+///    safe because the ECS guard is only ever held for a moment under
+///    them.
+/// 2. Never take a domain lock while an ECS guard is alive — the
+///    reverse order would cross with (1) and deadlock a queued writer.
+///    If a value from the ECS is needed under a domain lock later, copy
+///    it out, drop the guard, then lock.
 impl BotShared {
     pub(crate) fn new(events: broadcast::Sender<BotEvent>) -> Self {
         Self {

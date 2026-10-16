@@ -694,6 +694,9 @@ impl Default for PathfinderFacade {
 
 /// Run `f` against the [`PathfinderFacade`] component, inserting a default
 /// one first if the client entity lacks it. `None` when the entity is gone.
+///
+/// lock rule: `f` runs while the ECS lock is held — it must not take any
+/// domain lock (never take a domain lock while an ECS guard is alive).
 fn facade_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut PathfinderFacade) -> R) -> Option<R> {
     let mut ecs = client.ecs.write();
     let mut entity = ecs.get_entity_mut(client.entity).ok()?;
@@ -705,6 +708,9 @@ fn facade_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut PathfinderFacade) 
 
 /// Read from the [`PathfinderFacade`] component. `None` when it or the
 /// entity doesn't exist yet.
+///
+/// lock rule: `f` runs while the ECS lock is held — it must not take any
+/// domain lock.
 fn facade<R>(client: &azalea::Client, f: impl FnOnce(&PathfinderFacade) -> R) -> Option<R> {
     let ecs = client.ecs.read();
     let entity = ecs.get_entity(client.entity).ok()?;
@@ -713,19 +719,27 @@ fn facade<R>(client: &azalea::Client, f: impl FnOnce(&PathfinderFacade) -> R) ->
 
 /// Publish the `Movements` constraints into `CustomPathfinderState` so
 /// [`movements_move`] sees them during the next search.
+///
+/// lock rule: the state lock is taken with no ECS guard held — the value
+/// is copied out of the ECS first (the search thread takes this state
+/// lock while holding nothing, so the reverse order would cross it).
 fn sync_constraints(client: &azalea::Client, movements: &Movements) {
-    let mut ecs = client.ecs.write();
-    let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
-        return;
+    // lock rule (bot/mod.rs): the state lock is taken after the ECS guard
+    // is dropped — never the reverse
+    let state = {
+        let mut ecs = client.ecs.write();
+        let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
+            return;
+        };
+        if entity.get::<CustomPathfinderState>().is_none() {
+            entity.insert(CustomPathfinderState::default());
+        }
+        let Some(state) = entity.get::<CustomPathfinderState>().map(|s| s.0.clone()) else {
+            return;
+        };
+        state
     };
-    let constraints = MovementConstraints::from(movements);
-    if let Some(state) = entity.get::<CustomPathfinderState>() {
-        state.0.write().insert(constraints);
-    } else {
-        let state = CustomPathfinderState::default();
-        state.0.write().insert(constraints);
-        entity.insert(state);
-    }
+    state.write().insert(MovementConstraints::from(movements));
 }
 
 /// The `bot.pathfinder` namespace — a borrowed view onto the [`Bot`],

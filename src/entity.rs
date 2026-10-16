@@ -119,6 +119,8 @@ pub(crate) fn observe_event(
     event: &Event,
 ) -> Vec<BotEvent> {
     match event {
+        // lock rule (bot/mod.rs): the entity-tracker lock is held while
+        // `handle_packet` takes its brief ECS reads — allowed direction.
         Event::Packet(packet) => tracker.write().handle_packet(client, packet.as_ref()),
         // `bot.on('spawn', () => bot.emit('entitySpawn', bot.entity))` upstream
         Event::Spawn => vec![BotEvent::EntitySpawn(client.entity())],
@@ -856,6 +858,8 @@ impl Bot {
         // Snapshot the tab list before resolving uuids: the component guard
         // holds an ECS read lock and `entity_by_uuid` re-locks it — with a
         // writer queued in between, parking_lot deadlocks the second read.
+        // (lock rule, bot/mod.rs: copy out of the ECS guard and drop it,
+        // then take the next lock.)
         let infos: Vec<PlayerInfo> = self
             .client
             .get_component::<azalea::local_player::TabList>()

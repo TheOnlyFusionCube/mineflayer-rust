@@ -535,6 +535,22 @@ A future change can add the reverse order and cause a deadlock.
 
 **Acceptance.** Each two-lock site obeys the rule and has the comment.
 
+**Status:** done. The rule is documented next to `BotShared`
+(`src/bot/mod.rs`): a domain lock may be held while the ECS lock is
+taken, never the reverse, and a value needed from the ECS under a domain
+lock is copied out first. Audit: the allowed direction is the window
+observer (`set_slot_events`, `set_content_events`, SetHeldSlot,
+EntityEvent, Cooldown, OpenScreen + the `held_signature`/`held_item`/
+`active_inventory_id`/`patch_state_id` helpers), the world-state Time
+arm, and the entity-tracker packet path — all commented. `Window::close`,
+`SetPlayerInventory`, and `entity::players` drop the ECS guard before the
+domain lock (comments name the rule). The one violation,
+`pathfinder::sync_constraints`, took `CustomPathfinderState`'s lock while
+holding the ECS write guard (the search thread locks that state while
+holding nothing, so the orders crossed); it now copies the `Arc` out,
+drops the guard, then locks. No site takes a domain lock inside
+`facade`/`facade_mut` closures (noted at their definitions).
+
 ## 5. Phase C: observability
 
 ### C1. Logs through `tracing` (P2)

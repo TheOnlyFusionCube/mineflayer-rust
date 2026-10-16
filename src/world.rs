@@ -1134,6 +1134,9 @@ fn decode_packet(
             {
                 let mut state = state.write();
                 state.game_time = p.game_time;
+                // lock rule: the world-state lock is held while
+                // `get_component`/`with_registry_holder` take brief ECS
+                // locks — allowed direction.
                 // `with_registry_holder` panics when the local player has
                 // been torn down (it reaches `Client::world` internally) —
                 // a `set_time` racing a disconnect must not take the client

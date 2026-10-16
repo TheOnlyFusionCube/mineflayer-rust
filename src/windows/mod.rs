@@ -381,6 +381,9 @@ impl Window {
             // player-inventory updates landed on the container menu, so
             // the window's player region is fresher than inventory_menu.
             // Copy it before azalea's close handler drops the menu.
+            // lock rule: this ECS guard must be dropped (the `drop(ecs)`
+            // below) before the tracker lock is taken — never hold the
+            // ECS lock while taking a domain lock.
             let mut ecs = self.shared.client.ecs.write();
             if let Some(mut inv) = ecs.get_mut::<Inventory>(self.shared.client.entity) {
                 let inv = &mut *inv;
