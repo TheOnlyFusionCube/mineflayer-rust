@@ -264,7 +264,14 @@ pub(crate) struct DigAbortPlugin;
 
 impl Plugin for DigAbortPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(GameTick, reconcile_aborted_dig.before(MiningSystems));
+        // only the order before `MiningSystems` matters; the exclusive system
+        // is otherwise unordered on purpose (no ambiguity warning)
+        app.add_systems(
+            GameTick,
+            reconcile_aborted_dig
+                .before(MiningSystems)
+                .ambiguous_with_all(),
+        );
     }
 }
 

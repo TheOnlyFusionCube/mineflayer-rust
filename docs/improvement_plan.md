@@ -654,6 +654,18 @@ A slow subscriber receives `Lagged` and loses events. The crate cannot see this 
 
 **Acceptance.** The documentation gives the capacity and the measured peak rate.
 
+**Status:** done. The G1 busy peak was 8,751 events/s, which is above the
+8,192-event capacity. The new `BotBuilder::packet_events(false)` keeps
+raw `BotEvent::Packet` off the stream (59% of the busy volume). The
+derived events still arrive. Two internal waits read raw packets, and they
+now use derived events: creative `set_inventory_slot` waits for
+`WindowUpdateSlot`, and `fish` waits for `EntitySpawn`, `EntityGone`, and
+`ParticleSpawned`. One new edge case: a full inventory resync before the
+server applies a creative write can now report "Server rejected". The
+`Bot::events` documentation gives the capacity, the loss behavior, and the
+measured rates. Tests: `packet_events_off_keeps_derived_events` and
+`fish_follows_derived_bobber_events`.
+
 ## 6. Phase D: structure
 
 ### D1. Remaining file decomposition (P3)
@@ -921,6 +933,12 @@ not to change.
 
 **Acceptance.** The results are in `docs/` with the commit and the method.
 
+**Status:** done. The results and the method are in `docs/performance.md`.
+The probe is `examples/event_rate.rs`. The probe user was made op for the
+run only (`.live/ops.json`), and the entry is removed again. The run also
+found a bevy schedule-ambiguity warning for the dig-abort reconciler. The
+reconciler is now `ambiguous_with_all()`, and the warning no longer shows.
+
 ### G2. Small performance corrections (P3)
 
 Do these items only if G1 shows a cost.
@@ -931,6 +949,12 @@ Do these items only if G1 shows a cost.
 4. `EntityTracker::forget` searches all passenger lists for each removed id. For large `RemoveEntities` packets, remove the ids in one pass.
 
 **Acceptance.** Each change has a G1 measurement before and after it.
+
+**Status:** done, no code change. G1 shows no cost for any of the four
+items: `entities()` takes 26 µs with 294 entities, and `find_blocks` with
+a predicate takes 8.8 ms at distance 64. A5 already creates a `Block` only
+inside the distance limit. `RemoveEntities` packets are rare. The
+reasons are in `docs/performance.md`.
 
 ## 10. Phase H: dependency and platform life cycle
 
