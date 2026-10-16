@@ -1263,27 +1263,25 @@ fn damage_after_absorb(damages: f64, armor: f64, toughness: f64) -> f64 {
 /// Decode the `textures` profile property into [`SkinData`]
 /// (upstream `extractSkinInformation`).
 fn skin_data(profile: &azalea::auth::game_profile::GameProfile) -> Option<SkinData> {
-    static SKIN_URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#""SKIN"\s*:\s*\{[^}]*"url"\s*:\s*"([^"]+)""#).unwrap());
-    static SKIN_MODEL: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#""SKIN"\s*:\s*\{[^}]*"metadata"\s*:\s*\{[^}]*"model"\s*:\s*"([^"]+)""#)
-            .unwrap()
-    });
-    static CAPE_URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#""CAPE"\s*:\s*\{[^}]*"url"\s*:\s*"([^"]+)""#).unwrap());
-
     let textures = profile.properties.map.get("textures")?;
     let json = String::from_utf8(base64_decode(&textures.value)?).ok()?;
+    // key order inside `textures` (and `SKIN`) is not fixed — read the
+    // documented paths, not the byte layout
+    let value: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let textures = value.get("textures")?;
+    let skin = textures.get("SKIN")?;
     Some(SkinData {
-        url: SKIN_URL.captures(&json)?.get(1)?.as_str().to_string(),
-        model: SKIN_MODEL
-            .captures(&json)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string()),
-        cape_url: CAPE_URL
-            .captures(&json)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string()),
+        url: skin.get("url")?.as_str()?.to_string(),
+        model: skin
+            .get("metadata")
+            .and_then(|m| m.get("model"))
+            .and_then(|m| m.as_str())
+            .map(str::to_string),
+        cape_url: textures
+            .get("CAPE")
+            .and_then(|c| c.get("url"))
+            .and_then(|u| u.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -1470,6 +1468,40 @@ mod tests {
         // no textures property -> None
         let bare = azalea::auth::game_profile::GameProfile::new(Default::default(), "x".into());
         assert_eq!(skin_data(&bare), None);
+    }
+
+    /// The `SKIN` object's key order is not fixed: Mojang can put
+    /// `metadata` before `url`. A regex that stops at the first `}` misses
+    /// the URL.
+    #[test]
+    fn skin_data_parses_metadata_before_url() {
+        let b64 = "eyJ0aW1lc3RhbXAiOjAsInByb2ZpbGVJZCI6ImFiYyIsInByb2ZpbGVOYW1lIjoiZmF5ZSIsInRleHR1cmVzIjp7IlNLSU4iOnsibWV0YWRhdGEiOnsibW9kZWwiOiJzbGltIn0sInVybCI6Imh0dHA6Ly90ZXh0dXJlcy5taW5lY3JhZnQubmV0L3RleHR1cmUvczIifSwiQ0FQRSI6eyJ1cmwiOiJodHRwOi8vdGV4dHVyZXMubWluZWNyYWZ0Lm5ldC90ZXh0dXJlL2MyIn19fQ==";
+        let json = r#"{"timestamp":0,"profileId":"abc","profileName":"faye","textures":{"SKIN":{"metadata":{"model":"slim"},"url":"http://textures.minecraft.net/texture/s2"},"CAPE":{"url":"http://textures.minecraft.net/texture/c2"}}}"#;
+        assert_eq!(
+            String::from_utf8(base64_decode(b64).unwrap()).unwrap(),
+            json
+        );
+        let mut properties = azalea::auth::game_profile::GameProfileProperties::default();
+        properties.map.insert(
+            "textures".to_string(),
+            azalea::auth::game_profile::ProfilePropertyValue {
+                value: b64.to_string(),
+                signature: None,
+            },
+        );
+        let profile = azalea::auth::game_profile::GameProfile {
+            uuid: Default::default(),
+            name: "faye".to_string(),
+            properties: std::sync::Arc::new(properties),
+        };
+        assert_eq!(
+            skin_data(&profile),
+            Some(SkinData {
+                url: "http://textures.minecraft.net/texture/s2".to_string(),
+                model: Some("slim".to_string()),
+                cape_url: Some("http://textures.minecraft.net/texture/c2".to_string()),
+            })
+        );
     }
 
     #[test]

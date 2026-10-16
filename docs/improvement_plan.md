@@ -332,6 +332,12 @@ If `metadata` comes before `url` in the `SKIN` object, the parse does not find t
 
 **Acceptance.** The old and the new skin tests pass.
 
+**Status:** done. `skin_data` reads `textures.SKIN.url`,
+`textures.SKIN.metadata.model`, and `textures.CAPE.url` through
+`serde_json::Value`; the three regexes are gone. The metadata-before-url
+test fails on baseline (the regex stops at the metadata's `}`) and both
+skin tests pass now; `base64_decode` and its tests are untouched.
+
 ### A9. The entity tracker keeps old entries after a dimension change (P3)
 
 **Problem.**
