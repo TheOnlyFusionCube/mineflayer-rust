@@ -12,7 +12,8 @@
 use std::time::Duration;
 
 use crate::common::{collect_until, horizontal_distance};
-use mineflayer::{Bot, BotEvent, Control, Vec3};
+use azalea::physics::collision::BlockWithShape as _;
+use mineflayer::{BlockPos, Bot, BotEvent, Control, Vec3};
 
 #[tokio::test]
 #[ignore = "requires the live fixture server on localhost:25566"]
@@ -59,12 +60,31 @@ async fn movement() {
     )
     .await;
     bot.wait_for_ticks(60).await.expect("wait_for_ticks");
-    // a random spawn point can be walled off on some headings (trees,
-    // 2-block steps) — sweep 8 headings and judge each by its own progress
-    // (E5: judging every heading against the spawn point failed 1 run in 10)
+    // The world spawn is in a bamboo jungle: stalks have collision, grow,
+    // and spread between runs, so some headings are walled off. Sweep 8
+    // headings, the ones with free collision shapes along the first two
+    // blocks first, and judge each by its own progress (E5).
+    let free = |pos: BlockPos| {
+        bot.block_at(pos)
+            .is_some_and(|b| b.state.collision_shape().is_empty())
+    };
+    let clear = |angle: f64| {
+        let feet = bot.position();
+        (1..=2).all(|step| {
+            let p = Vec3::new(
+                feet.x + f64::from(step) * angle.cos(),
+                feet.y,
+                feet.z + f64::from(step) * angle.sin(),
+            )
+            .to_block_pos_floor();
+            free(p) && free(p.up(1))
+        })
+    };
+    let mut headings: Vec<u8> = (0..8).collect();
+    headings.sort_by_key(|h| !clear(f64::from(*h) * std::f64::consts::FRAC_PI_4));
     let mut walked = horizontal_distance(start, bot.position()) > 1.0;
     let mut tries = Vec::new();
-    for heading in 0..8 {
+    for heading in headings {
         if walked {
             break;
         }
@@ -81,7 +101,11 @@ async fn movement() {
         walked,
         "bot never walked on any heading from {start:?}: (heading, progress) {tries:?}"
     );
-    bot.set_control_state(Control::Jump, false);
+    // Stop before the look checks: a bot that keeps walking into terrain
+    // can get a server position correction, which carries a rotation and
+    // replaces the look under test (E5 series 4: 2 runs in 10).
+    bot.clear_control_states();
+    bot.wait_for_ticks(10).await.expect("settle");
 
     // look_at turns the head toward the point (east, slightly above eye).
     let base = bot.position();
@@ -103,10 +127,13 @@ async fn movement() {
         dir.x_rot()
     );
 
-    // Clearing the states stops movement. The bot can't be asserted to a
-    // dead standstill — residual momentum, gravity, and water currents are
-    // outside control states — so let it settle, then check it's no longer
-    // moving at anything near walking speed.
+    // Clearing the states stops movement. Walk again first, then clear.
+    // The bot can't be asserted to a dead standstill — residual momentum,
+    // gravity, and water currents are outside control states — so let it
+    // settle, then check it's no longer moving at anything near walking
+    // speed.
+    bot.set_control_state(Control::Forward, true);
+    bot.wait_for_ticks(10).await.expect("walk");
     bot.clear_control_states();
     let states = bot.control_states();
     assert_eq!(states, mineflayer::ControlState::default());
