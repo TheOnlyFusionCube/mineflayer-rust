@@ -106,7 +106,7 @@ fn reachable_targets(bot: &Bot, pos: Vec3, min_dist: i32, count: usize) -> Vec<B
                     || (dy == 1
                         && !bot
                             .block_at(node.up(2))
-                            .is_some_and(|b| b.bounding_box() == "empty"))
+                            .is_some_and(|b| b.bounding_box() == mineflayer::BoundingBox::Empty))
                 {
                     continue;
                 }

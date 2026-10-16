@@ -66,7 +66,7 @@ async fn world_blocks() {
     let below = bot.block_at(below_pos).expect("block below feet");
     assert_ne!(below.name(), "air");
     assert_eq!(below.kind(), below.state.as_block_kind());
-    assert_eq!(below.bounding_box(), "block");
+    assert_eq!(below.bounding_box(), mineflayer::BoundingBox::Block);
     assert_eq!(below.state_id(), below.state.id() as u32);
 
     // `findBlocks` — grass or dirt within 16, closest-first.

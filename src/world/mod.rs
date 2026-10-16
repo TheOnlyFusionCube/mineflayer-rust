@@ -185,10 +185,17 @@ impl Block {
 
     /// `block.name` — e.g. `"minecraft:grass_block"`. Diverges from
     /// upstream, whose `block.name` strips the namespace
-    /// (`"grass_block"`); compare with [`crate::Item::name`], which
-    /// does strip it.
+    /// (`"grass_block"`); [`Block::short_name`] is upstream's form, like
+    /// [`crate::Item::name`].
     pub fn name(&self) -> &'static str {
         self.state.as_block_kind().to_str()
+    }
+
+    /// Upstream's `block.name` — the name without the `minecraft:`
+    /// namespace (`"grass_block"`).
+    pub fn short_name(&self) -> &'static str {
+        let name = self.name();
+        name.strip_prefix("minecraft:").unwrap_or(name)
     }
 
     /// `block.kind` — the block type, e.g. [`BlockKind::GrassBlock`].
@@ -210,12 +217,13 @@ impl Block {
         }
     }
 
-    /// `block.boundingBox` — `"block"` when the outline shape is non-empty.
-    pub fn bounding_box(&self) -> &'static str {
+    /// `block.boundingBox` — [`BoundingBox::Block`] when the outline shape
+    /// is non-empty. [`BoundingBox::as_str`] gives upstream's string.
+    pub fn bounding_box(&self) -> BoundingBox {
         if self.state.outline_shape().is_empty() {
-            "empty"
+            BoundingBox::Empty
         } else {
-            "block"
+            BoundingBox::Block
         }
     }
 
@@ -249,6 +257,25 @@ impl Block {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect()
+    }
+}
+
+/// `block.boundingBox` — upstream's `'block'`/`'empty'` string as an enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoundingBox {
+    /// The block has a non-empty outline shape (`'block'`).
+    Block,
+    /// The block has no outline shape, like air (`'empty'`).
+    Empty,
+}
+
+impl BoundingBox {
+    /// Upstream's string: `"block"` or `"empty"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::Empty => "empty",
+        }
     }
 }
 
@@ -951,6 +978,20 @@ mod tests {
         for kind in [BlockKind::Stone, BlockKind::Water, BlockKind::ShortGrass] {
             assert!(block(kind).diggable(), "{kind:?} must be diggable");
         }
+    }
+
+    /// `boundingBox` is typed but keeps upstream's strings; `short_name`
+    /// is upstream's un-namespaced `block.name` (B5).
+    #[test]
+    fn bounding_box_and_short_name_match_upstream() {
+        let client = crate::test_util::despawned_client();
+        let block = |kind| Block::new(&client, BlockPos::new(0, 64, 0), BlockState::from(kind));
+        assert_eq!(block(BlockKind::Stone).bounding_box(), BoundingBox::Block);
+        assert_eq!(block(BlockKind::Air).bounding_box(), BoundingBox::Empty);
+        assert_eq!(BoundingBox::Block.as_str(), "block");
+        assert_eq!(BoundingBox::Empty.as_str(), "empty");
+        assert_eq!(block(BlockKind::GrassBlock).name(), "minecraft:grass_block");
+        assert_eq!(block(BlockKind::GrassBlock).short_name(), "grass_block");
     }
 
     /// A 3×3-chunk `World` for tests. Returns the `PartialChunkStorage`

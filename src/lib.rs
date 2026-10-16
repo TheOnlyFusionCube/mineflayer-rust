@@ -89,8 +89,8 @@ pub use window_types::{
 };
 pub use windows::{Chest, Dispenser, Item, Window};
 pub use world::{
-    Block, BlockMatcher, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE, FindBlocksOpts,
-    Game, Location, Time, WorldRef,
+    Block, BlockMatcher, BoundingBox, DEFAULT_CURSOR_DISTANCE, DEFAULT_ENTITY_CURSOR_DISTANCE,
+    FindBlocksOpts, Game, Location, Time, WorldRef,
 };
 
 pub use interact::{DigAbortReason, DigFace, ForceLook};

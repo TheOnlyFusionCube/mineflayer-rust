@@ -103,7 +103,7 @@ impl From<&Block> for ContainerTarget {
     fn from(block: &Block) -> Self {
         ContainerTarget::Block {
             pos: block.pos,
-            name: block.name().replace("minecraft:", ""),
+            name: block.short_name().to_string(),
         }
     }
 }

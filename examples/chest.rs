@@ -133,7 +133,10 @@ async fn watch_chest(bot: &Bot) -> Option<Window> {
             Some(open)
         }
         Err(err) => {
-            let _ = bot.chat(&format!("cannot open {name}: {err}", name = block.name()));
+            let _ = bot.chat(&format!(
+                "cannot open {name}: {err}",
+                name = block.short_name()
+            ));
             None
         }
     }

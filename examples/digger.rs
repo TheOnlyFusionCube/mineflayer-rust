@@ -84,7 +84,7 @@ fn say_items(bot: &Bot, items: Option<Vec<Item>>) {
 
 async fn dig(bot: &Bot) {
     if let Some(target) = bot.target_dig_block() {
-        let _ = bot.chat(&format!("already digging {}", target.name()));
+        let _ = bot.chat(&format!("already digging {}", target.short_name()));
         return;
     }
     // Upstream digs `bot.entity.position.offset(0, -1, 0)` — the block
@@ -102,7 +102,7 @@ async fn dig(bot: &Bot) {
         let _ = bot.chat("cannot dig");
         return;
     }
-    let name = target.name();
+    let name = target.short_name();
     let _ = bot.chat(&format!("starting to dig {name}"));
     match bot.dig(&target).await {
         Ok(()) => {
