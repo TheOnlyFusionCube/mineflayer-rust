@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 description = "The mineflayer bot API, ported to Rust on top of azalea"
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/prismarinejs/mineflayer"
+rust-version = "1.85"
+keywords = ["minecraft", "bot", "mineflayer", "azalea"]
+categories = ["games"]
 
 [features]
 # Enables the tests in tests/live/ that talk to the local offline-mode

@@ -677,6 +677,13 @@ Four are public documentation that links to private items (`WEDGE_GRACE`, `GetTo
 
 **Acceptance.** `cargo package --list` shows `LICENSE` and no `.DS_Store`.
 
+**Status:** done, except the `cargo clean` size record (the plan runs it
+after E1; `target/` is 36 GB at the time of this pass). `LICENSE` carries
+the port notice plus the mineflayer and azalea MIT texts; `Cargo.toml`
+has `readme`, `repository`, `rust-version`, `keywords`, and `categories`;
+`docs/.DS_Store` is untracked and deleted. `cargo package --list
+--allow-dirty` lists `LICENSE` and no `.DS_Store`.
+
 ### F4. Continuous integration (P2)
 
 **Problem.** The repository has no remote and no CI. The gate runs only on the developer computer.
