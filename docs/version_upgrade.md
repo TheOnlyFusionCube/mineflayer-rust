@@ -75,6 +75,10 @@ with the new `azalea-protocol` definition:
    correct the parse in the script.
 2. Run `bash scripts/live-server.sh reset`. Make sure that
    `.live/version.txt` shows the new version.
+3. Make sure that the reset output shows the gamerule reply
+   (`rcon> gamerule respawn_radius 0: …is now set to: 0`). If the new
+   version renames the rule again, add the new name to the `rcon` calls in
+   the script.
 
 ## 6. Verify
 

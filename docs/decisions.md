@@ -62,6 +62,15 @@ nested event types would cause match churn with no gain.
 `Unsupported`, and `DigAborted` replace `Operation(String)`; each keeps the
 upstream text as `Display`.
 
+**D-fixture (E5). Deterministic fixture spawns.** `scripts/live-server.sh`
+sets `respawn_radius 0` over RCON after each boot. Vanilla's default radius
+put each join at a random point in a 21×21 area, so the live tests depended
+on random terrain (a walled-in spawn, no grass in range). RCON listens on
+`127.0.0.1` only (`server-ip`), with a random password per start kept in
+the git-ignored `.live/server.properties`. The live tests stay
+terrain-tolerant as well; the fixed spawn removes the main source of
+variance.
+
 ## Audit rulings (second-model audit campaign)
 
 - **R1** Pin azalea to `ddef371` (D-pin above).

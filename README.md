@@ -86,6 +86,10 @@ beyond upstream). Current counts:
 (MC `26.1`, port `25566`, state in `.live/`) and prints `LIVE_SERVER_READY`.
 `reset` stops it, deletes the `.live/world*` dimensions, and starts a fresh
 world with seed `13371337`; use it before a deterministic live run.
+After boot the script sets the `respawn_radius` gamerule to 0 over RCON
+(bound to `127.0.0.1`, random password per start), so every bot joins at
+the same world spawn instead of a random point in a 21×21 area. All 14
+live tests run in one binary, `live`.
 Live tests in `tests/live/` are gated behind the `live` feature and
 `#[ignore]`:
 
