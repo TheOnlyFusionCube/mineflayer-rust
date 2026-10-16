@@ -65,6 +65,9 @@ pub struct BotBuilder {
     /// this long without a keepalive (default `30s`, upstream's default;
     /// armed on the first keepalive like upstream).
     check_timeout_interval: Duration,
+    /// Whether the bridge broadcasts [`BotEvent::Packet`] (default `true`).
+    /// See [`BotBuilder::packet_events`].
+    packet_events: bool,
     /// `options.agent`-analog — azalea's SOCKS5 proxy support
     /// (`Client::join_with_proxy`); also covers the `connect` proxy use case.
     proxy: Option<azalea::protocol::connect::Proxy>,
@@ -119,6 +122,7 @@ impl Default for BotBuilder {
             chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
             default_chat_patterns: true,
             check_timeout_interval: Duration::from_secs(30),
+            packet_events: true,
             proxy: None,
         }
     }
@@ -244,6 +248,17 @@ impl BotBuilder {
         self.check_timeout_interval = interval;
         self
     }
+    /// Whether [`Bot::events`] carries [`BotEvent::Packet`], the raw
+    /// clientbound-packet stream (default `true`). Pass `false` when no
+    /// subscriber reads raw packets: they are about 60% of all events (G1
+    /// measurement, `docs/performance.md`), so a slow subscriber is far less
+    /// likely to fall behind the 8192-event ring and see `Lagged`. Every
+    /// derived event (`BlockUpdate`, `EntityMoved`, `WindowUpdateSlot`, …)
+    /// still arrives, and the port's own waits do not read raw packets.
+    pub fn packet_events(mut self, enabled: bool) -> Self {
+        self.packet_events = enabled;
+        self
+    }
     /// `options.agent`-analog — connect through a SOCKS5 proxy
     /// (azalea's `Client::join_with_proxy`; covers the server connection,
     /// not Mojang session auth).
@@ -362,6 +377,7 @@ impl BotBuilder {
                 client_information: builder.client_information,
                 brand: builder.brand,
                 check_timeout_interval: builder.check_timeout_interval,
+                packet_events: builder.packet_events,
             },
             alive_rx,
             shutdown_tx,

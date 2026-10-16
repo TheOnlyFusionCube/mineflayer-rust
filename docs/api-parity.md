@@ -647,7 +647,7 @@ Public API beyond the upstream inventory — listed so the ledger stays complete
 | `EnchantmentTable::is_ready()` | inventory | additive | readiness flag behind the `enchant` gate / 'ready' event |
 | `Window` helpers | inventory | additive | `id`, `menu`, `menu_kind`, `title`, `is_open`, `slot`, `selected_item`, `player_range`, `container_range`, `container_items`, `inventory_items`, `find_item_range`, `first_empty_slot_range`, `empty_slot_count` — port helpers surfaced `pub` |
 | `Item` helpers | inventory | additive | `of`, `stack_size`, `durability_used`, `max_durability`, `custom_data` — extra accessors over the ported `Item` row |
-| `BotEvent::Packet` | lifecycle | additive | raw `ClientboundGamePacket` escape hatch; upstream analog is the internal `_client.on('packet')` |
+| `BotEvent::Packet` | lifecycle | additive | raw `ClientboundGamePacket` escape hatch; upstream analog is the internal `_client.on('packet')`. `BotBuilder::packet_events(false)` keeps it off the stream (about 60% of the event volume); derived events still arrive |
 | `Settings.locale` | misc | additive | `bot.settings().locale`; upstream tracks locale via `ClientOptions`, not `bot.settings` |
 | `bot.tool().equip_for_entity(&entity)` | pathfinder | additive | generic max-`attack_damage` hotbar pick before an attack — no `equipForEntity` exists upstream (also named inside the `tool.*` row) |
 

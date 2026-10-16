@@ -147,18 +147,20 @@ impl BotShared {
     }
 }
 
-/// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
-/// emits several thousand events a second (one `Packet` per clientbound
-/// packet plus per-entity domain events), so 256 overflowed mid-burst
-/// and lagged subscribers silently missed events; 8192 holds a
-/// multi-second flood without the multi-MB upfront ring a much larger
-/// capacity would allocate per `Bot`.
 mod connection;
 mod event;
 pub(crate) mod wait;
 pub use connection::{Auth, BotBuilder};
 pub use event::BotEvent;
 
+/// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
+/// emits several thousand events a second (one `Packet` per clientbound
+/// packet plus per-entity domain events), so 256 overflowed mid-burst
+/// and lagged subscribers silently missed events. 8192 is about one
+/// second at the measured peak (8,751 events/s, `docs/performance.md`)
+/// without the multi-MB upfront ring a much larger capacity would
+/// allocate per `Bot`; `BotBuilder::packet_events(false)` removes the
+/// largest share instead.
 const EVENT_CHANNEL_CAPACITY: usize = 8192;
 impl Bot {
     /// `createBot(options)` — the builder entry point.
@@ -204,6 +206,17 @@ impl Bot {
     ///
     /// Each call returns an independent receiver; slow consumers see
     /// [`broadcast::error::RecvError::Lagged`] rather than blocking the bot.
+    ///
+    /// Capacity and loss: the ring holds 8192 events for every receiver.
+    /// A receiver that falls more than 8192 events behind gets `Lagged(n)`
+    /// and the `n` oldest events are gone for it; other receivers are not
+    /// affected. On the local fixture the stream measured about 1,400
+    /// events/s idle and 3,300 events/s mean with a peak of 8,751 events/s
+    /// near 200 chickens (`docs/performance.md`), so a receiver must not
+    /// stall for about one second at peak. Raw [`BotEvent::Packet`] events
+    /// are about 60% of the volume;
+    /// [`BotBuilder::packet_events(false)`](crate::BotBuilder::packet_events)
+    /// turns them off.
     ///
     /// Crate authors: inside the crate, use the private `subscribe` for
     /// waits. This method is the public API, and the first call hands out

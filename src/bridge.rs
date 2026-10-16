@@ -40,6 +40,9 @@ pub(crate) struct BridgeOptions {
     /// interval, armed on every `Event::KeepAlive` like upstream's per-
     /// keepalive `setTimeout` re-arm.
     pub check_timeout_interval: std::time::Duration,
+    /// `BotBuilder::packet_events` — `false` keeps `BotEvent::Packet` off
+    /// the broadcast; the misc decode still sees every packet.
+    pub packet_events: bool,
 }
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
@@ -73,6 +76,7 @@ pub(crate) fn spawn(
             client_information,
             brand,
             check_timeout_interval,
+            packet_events,
         } = options;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
@@ -157,7 +161,9 @@ pub(crate) fn spawn(
                         }
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
-                        let _ = events.send(bot_event.clone());
+                        if packet_events || !matches!(bot_event, BotEvent::Packet(_)) {
+                            let _ = events.send(bot_event.clone());
+                        }
                         // misc domains (scoreboards, sounds, …) decode Packet
                         // events into facade state + their own BotEvents,
                         // emitted after the source event itself.
@@ -989,6 +995,54 @@ mod tests {
         );
     }
 
+    /// `packet_events(false)` keeps raw `Packet` events off the broadcast
+    /// but still emits what is derived from them (C2): a respawn packet
+    /// still yields `Respawn`.
+    #[tokio::test]
+    async fn packet_events_off_keeps_derived_events() {
+        let (events_tx, _) = tokio::sync::broadcast::channel(64);
+        let shared = crate::bot::BotShared::new(events_tx);
+        let mut rx = shared.events.subscribe();
+        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_alive_tx, alive_rx) = watch::channel(());
+        let (shutdown_tx, _shutdown_rx) = watch::channel(());
+        spawn(
+            despawned(),
+            input_rx,
+            shared,
+            BridgeOptions {
+                client_information: None,
+                brand: None,
+                check_timeout_interval: std::time::Duration::from_secs(30),
+                packet_events: false,
+            },
+            alive_rx,
+            shutdown_tx,
+        );
+        input_tx.send(respawn_packet()).unwrap();
+        drop(input_tx);
+        let mut seen = Vec::new();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("the bridge stalled")
+                .expect("broadcast channel closed");
+            let end = matches!(event, BotEvent::End(_));
+            seen.push(event);
+            if end {
+                break;
+            }
+        }
+        assert!(
+            !seen.iter().any(|e| matches!(e, BotEvent::Packet(_))),
+            "no raw Packet event may go out: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|e| matches!(e, BotEvent::Respawn)),
+            "the derived Respawn must still go out: {seen:?}"
+        );
+    }
+
     /// The azalea channel can close without a `Disconnect` event (its
     /// runner stops). The bridge must still emit `End` — upstream's socket
     /// close — or a wait on `End` never resolves.
@@ -1008,6 +1062,7 @@ mod tests {
                 client_information: None,
                 brand: None,
                 check_timeout_interval: std::time::Duration::from_secs(30),
+                packet_events: true,
             },
             alive_rx,
             shutdown_tx,

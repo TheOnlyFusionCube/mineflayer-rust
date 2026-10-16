@@ -10,9 +10,7 @@ use azalea::{
     Vec3,
     entity::{Position, inventory::Inventory},
     inventory::ItemStack,
-    protocol::packets::game::{
-        ClientboundGamePacket, s_player_abilities, s_set_creative_mode_slot,
-    },
+    protocol::packets::game::{s_player_abilities, s_set_creative_mode_slot},
 };
 use tokio::sync::broadcast;
 
@@ -101,18 +99,25 @@ impl Creative {
             });
         let wait = async {
             loop {
+                // the window observer's derived event, not the raw packet,
+                // so the wait also works with `packet_events(false)`. A full
+                // inventory resync (`container_set_content`) also emits
+                // this event; one that arrives before the server applies the
+                // write reports the old stack as "Server rejected" — a rare
+                // race the raw-packet wait did not have.
                 match rx.recv().await {
-                    Ok(BotEvent::Packet(packet)) => {
-                        if let ClientboundGamePacket::ContainerSetSlot(p) = &*packet
-                            && p.container_id == 0
-                            && p.slot == slot
-                        {
-                            return if p.item_stack == item {
-                                Ok(())
-                            } else {
-                                Err(Error::Failed("Server rejected".into()))
-                            };
-                        }
+                    Ok(BotEvent::WindowUpdateSlot {
+                        window_id: 0,
+                        slot: s,
+                        new,
+                        ..
+                    }) if s == slot => {
+                        let echoed = new.map(|i| i.stack).unwrap_or(ItemStack::Empty);
+                        return if echoed == item {
+                            Ok(())
+                        } else {
+                            Err(Error::Failed("Server rejected".into()))
+                        };
                     }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => return Err(Error::NotConnected),
@@ -254,10 +259,7 @@ mod tests {
     /// (upstream `Promise.all` shape), and no slot may stay flagged.
     #[tokio::test]
     async fn clear_inventory_settles_every_started_slot() {
-        use azalea::{
-            protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
-            registry::builtin::ItemKind,
-        };
+        use azalea::registry::builtin::ItemKind;
 
         let mut inventory = Inventory::default();
         *inventory.inventory_menu.slot_mut(10).unwrap() = ItemStack::new(ItemKind::Stone, 1);
@@ -283,14 +285,12 @@ mod tests {
         );
 
         // let slot 10 settle with its echo
-        bot.emit_event(BotEvent::Packet(std::sync::Arc::new(
-            ClientboundGamePacket::ContainerSetSlot(ClientboundContainerSetSlot {
-                container_id: 0,
-                state_id: 0,
-                slot: 10,
-                item_stack: ItemStack::Empty,
-            }),
-        )));
+        bot.emit_event(BotEvent::WindowUpdateSlot {
+            window_id: 0,
+            slot: 10,
+            old: None,
+            new: None,
+        });
         let res = clear.await.unwrap();
         assert!(res.is_err(), "the offhand rejection must surface");
         assert!(!slot_flagged(&bot, 10) && !slot_flagged(&bot, 45));

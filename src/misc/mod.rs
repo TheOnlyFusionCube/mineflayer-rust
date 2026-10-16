@@ -16,7 +16,7 @@ use azalea::{
     ClientInformation, Vec3,
     core::entity_id::MinecraftEntityId,
     ecs::prelude::Component,
-    entity::{Pose, Position, metadata::AirSupply},
+    entity::{EntityKindComponent, Pose, Position, metadata::AirSupply},
     protocol::packets::game::{
         ClientboundGamePacket, c_game_event, c_resource_pack_push::ClientboundResourcePackPush,
         s_player_command, s_resource_pack,
@@ -772,26 +772,26 @@ impl Bot {
             if matches!(event, BotEvent::End(_)) {
                 break Err(Error::NotConnected);
             }
-            let BotEvent::Packet(packet) = event else {
-                continue;
-            };
-            match &*packet {
-                ClientboundGamePacket::AddEntity(p)
-                    if p.entity_type == EntityKind::FishingBobber && bobber.is_none() =>
-                {
-                    bobber = Some(p.id);
-                }
-                ClientboundGamePacket::RemoveEntities(p) => {
-                    if let Some(id) = bobber
-                        && p.entity_ids.contains(&id)
-                    {
-                        break Err(Error::Cancelled("Fishing cancelled".into()));
+            // derived events, not raw packets, so fishing also works with
+            // `packet_events(false)`: `EntitySpawn` (add_entity),
+            // `EntityGone` (remove_entities), `ParticleSpawned`
+            // (level_particles)
+            match event {
+                BotEvent::EntitySpawn(entity) if bobber.is_none() => {
+                    let is_bobber = entity
+                        .get_component::<EntityKindComponent>()
+                        .is_some_and(|kind| kind.0 == EntityKind::FishingBobber);
+                    if is_bobber {
+                        bobber = entity.get_component::<MinecraftEntityId>().map(|id| *id);
                     }
                 }
-                ClientboundGamePacket::LevelParticles(p) => {
+                BotEvent::EntityGone { id, .. } if Some(id) == bobber => {
+                    break Err(Error::Cancelled("Fishing cancelled".into()));
+                }
+                BotEvent::ParticleSpawned(p) => {
                     let Some(id) = bobber else { continue };
                     let splash = matches!(
-                        p.particle,
+                        p.data,
                         azalea::entity::particle::Particle::Fishing
                             | azalea::entity::particle::Particle::Bubble
                     );
@@ -802,8 +802,8 @@ impl Bot {
                         continue;
                     };
                     // upstream compares on the horizontal plane only
-                    let dx = p.pos.x - pos.x;
-                    let dz = p.pos.z - pos.z;
+                    let dx = p.position.x - pos.x;
+                    let dz = p.position.z - pos.z;
                     if dx.hypot(dz) <= 1.23 {
                         self.client.start_use_item();
                         break Ok(());
@@ -1122,6 +1122,46 @@ mod tests {
     /// the `events` sender lives on `Bot`, so `Closed` can't be counted
     /// on (the bridge's shutdown watch is the backstop for the
     /// lagged-out case).
+    /// `fish()` follows the derived events (C2): a bobber `EntitySpawn`,
+    /// then `EntityGone` for that id, rejects with upstream's
+    /// `Fishing cancelled` — no raw `Packet` event is needed.
+    #[tokio::test]
+    async fn fish_follows_derived_bobber_events() {
+        let client = crate::test_util::live_entity_client((
+            azalea::world::WorldName(azalea::Identifier::new("minecraft:overworld")),
+            Position::new(Vec3::new(0., 64., 0.)),
+        ));
+        let bobber = client
+            .ecs
+            .write()
+            .spawn((
+                EntityKindComponent(EntityKind::FishingBobber),
+                MinecraftEntityId(42),
+            ))
+            .id();
+        let bobber = client.entity_ref_for(bobber);
+        let bot = Bot::new(client);
+        let bot2 = bot.clone();
+        let fishing = tokio::spawn(async move { bot2.fish().await });
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            while !fishing.is_finished() {
+                bot.emit_event(BotEvent::EntitySpawn(bobber.clone()));
+                bot.emit_event(BotEvent::EntityGone {
+                    entity: None,
+                    id: MinecraftEntityId(42),
+                });
+                tokio::task::yield_now().await;
+            }
+            fishing.await.unwrap()
+        })
+        .await
+        .expect("fish ignored the bobber events");
+        assert!(
+            matches!(&result, Err(Error::Cancelled(m)) if m == "Fishing cancelled"),
+            "{result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn fish_exits_on_end() {
         let bot = Bot::new(crate::test_util::live_entity_client((
