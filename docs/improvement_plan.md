@@ -947,6 +947,10 @@ An earlier review read the wrong source because of this difference.
 1. Change `ref/azalea` to rev `ddef371`.
 2. Add one line in the README that tells which revision `ref/` must have.
 
+**Status:** done. `ref/azalea` is on the local branch `pinned-ddef371` at
+`ddef371` (`0.16.0+mc26.1`). Its `main` branch is unchanged. The README
+"Toolchain" section tells which revision `ref/azalea` must have.
+
 ### H4. Procedure for the next Minecraft version (P3)
 
 **Procedure.** Write a checklist in `docs/` for the next azalea and Minecraft version. Put these items in it:

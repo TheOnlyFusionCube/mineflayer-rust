@@ -116,6 +116,12 @@ i32 where release MC 26.1 servers read a VarInt, so every `bot.attack()`
 was rejected as malformed and kicked the client. Drop the patch once a
 fixed release is published.
 
+`ref/` (git-ignored) holds read-only source checkouts for review:
+`ref/azalea` must be at the pinned commit `ddef371`
+(`git -C ref/azalea checkout ddef371`), because the azalea `main` branch
+is already on a newer Minecraft version and reads differently.
+`ref/mineflayer` is the upstream JavaScript source the port follows.
+
 ## Use as a dependency
 
 Cargo applies `[patch.crates-io]` and toolchain settings per workspace, so
