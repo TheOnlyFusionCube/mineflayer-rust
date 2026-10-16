@@ -534,6 +534,20 @@ impl ChatShared {
     }
 }
 
+/// Drop guard for one `tab_complete` call: removes its correlation entry
+/// when the call ends for any reason. A reply already removed it, so the
+/// second remove is a no-op.
+struct PendingCompletion<'a> {
+    chat: &'a parking_lot::Mutex<ChatShared>,
+    id: u32,
+}
+
+impl Drop for PendingCompletion<'_> {
+    fn drop(&mut self) {
+        self.chat.lock().completion_pending.remove(&self.id);
+    }
+}
+
 /// Split `message` for sending with a `header` prefix — upstream's
 /// `chatWithHeader`. Commands (leading `/`, empty header) pass through
 /// unsplit; everything else is split on newlines (empty lines dropped) and
@@ -699,6 +713,12 @@ impl Bot {
             return Err(Error::NotConnected);
         }
         let (id, rx) = self.shared.chat.lock().register_completion();
+        // removes the correlation entry on every exit, including a caller
+        // that drops this future before the reply or the timeout
+        let _pending = PendingCompletion {
+            chat: &self.shared.chat,
+            id,
+        };
         self.client.write_packet(ServerboundCommandSuggestion {
             id,
             command: text.to_string(),
@@ -706,12 +726,9 @@ impl Bot {
         match tokio::time::timeout(TAB_COMPLETE_TIMEOUT, rx).await {
             Ok(Ok(matches)) => Ok(matches),
             // sender dropped without a reply (shouldn't happen; entries are
-            // only removed on reply or timeout)
+            // only removed on reply or by the guard)
             Ok(Err(_)) => Err(Error::NotConnected),
-            Err(_) => {
-                self.shared.chat.lock().completion_pending.remove(&id);
-                Err(Error::Timeout)
-            }
+            Err(_) => Err(Error::Timeout),
         }
     }
 
@@ -732,6 +749,21 @@ mod tests {
 
     fn re(s: &str) -> Regex {
         Regex::new(s).unwrap()
+    }
+
+    /// A caller that drops `tab_complete` before the reply must not leave
+    /// its correlation entry behind (A7).
+    #[tokio::test]
+    async fn cancelled_tab_complete_leaves_no_pending_entry() {
+        let client = crate::test_util::live_entity_client(azalea::world::WorldName(
+            azalea::Identifier::new("minecraft:overworld"),
+        ));
+        let bot = Bot::new(client);
+        let call = bot.tab_complete("/he");
+        // poll once so the entry is registered, then cancel
+        let cancelled = tokio::time::timeout(Duration::from_millis(10), call).await;
+        assert!(cancelled.is_err(), "no server, so no reply arrives");
+        assert!(bot.shared.chat.lock().completion_pending.is_empty());
     }
 
     #[test]

@@ -316,6 +316,11 @@ The map grows with each cancelled call.
 
 **Acceptance.** The map is empty after a cancelled call.
 
+**Status:** done. `PendingCompletion` is a drop guard that removes the id
+on every exit: reply, timeout, or a dropped future. The test
+`cancelled_tab_complete_leaves_no_pending_entry` fails without the guard
+and passes with it.
+
 ### A8. Skin data parse uses regular expressions on JSON (P2)
 
 **Problem.**
