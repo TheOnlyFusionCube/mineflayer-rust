@@ -1,0 +1,38 @@
+name: Upstream test oracle
+on:
+  push:
+    paths: ['.github/workflows/oracle-bootstrap.yml']
+permissions:
+  contents: read
+jobs:
+  oracle:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install reference implementation for tests only
+        run: |
+          set -eux
+          mkdir oracle
+          git init oracle/mineflayer
+          git -C oracle/mineflayer remote add origin https://github.com/PrismarineJS/mineflayer.git
+          git -C oracle/mineflayer fetch --depth 1 origin 7b4bb8d2b56be9cdb832474af873acd37e609746
+          git -C oracle/mineflayer checkout FETCH_HEAD
+          git -C oracle/mineflayer rev-parse HEAD > oracle/mineflayer/UPSTREAM_COMMIT
+          rm -rf oracle/mineflayer/.git
+          cd oracle/mineflayer
+          npm install --ignore-scripts --omit=dev --no-audit --no-fund
+          npm ls --omit=dev --json > ../dependency-tree.json
+          cd ../..
+          cp "$(command -v node)" oracle/node
+          node --version > oracle/NODE_VERSION
+          XZ_OPT='-T0 -1' tar -cJf oracle.tar.xz oracle
+          sha256sum oracle.tar.xz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: upstream-oracle
+          path: oracle.tar.xz
+          retention-days: 3
+          compression-level: 0
