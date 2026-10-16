@@ -772,6 +772,15 @@ only `mineflayer::prelude::*` (and `regex` in one example).
 
 **Acceptance.** The coverage report is in `docs/` with the date and the commit.
 
+**Status:** done. The report is `docs/coverage.md`: 68.3% line coverage
+for the unit tests, with a table for each module. The lowest modules are
+the click-and-wait paths of the typed windows and of the inventory.
+`bot/wait.rs` has 0%. The report lists the uncovered branches in the
+bridge (the keepalive watchdog and `ConnectionFailed` have no test of any
+kind) and in the A-item code. Tools installed for the measurement:
+`cargo-llvm-cov` 0.9.1 and the `llvm-tools` component of the pinned
+toolchain.
+
 ### E5. Live test flakes (P3)
 
 **Problem.**
