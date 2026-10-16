@@ -80,6 +80,7 @@ use azalea::{
     world::ChunkStorage,
 };
 use tokio::sync::{broadcast, watch};
+use tracing::warn;
 
 use crate::{Bot, BotEvent, Error, Result, windows::Item, world::Block};
 
@@ -699,7 +700,10 @@ impl Default for PathfinderFacade {
 /// domain lock (never take a domain lock while an ECS guard is alive).
 fn facade_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut PathfinderFacade) -> R) -> Option<R> {
     let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
+    let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
+        warn!("pathfinder facade is missing — the client entity is gone");
+        return None;
+    };
     if entity.get::<PathfinderFacade>().is_none() {
         entity.insert(PathfinderFacade::default());
     }

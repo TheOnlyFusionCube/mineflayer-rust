@@ -587,6 +587,18 @@ azalea already uses `tracing`, so the crate is already in the dependency graph.
 
 **Acceptance.** A run of `examples/echo.rs` with a `tracing` subscriber shows the bridge exit reason.
 
+**Status:** done. `tracing` is a direct dependency (ruling in
+`docs/PORT-PLAN.md`); the crate emits only, never installs a subscriber.
+`debug!` logs: untranslated azalea events, brand-payload encode failure,
+server keepalive timeout, and the bridge exit reason (which exit arm
+fired + whether `End` was already sent). `warn!` logs: the client's
+`WorldHolder` missing, and the missing pathfinder facade. No chat text,
+tokens, or account data anywhere. `examples/echo.rs` installs an
+`RUST_LOG`-driven `tracing-subscriber`; against the fixture with
+`RUST_LOG=debug` the run logs `bridge exit reason="all Bot handles
+dropped" ended=true`. The `logErrors`/`hideErrors` parity rows are now
+`diverges` naming `tracing`.
+
 ### C2. Event volume and ring capacity (P3)
 
 **Problem.**

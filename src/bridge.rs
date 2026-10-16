@@ -14,6 +14,7 @@ use azalea::{
     protocol::packets::game::{ClientboundGamePacket, c_system_chat::ClientboundSystemChat},
 };
 use tokio::sync::{mpsc::UnboundedReceiver, watch};
+use tracing::debug;
 
 use parking_lot::Mutex;
 
@@ -83,10 +84,12 @@ pub(crate) fn spawn(
         // `None` until the first keepalive arms it, like upstream's
         // per-keepalive `setTimeout`.
         let mut keepalive_deadline = None;
-        loop {
+        let exit_reason = loop {
             tokio::select! {
                 event = rx.recv() => {
-                    let Some(event) = event else { break };
+                    let Some(event) = event else {
+                        break "azalea event channel closed";
+                    };
                     // Client information must be set on Init so the login
                     // packet already carries it (azalea docs).
                     if let Event::Init = &event
@@ -100,7 +103,9 @@ pub(crate) fn spawn(
                     if let (Event::Login, Some(brand)) = (&event, &brand) {
                         use azalea::buf::AzBuf;
                         let mut data = Vec::new();
-                        let _ = brand.clone().azalea_write(&mut data);
+                        if let Err(error) = brand.clone().azalea_write(&mut data) {
+                            debug!(?error, "brand payload failed to encode — sending none");
+                        }
                         client.write_packet(
                             azalea::protocol::packets::game::s_custom_payload::ServerboundCustomPayload {
                                 identifier: "brand".into(),
@@ -191,6 +196,10 @@ pub(crate) fn spawn(
                     }
                 } => {
                     keepalive_deadline = None;
+                    debug!(
+                        timeout_ms = check_timeout_interval.as_millis(),
+                        "server keepalive timed out — ending with keepAliveError"
+                    );
                     let _ = events.send(BotEvent::Error(format!(
                         "client timed out after {} milliseconds",
                         check_timeout_interval.as_millis()
@@ -198,9 +207,10 @@ pub(crate) fn spawn(
                     *quit_reason.lock() = Some("keepAliveError".to_string());
                     client.disconnect();
                 }
-                _ = alive.changed() => break,
+                _ = alive.changed() => break "all Bot handles dropped",
             }
-        }
+        };
+        debug!(reason = exit_reason, ended = state.ended, "bridge exit");
         // azalea stopped feeding events or all `Bot` handles are gone —
         // shut the client down so the ECS runner doesn't leak. Dropping
         // the shutdown sender retires driver tasks parked on
@@ -396,9 +406,15 @@ fn translate(
         // itself. Dropped by design (see api-parity.md `options.keepAlive`).
         Event::KeepAlive(_) => vec![],
         // azalea's Event is #[non_exhaustive]: anything it adds upstream in
-        // the future is dropped rather than crashing the bridge. (No logging
-        // facade is in our dependency set, so there is nothing to log to.)
-        _ => vec![],
+        // the future is dropped rather than crashing the bridge — with a
+        // debug log so a new upstream event does not vanish silently.
+        _ => {
+            debug!(
+                ?event,
+                "dropping an azalea event the bridge does not translate"
+            );
+            vec![]
+        }
     }
 }
 

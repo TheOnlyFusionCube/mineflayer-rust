@@ -28,8 +28,14 @@ uuid = "1"
 # poison lock family azalea uses for the ECS, and the version azalea-
 # client compiles its `WorldHolder.shared` field with.
 parking_lot = "0.12"
+# Log facade (ruling in docs/PORT-PLAN.md, C1) — azalea already logs
+# through `tracing`, and a dependent crate installs the subscriber.
+tracing = "0.1"
 
 [dev-dependencies]
+# for the examples' RUST_LOG-driven subscriber (the crate itself only
+# emits; it never installs a subscriber)
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[test]]
 name = "live"

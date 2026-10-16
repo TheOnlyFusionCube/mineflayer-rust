@@ -9,6 +9,14 @@ use mineflayer::prelude::*;
 
 #[tokio::main]
 async fn main() {
+    // Diagnostics go through `tracing`; the crate never installs a
+    // subscriber itself. RUST_LOG=debug (or mineflayer=debug) turns on
+    // the bridge's debug logs — dropped events, decode failures, the
+    // keepalive timeout, and the bridge exit reason.
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_target(true)
+        .init();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 || args.len() > 5 {
         eprintln!("Usage: cargo run --example echo -- <host> <port> [<name>] [online]");

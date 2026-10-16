@@ -51,8 +51,8 @@ Events become `BotEvent` variants or per-domain event enums; payloads use azalea
 | `options.auth` | lifecycle | `BotBuilder::auth(Auth)` | ported | `Auth::{Offline, Microsoft, Account}` |
 | `options.clientToken` | lifecycle | `n/a` | wontfix | n/a — generated inside Account; no upstream hook |
 | `options.accessToken` | lifecycle | `Auth::Account(Account::with_microsoft_access_token(..))` | ported | prebuilt account passthrough |
-| `options.logErrors` | lifecycle | `n/a` | wontfix | no logging facade in the dep set — errors surface only as `BotEvent::Error` (upstream's `logErrors:false` state, permanently) |
-| `options.hideErrors` | lifecycle | `n/a` | wontfix | same — nothing is ever printed to console; `_warn` has no analog |
+| `options.logErrors` | lifecycle | `n/a` | diverges | diagnostics go through `tracing` (`debug!`/`warn!`), never the console — an app sees them when it installs a subscriber (see `examples/echo.rs`); errors still surface as `BotEvent::Error`. The toggle has no analog |
+| `options.hideErrors` | lifecycle | `n/a` | diverges | nothing is ever printed — the crate only emits `tracing` events to whatever subscriber the app installs |
 | `options.keepAlive` | lifecycle | `n/a` | wontfix | n/a — azalea owns keepalive; `Event::KeepAlive` dropped by the bridge |
 | `options.checkTimeoutInterval` | lifecycle | `BotBuilder::check_timeout_interval(Duration)` | ported | keepalive watchdog in the bridge: armed/re-armed per `Event::KeepAlive` like upstream's per-keepalive `setTimeout`; on expiry emits `BotEvent::Error("client timed out after N milliseconds")` then disconnects → `End("keepAliveError")`; default 30s |
 | `options.loadInternalPlugins` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |

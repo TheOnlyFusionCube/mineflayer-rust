@@ -6,6 +6,7 @@
 use std::{collections::HashMap, io::Cursor};
 
 use parking_lot::RwLock;
+use tracing::warn;
 
 use azalea::{
     Event,
@@ -573,7 +574,10 @@ fn euclidean(a: BlockPos, b: BlockPos) -> f64 {
 /// `world.getBlock` via the client's shared world, without naming the
 /// lock type.
 fn with_world<R>(client: &azalea::Client, f: impl FnOnce(&World) -> R) -> Option<R> {
-    let holder = client.get_component::<WorldHolder>()?;
+    let Some(holder) = client.get_component::<WorldHolder>() else {
+        warn!("the client's WorldHolder is gone (torn-down client) — block reads return None");
+        return None;
+    };
     let world = holder.shared.read();
     Some(f(&world))
 }
