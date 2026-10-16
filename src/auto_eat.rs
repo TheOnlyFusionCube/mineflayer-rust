@@ -285,7 +285,11 @@ impl AutoEat<'_> {
             Some(cancel)
         });
         if let Some(Some(cancel)) = spawned {
-            tokio::spawn(drive(self.bot.clone(), cancel, self.bot.shutdown.clone()));
+            tokio::spawn(drive(
+                self.bot.driver_handle(),
+                cancel,
+                self.bot.shutdown.clone(),
+            ));
         }
     }
 

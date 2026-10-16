@@ -47,8 +47,10 @@ pub struct Bot {
     /// its ring. `None` once claimed.
     bootstrap_events: Arc<Mutex<Option<broadcast::Receiver<BotEvent>>>>,
     /// Dropping the last sender signals the bridge task to shut the client
-    /// down (see `bridge::spawn`). Held only to keep the watch channel open.
-    _alive: watch::Sender<()>,
+    /// down (see `bridge::spawn`). `None` on driver handles: a background
+    /// driver must not keep the connection open after the user drops every
+    /// handle. Held only to keep the watch channel open.
+    _alive: Option<watch::Sender<()>>,
     /// The bridge's shutdown signal: its sender lives in the bridge task
     /// and drops when the bridge exits (disconnect, or every `Bot`
     /// handle gone), resolving `changed()` for every receiver. The
@@ -495,7 +497,7 @@ impl BotBuilder {
         Ok(Bot {
             client,
             bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
-            _alive: alive,
+            _alive: Some(alive),
             shutdown: shutdown_rx,
             _shutdown_tx: None,
             shared: Arc::new(shared),
@@ -559,7 +561,7 @@ impl Bot {
         Self {
             client,
             bootstrap_events: Arc::new(Mutex::new(Some(events.subscribe()))),
-            _alive: alive,
+            _alive: Some(alive),
             shutdown: shutdown_rx,
             _shutdown_tx: Some(shutdown_tx),
             shared: Arc::new(BotShared::new(events)),
@@ -603,6 +605,16 @@ impl Bot {
     /// and the crate's waits never complete on events from that queue.
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<BotEvent> {
         self.shared.events.subscribe()
+    }
+
+    /// A handle for background driver tasks (auto-eat, pvp, pathfinder
+    /// follow): it holds no `_alive` sender, so a running driver can never
+    /// keep the connection open after the last user handle drops. The
+    /// driver still stops on [`Bot::shutdown`] like every other task.
+    pub(crate) fn driver_handle(&self) -> Bot {
+        let mut bot = self.clone();
+        bot._alive = None;
+        bot
     }
 
     /// `bot.quit(reason?)` — graceful disconnect. The subsequent
@@ -761,6 +773,60 @@ mod tests {
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Login));
         assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked(_, _)));
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked(_, _)));
+    }
+
+    /// A background driver must not keep the connection open: its handle
+    /// drops the alive sender, so the bridge's alive channel closes when
+    /// the last user handle drops, also while a driver runs. The control
+    /// case (a plain clone, what drivers used to hold) keeps it open.
+    #[tokio::test]
+    async fn driver_handles_do_not_hold_the_alive_sender() {
+        fn bot_with_alive(alive: watch::Sender<()>) -> Bot {
+            let (events, _) = broadcast::channel(16);
+            let (_shutdown_tx, shutdown_rx) = watch::channel(());
+            // keep the shutdown sender alive for the test's lifetime
+            std::mem::forget(_shutdown_tx);
+            Bot {
+                client: crate::test_util::despawned_client(),
+                bootstrap_events: Arc::new(Mutex::new(None)),
+                _alive: Some(alive),
+                shutdown: shutdown_rx,
+                _shutdown_tx: None,
+                shared: Arc::new(BotShared::new(events)),
+                chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
+            }
+        }
+
+        // control: a plain clone in a task keeps the channel open
+        let (alive_tx, mut alive_rx) = watch::channel(());
+        let control = bot_with_alive(alive_tx);
+        let held = control.clone();
+        let _task = tokio::spawn(async move {
+            let _held = held;
+            std::future::pending::<()>().await;
+        });
+        drop(control);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), alive_rx.changed())
+                .await
+                .is_err(),
+            "a held clone must keep the alive channel open"
+        );
+
+        // the driver handle drops the sender: the channel closes once the
+        // last user handle is gone
+        let (alive_tx, mut alive_rx) = watch::channel(());
+        let bot = bot_with_alive(alive_tx);
+        let driver = bot.driver_handle();
+        let _task = tokio::spawn(async move {
+            let _driver = driver;
+            std::future::pending::<()>().await;
+        });
+        drop(bot);
+        tokio::time::timeout(Duration::from_millis(200), alive_rx.changed())
+            .await
+            .expect("alive channel stayed open with only a driver handle left")
+            .expect_err("alive channel reported a value instead of closing");
     }
 
     /// A crate-internal wait must not consume the bootstrap receiver; the

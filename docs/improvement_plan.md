@@ -195,6 +195,12 @@ The bot thread and its runtime also stay alive.
 - The test shows that the bridge stops after the last user handle drops, also when a driver runs.
 - The existing driver tests pass without changes to their assertions.
 
+**Status:** done. `_alive` is an `Option`; `Bot::driver_handle()` clears it
+for the three drivers (auto-eat, pvp, pathfinder follow). The test holds a
+driver-style handle in a task, drops the last user handle, and shows that
+the alive channel closes (with a plain clone as the control that keeps it
+open). The existing driver tests pass unchanged.
+
 ### A3. `unequip(Hand)` can panic after a disconnect (P1)
 
 **Problem.**

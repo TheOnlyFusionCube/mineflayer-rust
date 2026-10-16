@@ -959,7 +959,7 @@ impl Pathfinder<'_> {
                     range,
                     movements,
                     cancel,
-                    self.bot.clone(),
+                    self.bot.driver_handle(),
                     issue_gen,
                 );
             }

@@ -244,7 +244,7 @@ impl Pvp<'_> {
             return Err(Error::NotConnected);
         }
         tokio::spawn(drive(
-            bot.clone(),
+            bot.driver_handle(),
             entity.clone(),
             cancel,
             bot.shutdown.clone(),
