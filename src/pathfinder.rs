@@ -2155,7 +2155,7 @@ mod tests {
 
     /// A `Goal::Follow` targeting an entity at `pos` — `is_end` reads the
     /// entity's `Position` instead of `client.world()`, so these tests
-    /// never need a `WorldHolder` (no `parking_lot` dep to build one).
+    /// never need a `WorldHolder` (no world lock to build one).
     fn follow_at(client: &azalea::Client, pos: Vec3) -> Goal {
         let target_entity = client.ecs.write().spawn(Position::new(pos)).id();
         Goal::Follow {

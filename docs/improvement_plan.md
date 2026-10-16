@@ -508,6 +508,16 @@ Then each later call to that domain panics, also on user threads.
 
 Note: Option 1 adds a direct dependency. Option 2 adds no dependency.
 
+**Status:** done, Option 1 (parking_lot) — the ruling is recorded in
+`docs/PORT-PLAN.md` (Constraints). Rationale: azalea's ECS lock — the one
+our locks interact with — is already parking_lot, the dependency is
+already in every build's graph, and "no poisoning" becomes a property of
+the type (`lock()` returns the guard; there is no `unwrap()` to
+reintroduce the class). All 81 single-line and the 26 multi-line
+`lock()/read()/write().unwrap()` sites are now plain calls; the test
+panics while holding the chat lock and then uses the domain again
+(second call works; `std::sync` would panic on the poisoned lock).
+
 ### B9. Lock order rule (P2)
 
 **Problem.**

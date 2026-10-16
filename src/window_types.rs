@@ -35,9 +35,11 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
+
+use parking_lot::Mutex;
 
 use azalea::{
     BlockPos, EntityRef, Event,
@@ -207,13 +209,13 @@ pub(crate) fn observe_event(
         ClientboundGamePacket::OpenScreen(p) => {
             // a fresh screen under a reused id starts clean — upstream's
             // per-window listeners attach to the new window object.
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             t.clear_window(p.container_id);
             t.windows.entry(p.container_id).or_default().kind = Some(p.menu_type);
             Vec::new()
         }
         ClientboundGamePacket::ContainerSetData(p) => {
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             // the wire field is a signed short read as u16 — recover the
             // sign so `-1` enchant clues compare correctly
             let value = p.value as i16;
@@ -248,7 +250,7 @@ pub(crate) fn observe_event(
             out
         }
         ClientboundGamePacket::MerchantOffers(p) => {
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             let record = t.windows.entry(p.container_id).or_default();
             record.offers = Some(decode_offers(&p.offers));
             if !record.ready {
@@ -261,11 +263,11 @@ pub(crate) fn observe_event(
             }
         }
         ClientboundGamePacket::ContainerClose(p) => {
-            tracker.lock().unwrap().clear_window(p.container_id);
+            tracker.lock().clear_window(p.container_id);
             Vec::new()
         }
         ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_) => {
-            tracker.lock().unwrap().windows.clear();
+            tracker.lock().windows.clear();
             Vec::new()
         }
         _ => Vec::new(),
@@ -453,7 +455,6 @@ impl Furnace {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .data(self.window.id(), property)
     }
 
@@ -462,7 +463,6 @@ impl Furnace {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .windows
             .get(&self.window.id())
             .map(|record| record.data.clone())
@@ -625,7 +625,6 @@ impl EnchantmentTable {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .windows
             .get(&self.window.id())
             .map(|record| record.data.clone())
@@ -641,7 +640,6 @@ impl EnchantmentTable {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .data(self.window.id(), ENCHANT_XP_SEED)
             .unwrap_or(-1) as i32
     }
@@ -701,7 +699,6 @@ impl EnchantmentTable {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .windows
             .get(&self.window.id())
             .is_some_and(|record| (0..3).all(|i| record.data.get(&i).is_some_and(|v| *v >= 0)))
@@ -765,7 +762,6 @@ impl Anvil {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .data(self.window.id(), ANVIL_COST)
             .map(|v| v as i32)
     }
@@ -984,7 +980,6 @@ impl Villager {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .windows
             .get(&self.window.id())
             .and_then(|record| record.offers.clone())
@@ -993,7 +988,7 @@ impl Villager {
 
     /// `villager.selectedTrade` — the offer `trade` last selected.
     pub fn selected_trade(&self) -> Option<VillagerTrade> {
-        let t = self.bot.shared.window_data.lock().unwrap();
+        let t = self.bot.shared.window_data.lock();
         let record = t.windows.get(&self.window.id())?;
         record.offers.as_ref()?.get(record.selected_trade?).cloned()
     }
@@ -1131,7 +1126,6 @@ impl Bot {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .windows
             .get(&id)
             .is_some_and(|record| record.offers.is_some());
@@ -1147,7 +1141,6 @@ impl Bot {
             .shared
             .window_data
             .lock()
-            .unwrap()
             .windows
             .get(&id)
             .is_some_and(|record| record.offers.is_some())
@@ -1172,7 +1165,7 @@ impl Bot {
         let mut rx = self.subscribe();
 
         let (trade, count) = {
-            let mut t = self.shared.window_data.lock().unwrap();
+            let mut t = self.shared.window_data.lock();
             let record = t
                 .windows
                 .get_mut(&id)
@@ -1228,7 +1221,7 @@ impl Bot {
             self.put_requirements(&villager.window, &trade).await?;
             // upstream updates the local offer copy after each trade
             {
-                let mut t = self.shared.window_data.lock().unwrap();
+                let mut t = self.shared.window_data.lock();
                 if let Some(t) = t
                     .windows
                     .get_mut(&id)
@@ -1570,12 +1563,12 @@ mod tests {
             BotEvent::FurnaceUpdate { .. }
         )));
         // the value is readable through the tracker
-        assert_eq!(tracker.lock().unwrap().data(4, ANVIL_COST), Some(9));
+        assert_eq!(tracker.lock().data(4, ANVIL_COST), Some(9));
         // the totals (`furnace.totalFuel`/`totalProgress`) ride the same
         // retention — a total-only update leaves the current value alone
         observe_event(&tracker, &set_data(3, FUEL_TOTAL, 1600));
         observe_event(&tracker, &set_data(3, COOK_TOTAL, 200));
-        let t = tracker.lock().unwrap();
+        let t = tracker.lock();
         assert_eq!(t.data(3, FUEL_TOTAL), Some(1600));
         assert_eq!(t.data(3, COOK_TOTAL), Some(200));
         assert_eq!(t.data(3, FUEL_LEFT), Some(40));
@@ -1614,7 +1607,7 @@ mod tests {
                 ClientboundContainerClose { container_id: 1 },
             )),
         );
-        assert!(!tracker.lock().unwrap().windows.contains_key(&1));
+        assert!(!tracker.lock().windows.contains_key(&1));
     }
 
     fn offer(

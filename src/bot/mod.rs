@@ -6,10 +6,7 @@
 //! (the multi-subscriber, lag-tolerant EventEmitter analog): call
 //! [`Bot::events`] to subscribe.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use azalea::{
     ClientInformation,
@@ -19,7 +16,7 @@ use azalea::{
     protocol::connect::Proxy,
     world::WorldName,
 };
-use std::sync::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::{broadcast, watch};
 
 use crate::{
@@ -98,7 +95,7 @@ pub(crate) struct BotShared {
     pub world_state: Arc<RwLock<WorldState>>,
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links) — see `entity::EntityTracker`.
-    pub entities: Arc<std::sync::RwLock<crate::entity::EntityTracker>>,
+    pub entities: Arc<RwLock<crate::entity::EntityTracker>>,
     /// Inventory/window-domain state (current window, slot snapshots,
     /// eat/use bookkeeping) — see `windows::WindowTracker`.
     pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
@@ -117,9 +114,7 @@ impl BotShared {
             end_reason: Arc::new(Mutex::new(None)),
             chat: Arc::new(Mutex::new(ChatShared::default())),
             world_state: Arc::new(RwLock::new(WorldState::default())),
-            entities: Arc::new(std::sync::RwLock::new(
-                crate::entity::EntityTracker::default(),
-            )),
+            entities: Arc::new(RwLock::new(crate::entity::EntityTracker::default())),
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
                 events.clone(),
             ))),
@@ -474,7 +469,7 @@ impl BotBuilder {
 
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let shared = BotShared::new(events);
-        shared.chat.lock().unwrap().default_chat_patterns = builder.default_chat_patterns;
+        shared.chat.lock().default_chat_patterns = builder.default_chat_patterns;
         let (alive, alive_rx) = watch::channel(());
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         // subscribed before the bridge starts, so `Event::Init` — which
@@ -594,7 +589,7 @@ impl Bot {
     /// waits. This method is the public API, and the first call hands out
     /// the bootstrap receiver.
     pub fn events(&self) -> broadcast::Receiver<BotEvent> {
-        if let Some(rx) = self.bootstrap_events.lock().unwrap().take() {
+        if let Some(rx) = self.bootstrap_events.lock().take() {
             return rx;
         }
         self.shared.events.subscribe()
@@ -623,15 +618,14 @@ impl Bot {
     /// `bot.quit(reason?)` — graceful disconnect. The subsequent
     /// [`BotEvent::End`] carries `reason` (default `disconnect.quitting`).
     pub fn quit(&self, reason: Option<&str>) {
-        *self.shared.quit_reason.lock().unwrap() =
-            Some(reason.unwrap_or("disconnect.quitting").to_string());
+        *self.shared.quit_reason.lock() = Some(reason.unwrap_or("disconnect.quitting").to_string());
         self.client.disconnect();
     }
 
     /// `bot.end(reason?)` — end the connection. The subsequent
     /// [`BotEvent::End`] carries `reason` (default `socketClosed`).
     pub fn end(&self, reason: Option<&str>) {
-        *self.shared.quit_reason.lock().unwrap() = reason.map(str::to_string);
+        *self.shared.quit_reason.lock() = reason.map(str::to_string);
         self.client.disconnect();
     }
 
@@ -763,6 +757,36 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lock policy (B8): a panic while a domain lock is held must not break
+    /// the domain for later calls. Every crate lock is `parking_lot`, which
+    /// does not poison; `std::sync` would panic on the second call.
+    #[test]
+    fn domain_lock_survives_a_panicking_observer() {
+        let (events, _) = broadcast::channel(8);
+        let shared = BotShared::new(events);
+        let chat = shared.chat.clone();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = chat.lock();
+            panic!("an observer panicked while holding the chat lock");
+        }));
+        assert!(panicked.is_err(), "the observer panic must unwind");
+        // the domain still works
+        chat.lock().add_pattern(
+            "probe",
+            vec![regex::Regex::new("probe").unwrap()],
+            crate::ChatPatternOpts::default(),
+        );
+        let events = chat
+            .lock()
+            .message_events(&azalea::client_chat::ChatPacket::new("probe"));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, BotEvent::ChatPattern { name, .. } if name == "probe")),
+            "the chat domain stopped working after the panic: {events:?}"
+        );
+    }
 
     #[test]
     fn bot_event_broadcast_reaches_all_subscribers() {

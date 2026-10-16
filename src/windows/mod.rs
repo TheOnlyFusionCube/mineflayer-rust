@@ -46,10 +46,12 @@
 use std::{
     ops::Range,
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Weak,
         atomic::{AtomicBool, Ordering},
     },
 };
+
+use parking_lot::Mutex;
 
 use azalea::{
     FormattedText,
@@ -400,7 +402,7 @@ impl Window {
         }
         self.shared.handle.close();
         if let Some(tracker) = self.shared.tracker.upgrade() {
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             // drop the slot snapshot — a reused window id must not see
             // this window's contents as `old` in WindowUpdateSlot
             t.slots.remove(&self.shared.id);

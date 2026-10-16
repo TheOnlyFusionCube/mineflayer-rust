@@ -1,7 +1,9 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, atomic::Ordering},
 };
+
+use parking_lot::Mutex;
 
 use azalea::{
     Event, FormattedText,
@@ -169,7 +171,7 @@ pub(crate) fn observe_event(
     };
     match &**packet {
         ClientboundGamePacket::OpenScreen(p) => {
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             // a new screen displaces the previous open window without a
             // close packet — mark it closed like upstream replacing
             // `currentWindow`, and clear `lastClosedWindow` (upstream's
@@ -236,7 +238,7 @@ pub(crate) fn observe_event(
         ClientboundGamePacket::ContainerSetContent(p) => set_content_events(tracker, client, p),
         ClientboundGamePacket::ContainerSetSlot(p) => set_slot_events(tracker, client, p),
         ClientboundGamePacket::ContainerClose(p) => {
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             // the server may close a pending window before content ever
             // arrived — drop it only if the close names the same id
             t.pending.take_if(|w| w.id == p.container_id);
@@ -262,7 +264,7 @@ pub(crate) fn observe_event(
             }
             // upstream's held_item_slot handler only emits when the slot
             // actually changed
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             let changed = u32::from(sel(&t)) != p.slot;
             t.selected_hotbar = Some(p.slot as u8);
             t.held_sig_changed(client);
@@ -284,7 +286,7 @@ pub(crate) fn observe_event(
                     *slot = p.contents.clone();
                 }
             }
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             let old = snapshot_set(&mut t, 0, win_slot as usize, p.contents.clone());
             t.held_sig_changed(client);
             vec![
@@ -298,7 +300,7 @@ pub(crate) fn observe_event(
             ]
         }
         ClientboundGamePacket::EntityEvent(p) => {
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             // upstream clears usingHeldItem on every entity_status packet
             t.using_held_item = false;
             // entity status 9 on our own entity = "finish using item"
@@ -314,7 +316,7 @@ pub(crate) fn observe_event(
         ClientboundGamePacket::Cooldown(p) => {
             // upstream finishes eating when the cooldown is for the held
             // item — or whenever heldItem is null
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             let held = held_signature(client, t.selected_hotbar);
             if held.is_some_and(|(kind, _)| kind != p.item) {
                 return Vec::new();
@@ -327,7 +329,7 @@ pub(crate) fn observe_event(
             // a new server-side player entity restarts the window id
             // counter; pending/trailing bookkeeping is stale (upstream
             // clears windowItems + lastClosedWindow on respawn/login).
-            let mut t = tracker.lock().unwrap();
+            let mut t = tracker.lock();
             t.pending = None;
             t.early_items = None;
             t.last_closed = None;
@@ -368,7 +370,7 @@ fn set_content_events(
     client: &azalea::Client,
     p: &azalea::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
 ) -> Vec<BotEvent> {
-    let mut t = tracker.lock().unwrap();
+    let mut t = tracker.lock();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client
             .get_component::<Inventory>()
@@ -543,7 +545,7 @@ fn set_slot_events(
     client: &azalea::Client,
     p: &azalea::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
 ) -> Vec<BotEvent> {
-    let mut t = tracker.lock().unwrap();
+    let mut t = tracker.lock();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client
             .get_component::<Inventory>()
@@ -1076,7 +1078,7 @@ mod tests {
             })
             .unwrap();
         window.close();
-        assert_eq!(t.lock().unwrap().last_closed, Some((9, 27, 63)));
+        assert_eq!(t.lock().last_closed, Some((9, 27, 63)));
 
         let mut items = vec![ItemStack::Empty; 63];
         items[27] = ItemStack::new(ItemKind::Stone, 2);

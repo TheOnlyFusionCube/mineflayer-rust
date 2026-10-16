@@ -101,7 +101,7 @@ pub(crate) mod test_util {
     pub(crate) fn despawned_client() -> azalea::Client {
         let mut app = azalea::app::App::new();
         // `Client::new` wants `Arc<RwLock<World>>`; `start_ecs_runner` hands
-        // one back without naming parking_lot (not a direct dependency).
+        // one back without naming the lock type.
         let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
         let entity = {
             let mut ecs = ecs.write();

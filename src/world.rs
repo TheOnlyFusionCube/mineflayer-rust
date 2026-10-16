@@ -3,7 +3,9 @@
 //! point, difficulty) that azalea does not track and which is therefore
 //! recovered here from raw `ClientboundGamePacket`s.
 
-use std::{collections::HashMap, io::Cursor, sync::RwLock};
+use std::{collections::HashMap, io::Cursor};
+
+use parking_lot::RwLock;
 
 use azalea::{
     Event,
@@ -569,7 +571,7 @@ fn euclidean(a: BlockPos, b: BlockPos) -> f64 {
 }
 
 /// `world.getBlock` via the client's shared world, without naming the
-/// lock type (parking_lot is not a direct dependency).
+/// lock type.
 fn with_world<R>(client: &azalea::Client, f: impl FnOnce(&World) -> R) -> Option<R> {
     let holder = client.get_component::<WorldHolder>()?;
     let world = holder.shared.read();
@@ -954,7 +956,6 @@ impl Bot {
         self.shared
             .world_state
             .read()
-            .unwrap()
             .spawn_point
             .as_ref()
             .map(|g| g.pos)
@@ -963,30 +964,30 @@ impl Bot {
 
     /// `bot.time` — `None` until the first `set_time` packet.
     pub fn time(&self) -> Option<Time> {
-        let state = self.shared.world_state.read().unwrap();
+        let state = self.shared.world_state.read();
         Time::compute(&state, self.dimension().as_ref())
     }
 
     /// `bot.isRaining`.
     pub fn is_raining(&self) -> bool {
-        self.shared.world_state.read().unwrap().is_raining
+        self.shared.world_state.read().is_raining
     }
 
     /// `bot.rainState` — 0.0..1.0.
     pub fn rain_state(&self) -> f32 {
-        self.shared.world_state.read().unwrap().rain_state
+        self.shared.world_state.read().rain_state
     }
 
     /// `bot.thunderState` — 0.0..1.0.
     pub fn thunder_state(&self) -> f32 {
-        self.shared.world_state.read().unwrap().thunder_state
+        self.shared.world_state.read().thunder_state
     }
 
     /// `bot.game` — snapshot; `None` fields weren't seen yet.
     pub fn game(&self) -> Game {
         let (min_y, height) = with_world(&self.client, |w| (w.chunks.min_y(), w.chunks.height()))
             .map_or((None, None), |(y, h)| (Some(y), Some(h)));
-        let state = self.shared.world_state.read().unwrap();
+        let state = self.shared.world_state.read();
         Game {
             level_type: state
                 .is_flat
@@ -1078,7 +1079,7 @@ pub(crate) fn observe_event(
 ) -> Vec<BotEvent> {
     match event {
         Event::Tick => {
-            state.write().unwrap().tick_clocks();
+            state.write().tick_clocks();
             vec![]
         }
         Event::Packet(packet) => decode_packet(client, state, lids, packet),
@@ -1095,7 +1096,7 @@ fn decode_packet(
     match packet {
         ClientboundGamePacket::BlockUpdate(p) => vec![block_update_event(
             client,
-            &mut state.write().unwrap(),
+            &mut state.write(),
             lids,
             p.pos,
             p.block_state,
@@ -1106,7 +1107,7 @@ fn decode_packet(
             // tracker, so sequential updates to the same position see the
             // section's own earlier state as `old` (matching the packet
             // order the server applied them in).
-            let mut state = state.write().unwrap();
+            let mut state = state.write();
             for s in &p.states {
                 out.push(block_update_event(
                     client,
@@ -1125,14 +1126,13 @@ fn decode_packet(
             // than the `old == new` fallback.
             state
                 .write()
-                .unwrap()
                 .last_block_updates
                 .retain(|pos, _| pos.x >> 4 != p.pos.x || pos.z >> 4 != p.pos.z);
             vec![BotEvent::ChunkUnload(p.pos)]
         }
         ClientboundGamePacket::SetTime(p) => {
             {
-                let mut state = state.write().unwrap();
+                let mut state = state.write();
                 state.game_time = p.game_time;
                 // `with_registry_holder` panics when the local player has
                 // been torn down (it reaches `Client::world` internally) —
@@ -1150,16 +1150,14 @@ fn decode_packet(
             }
             vec![BotEvent::Time]
         }
-        ClientboundGamePacket::GameEvent(p) => {
-            state.write().unwrap().apply_game_event(p.event, p.param)
-        }
+        ClientboundGamePacket::GameEvent(p) => state.write().apply_game_event(p.event, p.param),
         ClientboundGamePacket::ChangeDifficulty(p) => {
-            state.write().unwrap().difficulty = Some(p.difficulty);
+            state.write().difficulty = Some(p.difficulty);
             vec![]
         }
         ClientboundGamePacket::Login(p) => {
             {
-                let mut state = state.write().unwrap();
+                let mut state = state.write();
                 state.hardcore = Some(p.hardcore);
                 state.max_players = Some(p.max_players);
                 state.is_flat = Some(p.common.is_flat);
@@ -1170,13 +1168,13 @@ fn decode_packet(
             vec![BotEvent::GameStateChanged]
         }
         ClientboundGamePacket::Respawn(p) => {
-            let mut state = state.write().unwrap();
+            let mut state = state.write();
             state.is_flat = Some(p.common.is_flat);
             state.last_block_updates.clear();
             vec![BotEvent::GameStateChanged]
         }
         ClientboundGamePacket::SetDefaultSpawnPosition(p) => {
-            state.write().unwrap().spawn_point = Some(p.global_pos.clone());
+            state.write().spawn_point = Some(p.global_pos.clone());
             vec![BotEvent::GameStateChanged]
         }
         ClientboundGamePacket::CustomPayload(p) => {
@@ -1184,7 +1182,7 @@ fn decode_packet(
             if p.identifier.to_string() == "minecraft:brand"
                 && let Ok(brand) = String::azalea_read(&mut Cursor::new(&p.data.0[..]))
             {
-                state.write().unwrap().server_brand = Some(brand);
+                state.write().server_brand = Some(brand);
             }
             vec![]
         }
@@ -1790,7 +1788,7 @@ mod tests {
         // Seed one tracked update inside the unloaded chunk and one
         // outside: the unload drops only the inside entry.
         {
-            let mut s = state.write().unwrap();
+            let mut s = state.write();
             s.update_and_old(BlockPos::new(48 + 5, 64, 64 + 2), stone()); // chunk (3,4)
             s.update_and_old(BlockPos::new(0, 64, 0), stone()); // chunk (0,0)
         }
@@ -1806,7 +1804,7 @@ mod tests {
         );
         assert!(matches!(&out[..], [BotEvent::ChunkUnload(_)]));
         {
-            let s = state.read().unwrap();
+            let s = state.read();
             assert!(
                 !s.last_block_updates
                     .contains_key(&BlockPos::new(53, 64, 66))
@@ -1824,7 +1822,7 @@ mod tests {
         );
         assert!(matches!(&out[..], [BotEvent::Rain]));
         // state is updated by the same call, not a later task hop
-        assert!(state.read().unwrap().is_raining);
+        assert!(state.read().is_raining);
     }
 
     #[test]
@@ -1843,7 +1841,7 @@ mod tests {
         });
         let mut lids = LidCounts::default();
         assert!(observe_event(&state, &client, &mut lids, &Event::Tick).is_empty());
-        let clock = &state.read().unwrap().clocks[&Identifier::from("minecraft:overworld")];
+        let clock = &state.read().clocks[&Identifier::from("minecraft:overworld")];
         assert_eq!(clock.total_ticks, 101);
         assert!((clock.partial_tick - 0.9).abs() < f32::EPSILON);
         // non-packet events decode to nothing

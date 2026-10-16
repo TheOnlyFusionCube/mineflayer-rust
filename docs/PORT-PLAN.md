@@ -21,6 +21,7 @@ Done predicate: every api-parity.md row is `ported` or `diverges` (with reason),
 - Verify bar per unit: `cargo fmt --check`, `cargo clippy` zero new warnings, `cargo test` green, `cargo build` clean — via `scripts/verify.sh`.
 - Tests never touch real Mojang auth or public servers. Live tier uses a local offline-mode vanilla server (`scripts/live-server.sh`, Java 21 available) behind `#[ignore]` + `live` feature.
 - api-parity.md is the binding spec. Every unit updates its rows in the same commit as the code.
+- Lock policy (ruling, B8): every crate lock is `parking_lot::Mutex`/`RwLock` — the family azalea already uses for the ECS lock. They do not poison, and the type has no `unwrap()`, so a panic while holding a lock cannot turn one bug into a permanently broken domain. `parking_lot` is a direct dependency (it was already in the graph via azalea). Lock order: a domain lock may be held while taking the ECS lock; never take a domain lock while holding the ECS lock (see `src/bot/mod.rs` next to `BotShared`).
 
 ## Units
 

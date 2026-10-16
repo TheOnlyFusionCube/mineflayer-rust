@@ -9,8 +9,10 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{LazyLock, RwLock},
+    sync::LazyLock,
 };
+
+use parking_lot::RwLock;
 
 use azalea::{
     EntityRef, Event, FormattedText, Vec3,
@@ -117,15 +119,12 @@ pub(crate) fn observe_event(
     event: &Event,
 ) -> Vec<BotEvent> {
     match event {
-        Event::Packet(packet) => tracker
-            .write()
-            .unwrap()
-            .handle_packet(client, packet.as_ref()),
+        Event::Packet(packet) => tracker.write().handle_packet(client, packet.as_ref()),
         // `bot.on('spawn', () => bot.emit('entitySpawn', bot.entity))` upstream
         Event::Spawn => vec![BotEvent::EntitySpawn(client.entity())],
         // upstream resets `bot.entities` on login
         Event::Login => {
-            tracker.write().unwrap().clear();
+            tracker.write().clear();
             vec![]
         }
         _ => vec![],
@@ -870,7 +869,6 @@ impl Bot {
                     .shared
                     .entities
                     .read()
-                    .unwrap()
                     .chat_sessions
                     .get(&info.uuid)
                     .cloned();
@@ -926,12 +924,8 @@ impl Bot {
     /// `Entity.vehicle` for an arbitrary entity.
     pub fn entity_vehicle(&self, entity: &EntityRef) -> Option<EntityRef> {
         let id = *entity.get_component::<MinecraftEntityId>()?;
-        let vehicle = *self.shared.entities.read().unwrap().vehicle_of.get(&id)?;
-        self.shared
-            .entities
-            .write()
-            .unwrap()
-            .resolve(&self.client, vehicle)
+        let vehicle = *self.shared.entities.read().vehicle_of.get(&id)?;
+        self.shared.entities.write().resolve(&self.client, vehicle)
     }
 
     /// `entity.equipment` — the entity's equipment by slot, tracked from
@@ -942,26 +936,14 @@ impl Bot {
         // component guard across the tracker read inverts the bridge's
         // (tracker-write → ecs-read) lock order and deadlocks
         let id = entity.get_component::<MinecraftEntityId>().map(|id| *id);
-        id.and_then(|id| {
-            self.shared
-                .entities
-                .read()
-                .unwrap()
-                .equipment
-                .get(&id)
-                .cloned()
-        })
-        .unwrap_or_default()
+        id.and_then(|id| self.shared.entities.read().equipment.get(&id).cloned())
+            .unwrap_or_default()
     }
 
     /// `bot.fireworkRocketDuration` — estimated remaining boost ticks from
     /// the last `usedFirework`; `0` when none is active.
     pub fn firework_rocket_duration(&self) -> u32 {
-        self.shared
-            .entities
-            .read()
-            .unwrap()
-            .firework_rocket_duration
+        self.shared.entities.read().firework_rocket_duration
     }
 
     // -- actions ---------------------------------------------------------
@@ -1140,14 +1122,7 @@ impl Bot {
 
         if !raw {
             let id = *entity.get_component::<MinecraftEntityId>()?;
-            let attributes = self
-                .shared
-                .entities
-                .read()
-                .unwrap()
-                .attributes
-                .get(&id)
-                .cloned();
+            let attributes = self.shared.entities.read().attributes.get(&id).cloned();
             let armor = attributes
                 .as_ref()
                 .and_then(|a| a.get(&Attribute::Armor))
@@ -1167,7 +1142,6 @@ impl Bot {
                     .shared
                     .entities
                     .read()
-                    .unwrap()
                     .difficulty
                     .unwrap_or(Difficulty::Normal)
                 {
@@ -1871,7 +1845,7 @@ mod tests {
                 signature: vec![8],
             },
         );
-        *bot.shared.entities.write().unwrap() = tracker;
+        *bot.shared.entities.write() = tracker;
 
         let players = bot.players();
         assert_eq!(

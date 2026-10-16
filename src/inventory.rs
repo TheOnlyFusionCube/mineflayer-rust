@@ -244,7 +244,7 @@ impl Bot {
     /// `bot.currentWindow` — the open non-inventory window, `None` when
     /// only the player inventory is open.
     pub fn current_window(&self) -> Option<Window> {
-        let t = self.shared.windows.lock().unwrap();
+        let t = self.shared.windows.lock();
         t.current.as_ref().map(|shared| Window {
             shared: shared.clone(),
         })
@@ -257,7 +257,7 @@ impl Bot {
 
     /// `bot.quickBarSlot` — the selected hotbar index, `0..=8`.
     pub fn quick_bar_slot(&self) -> u8 {
-        if let Some(sel) = self.shared.windows.lock().unwrap().selected_hotbar {
+        if let Some(sel) = self.shared.windows.lock().selected_hotbar {
             return sel;
         }
         self.client
@@ -280,14 +280,14 @@ impl Bot {
             return Ok(());
         }
         self.client.set_selected_hotbar_slot(slot);
-        self.shared.windows.lock().unwrap().selected_hotbar = Some(slot);
+        self.shared.windows.lock().selected_hotbar = Some(slot);
         self.update_held_item().await;
         Ok(())
     }
 
     /// `bot.usingHeldItem`.
     pub fn using_held_item(&self) -> bool {
-        self.shared.windows.lock().unwrap().using_held_item
+        self.shared.windows.lock().using_held_item
     }
 
     /// `bot.getEquipmentDestSlot(destination)` — the absolute
@@ -550,7 +550,7 @@ impl Bot {
             Some(i) => i as i32,
             None => {
                 // LRU cache for the quick bar items
-                let mut t = self.shared.windows.lock().unwrap();
+                let mut t = self.shared.windows.lock();
                 let slot = QUICK_BAR_START as i32 + i32::from(t.next_quick_bar_slot);
                 t.next_quick_bar_slot = (t.next_quick_bar_slot + 1) % 9;
                 slot
@@ -641,7 +641,7 @@ impl Bot {
         if !has_item {
             return;
         }
-        self.shared.windows.lock().unwrap().using_held_item = true;
+        self.shared.windows.lock().using_held_item = true;
         let seq = {
             let mut ecs = self.client.ecs.write();
             ecs.get_mut::<azalea::interact::BlockStatePredictionHandler>(self.client.entity)
@@ -668,7 +668,7 @@ impl Bot {
     /// `bot.deactivateItem()` — release the held item (`player_action`
     /// status 5 / `ReleaseUseItem`) and clear `using_held_item`.
     pub async fn deactivate_item(&self) {
-        self.shared.windows.lock().unwrap().using_held_item = false;
+        self.shared.windows.lock().using_held_item = false;
         self.client.write_packet(ServerboundPlayerAction {
             action: s_player_action::Action::ReleaseUseItem,
             pos: BlockPos::new(0, 0, 0),
@@ -701,7 +701,7 @@ impl Bot {
             return Err(Error::Operation("Nothing held to consume".into()));
         }
         let (generation, notify) = {
-            let mut t = self.shared.windows.lock().unwrap();
+            let mut t = self.shared.windows.lock();
             t.eat_generation += 1;
             // resolve a superseded consume() immediately, like upstream's
             // eatingTask.cancel — it wakes here and fails the generation
@@ -722,7 +722,7 @@ impl Bot {
         {
             return Err(Error::Timeout);
         }
-        if self.shared.windows.lock().unwrap().eat_generation == generation {
+        if self.shared.windows.lock().eat_generation == generation {
             Ok(())
         } else {
             Err(Error::Operation(

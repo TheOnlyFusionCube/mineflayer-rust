@@ -26,11 +26,9 @@
 //! (`c_update_tags` arrives in the config phase, which `Event::Packet`
 //! never sees — the statics are the same data).
 
-use std::{
-    collections::HashMap,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, str::FromStr, sync::Arc};
+
+use parking_lot::Mutex;
 
 use crate::{
     Bot, Error, Result,
@@ -291,7 +289,7 @@ pub(crate) fn observe_event(book: &Arc<Mutex<RecipeBook>>, event: &Event) {
     };
     match &**packet {
         ClientboundGamePacket::RecipeBookAdd(p) => {
-            let mut book = book.lock().unwrap();
+            let mut book = book.lock();
             if p.replace {
                 book.entries.clear();
             }
@@ -305,10 +303,7 @@ pub(crate) fn observe_event(book: &Arc<Mutex<RecipeBook>>, event: &Event) {
             }
         }
         ClientboundGamePacket::RecipeBookRemove(p) => {
-            book.lock()
-                .unwrap()
-                .entries
-                .retain(|e| !p.recipes.contains(&e.id));
+            book.lock().entries.retain(|e| !p.recipes.contains(&e.id));
         }
         _ => {}
     }
@@ -779,7 +774,7 @@ impl Bot {
     /// Diagnostics — upstream has no book at all.
     #[doc(hidden)]
     pub fn known_recipe_count(&self) -> usize {
-        self.shared.recipes.lock().unwrap().entries.len()
+        self.shared.recipes.lock().entries.len()
     }
 
     /// Convert the recipe book into [`Recipe`]s (skipping
@@ -788,7 +783,6 @@ impl Bot {
         self.shared
             .recipes
             .lock()
-            .unwrap()
             .entries
             .iter()
             .filter_map(recipe_from_entry)
@@ -1353,7 +1347,7 @@ mod tests {
             },
         )));
         observe_event(&book, &add);
-        assert_eq!(book.lock().unwrap().entries.len(), 1);
+        assert_eq!(book.lock().entries.len(), 1);
         // same id again without replace dedupes
         let add_again = Event::Packet(Arc::new(ClientboundGamePacket::RecipeBookAdd(
             ClientboundRecipeBookAdd {
@@ -1362,12 +1356,12 @@ mod tests {
             },
         )));
         observe_event(&book, &add_again);
-        assert_eq!(book.lock().unwrap().entries.len(), 1);
+        assert_eq!(book.lock().entries.len(), 1);
         // remove drops it
         let remove = Event::Packet(Arc::new(ClientboundGamePacket::RecipeBookRemove(
             ClientboundRecipeBookRemove { recipes: vec![293] },
         )));
         observe_event(&book, &remove);
-        assert!(book.lock().unwrap().entries.is_empty());
+        assert!(book.lock().entries.is_empty());
     }
 }

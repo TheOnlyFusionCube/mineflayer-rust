@@ -607,7 +607,7 @@ impl Bot {
             // call before play state and a call after a pre-play
             // disconnect are different errors (and the latter names the
             // reason).
-            if let Some(reason) = self.shared.end_reason.lock().unwrap().clone() {
+            if let Some(reason) = self.shared.end_reason.lock().clone() {
                 return Err(Error::Operation(format!(
                     "bot.chat() called after the client disconnected before \
                      entering the play state ({reason})"
@@ -650,22 +650,18 @@ impl Bot {
         patterns: Vec<Regex>,
         opts: ChatPatternOpts,
     ) -> usize {
-        self.shared
-            .chat
-            .lock()
-            .unwrap()
-            .add_pattern(name, patterns, opts)
+        self.shared.chat.lock().add_pattern(name, patterns, opts)
     }
 
     /// `bot.removeChatPattern(name|id)` — by id removes that set; by name
     /// removes every set with the name.
     pub fn remove_chat_pattern(&self, key: impl Into<ChatPatternKey>) {
-        self.shared.chat.lock().unwrap().remove_pattern(&key.into());
+        self.shared.chat.lock().remove_pattern(&key.into());
     }
 
     /// `bot.chatPatterns` — a snapshot of the registered pattern sets.
     pub fn chat_patterns(&self) -> Vec<ChatPattern> {
-        self.shared.chat.lock().unwrap().list_patterns()
+        self.shared.chat.lock().list_patterns()
     }
 
     /// `bot.awaitMessage(...args)` — resolves with the `messagestr` text of
@@ -702,7 +698,7 @@ impl Bot {
         if !self.logged_in() {
             return Err(Error::NotConnected);
         }
-        let (id, rx) = self.shared.chat.lock().unwrap().register_completion();
+        let (id, rx) = self.shared.chat.lock().register_completion();
         self.client.write_packet(ServerboundCommandSuggestion {
             id,
             command: text.to_string(),
@@ -713,12 +709,7 @@ impl Bot {
             // only removed on reply or timeout)
             Ok(Err(_)) => Err(Error::NotConnected),
             Err(_) => {
-                self.shared
-                    .chat
-                    .lock()
-                    .unwrap()
-                    .completion_pending
-                    .remove(&id);
+                self.shared.chat.lock().completion_pending.remove(&id);
                 Err(Error::Timeout)
             }
         }
@@ -727,7 +718,7 @@ impl Bot {
     /// `bot.tablist` — the tab-list header/footer the server last sent
     /// (empty until the first `c_tab_list` packet).
     pub fn tablist(&self) -> TabList {
-        self.shared.chat.lock().unwrap().tablist()
+        self.shared.chat.lock().tablist()
     }
 }
 

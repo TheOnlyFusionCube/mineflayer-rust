@@ -24,11 +24,12 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = "1"
+# Every crate lock (see the lock policy in docs/PORT-PLAN.md): same no-
+# poison lock family azalea uses for the ECS, and the version azalea-
+# client compiles its `WorldHolder.shared` field with.
+parking_lot = "0.12"
 
 [dev-dependencies]
-# unit tests construct `Arc<RwLock<World>>` for `WorldHolder::new` — same
-# version azalea-client compiles its `shared` field with
-parking_lot = "0.12"
 
 [[test]]
 name = "live"

@@ -5,10 +5,7 @@
 //! to `BotEvent`s, forward over the broadcast channel, and shut the client
 //! down when every `Bot` handle is gone.
 
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashSet, sync::Arc};
 
 use azalea::{
     ClientInformation, Event,
@@ -17,6 +14,8 @@ use azalea::{
     protocol::packets::game::{ClientboundGamePacket, c_system_chat::ClientboundSystemChat},
 };
 use tokio::sync::{mpsc::UnboundedReceiver, watch};
+
+use parking_lot::Mutex;
 
 use crate::{
     BotEvent,
@@ -148,7 +147,7 @@ pub(crate) fn spawn(
                         // pre-play error message — record it before the
                         // event goes out so a racing `chat()` sees it.
                         if let BotEvent::End(reason) = &bot_event {
-                            *end_reason.lock().unwrap() = Some(reason.clone());
+                            *end_reason.lock() = Some(reason.clone());
                         }
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
@@ -196,7 +195,7 @@ pub(crate) fn spawn(
                         "client timed out after {} milliseconds",
                         check_timeout_interval.as_millis()
                     )));
-                    *quit_reason.lock().unwrap() = Some("keepAliveError".to_string());
+                    *quit_reason.lock() = Some("keepAliveError".to_string());
                     client.disconnect();
                 }
                 _ = alive.changed() => break,
@@ -218,7 +217,6 @@ pub(crate) fn spawn(
             state.ended = true;
             let reason = quit_reason
                 .lock()
-                .unwrap()
                 .take()
                 .unwrap_or_else(|| "socketClosed".to_string());
             let _ = events.send(BotEvent::End(reason));
@@ -329,7 +327,6 @@ fn translate(
                 None => {
                     let reason = quit_reason
                         .lock()
-                        .unwrap()
                         .take()
                         .unwrap_or_else(|| "socketClosed".to_string());
                     vec![BotEvent::End(reason)]
@@ -349,7 +346,7 @@ fn translate(
         }
         Event::Chat(packet) => {
             let mut out = vec![BotEvent::Chat(packet.clone())];
-            out.extend(state.chat.lock().unwrap().message_events(&packet));
+            out.extend(state.chat.lock().message_events(&packet));
             out
         }
         Event::Tick => vec![BotEvent::Tick],
@@ -448,10 +445,10 @@ fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) 
                 content: p.text.clone(),
                 overlay: true,
             }));
-            chat.lock().unwrap().message_events(&chat_packet)
+            chat.lock().message_events(&chat_packet)
         }
         ClientboundGamePacket::TabList(p) => {
-            chat.lock().unwrap().store_tablist(TabList {
+            chat.lock().store_tablist(TabList {
                 header: p.header.clone(),
                 footer: p.footer.clone(),
             });
@@ -459,7 +456,7 @@ fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) 
         }
         ClientboundGamePacket::CommandSuggestions(p) => {
             let matches = p.suggestions.list().iter().map(|s| s.text()).collect();
-            chat.lock().unwrap().complete_suggestions(p.id, matches);
+            chat.lock().complete_suggestions(p.id, matches);
             vec![]
         }
         _ => vec![],
@@ -840,7 +837,7 @@ mod tests {
             &translate(&mut s, &qr, &client, Event::Disconnect(None))[..],
             [BotEvent::End(r)] if r == "disconnect.quitting"
         ));
-        assert!(qr.lock().unwrap().is_none());
+        assert!(qr.lock().is_none());
     }
 
     #[test]
@@ -921,7 +918,7 @@ mod tests {
         });
         let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(matches!(&out[..], [BotEvent::Packet(_)]));
-        let tablist = s.chat.lock().unwrap().tablist();
+        let tablist = s.chat.lock().tablist();
         assert_eq!(tablist.header.to_string(), "h");
         assert_eq!(tablist.footer.to_string(), "f");
     }
@@ -939,7 +936,7 @@ mod tests {
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        let (id, mut rx) = s.chat.lock().unwrap().register_completion();
+        let (id, mut rx) = s.chat.lock().register_completion();
         let packet = ClientboundGamePacket::CommandSuggestions(ClientboundCommandSuggestions {
             id,
             suggestions: Suggestions::new(
@@ -957,7 +954,7 @@ mod tests {
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        s.chat.lock().unwrap().add_pattern(
+        s.chat.lock().add_pattern(
             "probe",
             vec![regex::Regex::new("worked").unwrap()],
             crate::ChatPatternOpts::default(),
