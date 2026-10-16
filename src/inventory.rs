@@ -31,6 +31,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     Bot, BotEvent, Error, Result,
+    bot::wait::await_event,
     windows::{Item, Window, find_item_in, first_empty_in, held_item},
     world::Block,
 };
@@ -426,18 +427,13 @@ impl Bot {
             changed_slots: Default::default(),
             carried_item: HashedStack::from_item_stack(&carried, &registries),
         });
-        let wait = async {
-            loop {
-                match rx.recv().await {
-                    Ok(BotEvent::SetWindowItems { window_id: id }) if id == window_id => return,
-                    Ok(BotEvent::End(_)) => return,
-                    Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => return,
-                }
-            }
-        };
-        let _ = tokio::time::timeout(Duration::from_secs(5), wait).await;
+        // every exit — ack, End, closed, timeout — ends the wait
+        let _ = await_event(
+            &mut rx,
+            Duration::from_secs(5),
+            |e| matches!(e, BotEvent::SetWindowItems { window_id: id } if *id == window_id),
+        )
+        .await;
     }
 
     /// `bot.closeWindow(window)` — send `container_close`, sync the
@@ -865,22 +861,20 @@ pub(crate) async fn click_window_on(
 /// upstream's `once(window, 'updateSlot:${slot}')`, with a 5 s
 /// (`WINDOW_TIMEOUT`) cap so a dropped packet can't hang the caller.
 async fn wait_for_slot_update(rx: &mut broadcast::Receiver<BotEvent>, window_id: i32, slot: u16) {
-    let wait = async {
-        loop {
-            match rx.recv().await {
-                Ok(BotEvent::WindowUpdateSlot {
-                    window_id: wid,
-                    slot: s,
-                    ..
-                }) if wid == window_id && s == slot => return,
-                Ok(BotEvent::End(_)) => return,
-                Ok(_) => continue,
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs(5), wait).await;
+    // one slot, one wait — callers that need several slots share a single
+    // loop (`window_types::wait_for_slot_updates`); sequential per-slot
+    // waits would eat each other's events
+    let _ = await_event(rx, Duration::from_secs(5), |e| {
+        matches!(
+            e,
+            BotEvent::WindowUpdateSlot {
+                window_id: wid,
+                slot: s,
+                ..
+            } if *wid == window_id && *s == slot
+        )
+    })
+    .await;
 }
 
 /// `putSelectedItemRange` (upstream): while the cursor holds a stack,

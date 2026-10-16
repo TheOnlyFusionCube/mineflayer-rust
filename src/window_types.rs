@@ -65,6 +65,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     Bot, BotEvent, Error, Result,
+    bot::wait::await_event,
     inventory::{TransferOpts, transfer},
     windows::{Item, Window},
     world::Block,
@@ -1439,29 +1440,6 @@ impl Bot {
 // ---------------------------------------------------------------------------
 // Wait helpers.
 // ---------------------------------------------------------------------------
-
-/// Receive until `pred` matches, `timeout` elapses, or the stream dies —
-/// the shared event wait for the typed windows (upstream's `once` with a
-/// cap so a dropped packet can't hang the caller).
-async fn await_event(
-    rx: &mut broadcast::Receiver<BotEvent>,
-    timeout: Duration,
-    mut pred: impl FnMut(&BotEvent) -> bool,
-) -> Option<BotEvent> {
-    let wait = async {
-        loop {
-            match rx.recv().await {
-                Ok(event) if pred(&event) => return Some(event),
-                Ok(BotEvent::End(_)) => return None,
-                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    };
-    tokio::time::timeout(timeout, wait)
-        .await
-        .unwrap_or_default()
-}
 
 /// Wait until `WindowUpdateSlot` has been seen for every slot in
 /// `needed` (single consumer loop — sequential one-slot waits would eat

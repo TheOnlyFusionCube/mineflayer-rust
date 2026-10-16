@@ -496,6 +496,16 @@ Examples: `inventory.rs` `await_window_open`, `wait_for_slot_update`, `sync_wind
 
 **Acceptance.** The number of hand-written receive loops decreases. All existing wait tests pass.
 
+**Status:** done. `await_event` moved to `src/bot/wait.rs`
+(`crate::bot::wait`); `window_types` imports it. `sync_window` and
+`wait_for_slot_update` (inventory) kept the wait's exact terminal
+conditions and now call it — two hand-written loops gone. Loops with
+different conditions were left alone: `wait_for_chunks_to_load` (state
+check), the dig wait, the place/entity and creative waits (End keeps
+waiting there, or a timeout is a distinct error), `fish` (cancel arm),
+and `await_message_on` (End is not terminal upstream either). The plural
+`wait_for_slot_updates` stays a single consumer loop.
+
 ### B8. Lock poisoning policy (P2)
 
 **Problem.**

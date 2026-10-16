@@ -145,6 +145,7 @@ impl BotShared {
 /// multi-second flood without the multi-MB upfront ring a much larger
 /// capacity would allocate per `Bot`.
 mod event;
+pub(crate) mod wait;
 pub use event::BotEvent;
 
 const EVENT_CHANNEL_CAPACITY: usize = 8192;
