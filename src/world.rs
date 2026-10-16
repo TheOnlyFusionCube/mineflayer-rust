@@ -79,6 +79,10 @@ impl WorldRef {
     /// `world.raycast` — walks the block grid along the segment. With a
     /// `matcher` the first voxel it accepts wins; with `None` the first
     /// block whose collision shape is intersected wins.
+    ///
+    /// A matcher runs with no world lock held (see
+    /// [`BlockMatcher::Predicate`]): the traversal collects its cells
+    /// under one lock, then the matcher sees them after the release.
     pub fn raycast(
         &self,
         from: Vec3,
@@ -86,16 +90,12 @@ impl WorldRef {
         range: f64,
         matcher: Option<&BlockMatcher>,
     ) -> Option<Block> {
-        let pred: Option<Box<dyn Fn(BlockPos, BlockState) -> bool + '_>> = matcher.map(|m| {
-            Box::new(move |pos: BlockPos, state: BlockState| {
-                m.matches(&Block::new(&self.client, pos, state))
-            }) as _
-        });
-        with_world(&self.client, |w| {
-            raycast_blocks(w, from, direction, range, pred.as_deref())
-                .map(|(pos, state)| Block::new(&self.client, pos, state))
-        })
-        .flatten()
+        match matcher {
+            None => with_world(&self.client, |w| raycast_blocks(w, from, direction, range))
+                .flatten()
+                .map(|(pos, state)| Block::new(&self.client, pos, state)),
+            Some(m) => raycast_unlocked(&self.client, from, direction, range, m),
+        }
     }
 
     /// Client-side world write (e.g. predicting a dig); returns the replaced
@@ -126,20 +126,17 @@ impl WorldRef {
             .filter(|d| *d != 0. && !d.is_nan())
             .unwrap_or(DEFAULT_MAX_DISTANCE);
         let count = opts.count.filter(|c| *c != 0).unwrap_or(DEFAULT_COUNT);
-        with_world(&self.client, |w| match &opts.matching {
-            BlockMatcher::States(states) => find_states(w, point, states, max_distance, count),
-            BlockMatcher::Predicate(pred) => find_matching(
-                w,
-                point,
-                &|pos, state| {
-                    euclidean(pos, point) <= max_distance
-                        && pred(&Block::new(&self.client, pos, state))
-                },
-                max_distance,
-                count,
-            ),
-        })
-        .unwrap_or_default()
+        match &opts.matching {
+            BlockMatcher::States(states) => with_world(&self.client, |w| {
+                find_states(w, point, states, max_distance, count)
+            })
+            .unwrap_or_default(),
+            // the predicate runs outside the world lock — see
+            // `find_matching_unlocked`
+            BlockMatcher::Predicate(pred) => {
+                find_matching_unlocked(&self.client, point, pred.as_ref(), max_distance, count)
+            }
+        }
     }
 }
 
@@ -254,6 +251,9 @@ pub enum BlockMatcher {
     /// Fast path: match any of these block states (palette-filtered).
     States(BlockStates),
     /// Arbitrary predicate over the resolved [`Block`].
+    ///
+    /// The predicate runs without a world lock. It may read the world
+    /// again (for example another `block_at`) without risking a deadlock.
     Predicate(Box<dyn Fn(&Block) -> bool + Send + Sync>),
 }
 
@@ -625,12 +625,51 @@ fn find_states(
     found
 }
 
+/// One chunk's in-range `(pos, state)` cells, in scan order — the part of
+/// a predicate search that needs the world lock. The caller runs the user
+/// predicate after it releases the lock (see [`find_matching_unlocked`]).
+fn collect_chunk_cells(
+    world: &World,
+    chunk_pos: ChunkPos,
+    point: BlockPos,
+    max_distance: f64,
+) -> Vec<(BlockPos, BlockState)> {
+    let min_y = world.chunks.min_y();
+    let mut cells = vec![];
+    if let Some(chunk) = world.chunks.get(&chunk_pos) {
+        let chunk = chunk.read();
+        for (i, section) in chunk.sections.iter().enumerate() {
+            let base_y = min_y + i as i32 * 16;
+            for idx in 0..4096usize {
+                let sp = section.states.pos_from_index(idx);
+                let pos = BlockPos {
+                    x: chunk_pos.x * 16 + sp.x as i32,
+                    y: base_y + sp.y as i32,
+                    z: chunk_pos.z * 16 + sp.z as i32,
+                };
+                if euclidean(pos, point) <= max_distance {
+                    cells.push((pos, section.states.get_at_index(idx)));
+                }
+            }
+        }
+    }
+    cells
+}
+
 /// Predicate-mode find — scans every loaded section index (no palette
 /// fast-path is possible for arbitrary predicates).
-fn find_matching(
-    world: &World,
+///
+/// The user predicate runs with no world lock held: each chunk's in-range
+/// cells are collected under a short lock (`collect_chunk_cells`), the
+/// lock is released, and only then does the predicate see them. A
+/// `parking_lot` read lock is not re-entrant when a writer waits, so a
+/// predicate that reads the world (for example another `block_at`) would
+/// otherwise deadlock. Results match the previous in-lock scan exactly:
+/// same scan order, same closest-first sort, same count truncation.
+fn find_matching_unlocked(
+    client: &azalea::Client,
     point: BlockPos,
-    matches: &dyn Fn(BlockPos, BlockState) -> bool,
+    matches: &dyn Fn(&Block) -> bool,
     max_distance: f64,
     count: usize,
 ) -> Vec<BlockPos> {
@@ -638,24 +677,14 @@ fn find_matching(
     let layers = ((max_distance + 8.) / 16.).ceil().max(1.) as u32;
     let mut iter = ChunkIterator::new(ChunkPos::from(point), layers);
     let mut started_layer = 0;
-    let min_y = world.chunks.min_y();
     while let Some(chunk_pos) = iter.next() {
-        if let Some(chunk) = world.chunks.get(&chunk_pos) {
-            let chunk = chunk.read();
-            for (i, section) in chunk.sections.iter().enumerate() {
-                let base_y = min_y + i as i32 * 16;
-                for idx in 0..4096usize {
-                    let state = section.states.get_at_index(idx);
-                    let sp = section.states.pos_from_index(idx);
-                    let pos = BlockPos {
-                        x: chunk_pos.x * 16 + sp.x as i32,
-                        y: base_y + sp.y as i32,
-                        z: chunk_pos.z * 16 + sp.z as i32,
-                    };
-                    if euclidean(pos, point) <= max_distance && matches(pos, state) {
-                        found.push(pos);
-                    }
-                }
+        let cells = with_world(client, |w| {
+            collect_chunk_cells(w, chunk_pos, point, max_distance)
+        })
+        .unwrap_or_default();
+        for (pos, state) in cells {
+            if matches(&Block::new(client, pos, state)) {
+                found.push(pos);
             }
         }
         if started_layer != iter.layer && found.len() >= count {
@@ -672,18 +701,58 @@ fn find_matching(
     found
 }
 
+/// Matcher-mode `world.raycast` with the matcher outside the world lock:
+/// the traversal collects its cells under one lock (bounded by the ray's
+/// length — the traversal never terminates early here), then the matcher
+/// visits them in traversal order. Matchers win on voxel entry (empty or
+/// partial shapes the ray only grazes are reachable), faithful to upstream
+/// `WorldSync.raycast`.
+fn raycast_unlocked(
+    client: &azalea::Client,
+    from: Vec3,
+    direction: Vec3,
+    range: f64,
+    matcher: &BlockMatcher,
+) -> Option<Block> {
+    let len = direction.length();
+    if range <= 0. || len == 0. {
+        return None;
+    }
+    let to = from + direction * (range / len);
+    let cells = with_world(client, |w| {
+        // `traverse_blocks` takes an `Fn`, not `FnMut`; the visitor runs on
+        // this thread only
+        let cells = std::cell::RefCell::new(vec![]);
+        let _ = traverse_blocks(
+            from,
+            to,
+            (),
+            |_, pos| -> Option<Option<(BlockPos, BlockState)>> {
+                if let Some(state) = w.chunks.get_block_state(pos) {
+                    cells.borrow_mut().push((pos, state));
+                }
+                None
+            },
+            |_| None,
+        );
+        cells.into_inner()
+    })?;
+    cells.into_iter().find_map(|(pos, state)| {
+        let block = Block::new(client, pos, state);
+        matcher.matches(&block).then_some(block)
+    })
+}
+
 /// `world.raycast` core — Amanatides & Woo DDA via azalea's
-/// `traverse_blocks`, faithful to upstream `WorldSync.raycast`: with a
-/// `matcher` the first voxel it accepts wins outright (empty or partial
-/// shapes the ray only grazes are reachable); with `None` the first
+/// `traverse_blocks`, faithful to upstream `WorldSync.raycast`: the first
 /// block whose *collision* shape is clipped wins (upstream's
-/// `iter.intersect(block.shapes)`).
+/// `iter.intersect(block.shapes)`). Matcher-mode rays go through
+/// [`raycast_unlocked`] so the user matcher stays outside the world lock.
 fn raycast_blocks(
     world: &World,
     from: Vec3,
     direction: Vec3,
     range: f64,
-    matcher: Option<&dyn Fn(BlockPos, BlockState) -> bool>,
 ) -> Option<(BlockPos, BlockState)> {
     let len = direction.length();
     if range <= 0. || len == 0. {
@@ -696,13 +765,10 @@ fn raycast_blocks(
         (),
         |_, pos| {
             let state = world.chunks.get_block_state(pos)?;
-            match matcher {
-                Some(m) => m(pos, state).then_some(Some((pos, state))),
-                None => state
-                    .collision_shape()
-                    .clip(from, to, pos)
-                    .map(|_| Some((pos, state))),
-            }
+            state
+                .collision_shape()
+                .clip(from, to, pos)
+                .map(|_| Some((pos, state)))
         },
         |_| None,
     )
@@ -1267,6 +1333,30 @@ mod tests {
         (world, partial)
     }
 
+    /// A `WorldRef` over a fresh 3×3 test world with `blocks` placed,
+    /// plus the shared world (for mutations between assertions) and the
+    /// partial storage the caller must keep alive.
+    fn world_view(
+        blocks: &[(BlockPos, BlockState)],
+    ) -> (
+        WorldRef,
+        std::sync::Arc<parking_lot::RwLock<World>>,
+        PartialChunkStorage,
+    ) {
+        let client = crate::test_util::live_entity_client(());
+        let (world, partial) = test_world();
+        for (pos, state) in blocks {
+            world.chunks.set_block_state(*pos, *state);
+        }
+        let shared = std::sync::Arc::new(parking_lot::RwLock::new(world));
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(WorldHolder::new(client.entity, shared.clone()));
+        (WorldRef::new(client), shared, partial)
+    }
+
     #[test]
     fn find_blocks_closest_first_and_count() {
         let (world, _partial) = test_world();
@@ -1310,21 +1400,69 @@ mod tests {
 
     #[test]
     fn find_blocks_predicate() {
-        let (world, _partial) = test_world();
-        world
-            .chunks
-            .set_block_state(BlockPos { x: 2, y: 0, z: 0 }, stone());
-        world
-            .chunks
-            .set_block_state(BlockPos { x: -2, y: 0, z: 0 }, stone());
-        let found = find_matching(
-            &world,
-            BlockPos::default(),
-            &|pos, state| pos.x > 0 && state == stone(),
-            16.,
-            10,
+        let (world_ref, _shared, _partial) = world_view(&[
+            (BlockPos { x: 2, y: 0, z: 0 }, stone()),
+            (BlockPos { x: -2, y: 0, z: 0 }, stone()),
+        ]);
+        // the predicate reads the world again — it runs with no world
+        // lock held, so the re-read is safe
+        let reread = WorldRef::new(world_ref.client().clone());
+        let found = world_ref.find_blocks(
+            &FindBlocksOpts::new(move |b: &Block| {
+                reread.block_at(b.pos).is_some() && b.pos.x > 0 && b.state == stone()
+            })
+            .max_distance(16.)
+            .count(10),
         );
         assert_eq!(found, vec![BlockPos { x: 2, y: 0, z: 0 }]);
+    }
+
+    /// A predicate that reads the world again must not deadlock, also when
+    /// a writer waits on the world lock. With the lock held across the
+    /// predicate, the queued writer blocks and the predicate's own re-read
+    /// then blocks behind it (a `parking_lot` read lock is not re-entrant
+    /// when a writer waits) — the scan never finishes.
+    #[test]
+    fn predicate_may_read_the_world_with_a_writer_queued() {
+        let (world_ref, shared, _partial) = world_view(&[(BlockPos { x: 2, y: 0, z: 0 }, stone())]);
+        let client = world_ref.client().clone();
+
+        // the predicate tells the test when it first runs; the writer is
+        // queued at that moment
+        let (pred_tx, pred_rx) = std::sync::mpsc::channel::<()>();
+        let probe = WorldRef::new(client.clone());
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let reread = WorldRef::new(client);
+            let first = std::sync::atomic::AtomicBool::new(true);
+            let found = probe.find_blocks(
+                &FindBlocksOpts::new(move |b: &Block| {
+                    if first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = pred_tx.send(());
+                        // let the test queue the writer while this predicate
+                        // is still running
+                        std::thread::sleep(std::time::Duration::from_millis(150));
+                    }
+                    reread.block_at(b.pos).is_some() && b.state == stone()
+                })
+                .max_distance(16.)
+                .count(10),
+            );
+            let _ = done_tx.send(found);
+        });
+        pred_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("predicate never ran");
+        let writer = std::thread::spawn(move || {
+            let guard = shared.write();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(guard);
+        });
+        let found = done_rx.recv_timeout(std::time::Duration::from_secs(5)).expect(
+            "find_blocks deadlocked: the predicate's world read blocked behind the queued writer",
+        );
+        assert_eq!(found, vec![BlockPos { x: 2, y: 0, z: 0 }]);
+        writer.join().unwrap();
     }
 
     #[test]
@@ -1348,25 +1486,9 @@ mod tests {
                     z: 1.
                 },
                 10.,
-                None
             )
             .map(|(pos, _)| pos),
             Some(BlockPos { x: 0, y: 0, z: 3 })
-        );
-        // a rejecting matcher must pass the block by.
-        assert!(
-            raycast_blocks(
-                &world,
-                from,
-                Vec3 {
-                    x: 0.,
-                    y: 0.,
-                    z: 1.
-                },
-                10.,
-                Some(&|_, _| false)
-            )
-            .is_none()
         );
         // nothing but air along +x.
         assert!(
@@ -1379,7 +1501,6 @@ mod tests {
                     z: 0.
                 },
                 10.,
-                None
             )
             .is_none()
         );
@@ -1412,7 +1533,7 @@ mod tests {
             z: 1.,
         };
         assert_eq!(
-            raycast_blocks(&world, from, dir, 10., None).map(|(pos, _)| pos),
+            raycast_blocks(&world, from, dir, 10.).map(|(pos, _)| pos),
             Some(BlockPos { x: 0, y: 0, z: 3 })
         );
     }
@@ -1421,13 +1542,13 @@ mod tests {
     fn raycast_matcher_accepts_voxel_entry() {
         // Upstream `WorldSync.raycast`: with a matcher the first voxel
         // it accepts wins — no shape clip — so matchers reach
-        // empty/partial shapes and intervening blocks never clip.
-        let (world, _partial) = test_world();
+        // empty/partial shapes and intervening blocks never clip. The
+        // matcher runs outside the world lock (`raycast_unlocked`).
+        let (world_ref, _shared, _partial) = world_view(&[
+            (BlockPos { x: 0, y: 0, z: 2 }, stone()),
+            (BlockPos { x: 0, y: 0, z: 3 }, short_grass()),
+        ]);
         let target = BlockPos { x: 0, y: 0, z: 3 };
-        world
-            .chunks
-            .set_block_state(BlockPos { x: 0, y: 0, z: 2 }, stone());
-        world.chunks.set_block_state(target, short_grass());
         let from = Vec3 {
             x: 0.5,
             y: 0.5,
@@ -1440,15 +1561,20 @@ mod tests {
         };
         // no matcher: the stone's collision shape wins.
         assert_eq!(
-            raycast_blocks(&world, from, dir, 10., None).map(|(pos, _)| pos),
+            world_ref.raycast(from, dir, 10., None).map(|b| b.pos),
             Some(BlockPos { x: 0, y: 0, z: 2 })
         );
         // a matcher sails past the stone and accepts the grass on entry.
+        let accept = BlockMatcher::Predicate(Box::new(move |b: &Block| b.pos == target));
         assert_eq!(
-            raycast_blocks(&world, from, dir, 10., Some(&|pos, _| pos == target))
-                .map(|(pos, _)| pos),
+            world_ref
+                .raycast(from, dir, 10., Some(&accept))
+                .map(|b| b.pos),
             Some(target)
         );
+        // a rejecting matcher must pass every block by.
+        let reject = BlockMatcher::Predicate(Box::new(|_: &Block| false));
+        assert!(world_ref.raycast(from, dir, 10., Some(&reject)).is_none());
     }
 
     #[test]
@@ -1456,9 +1582,9 @@ mod tests {
         // The eye→voxel-centre ray never clips an empty-collision block
         // (short grass), yet `can_see_accepts` accepts it on voxel
         // entry — the case the outline-clip version false-negatived on.
-        let (world, _partial) = test_world();
+        let (world_ref, shared, _partial) =
+            world_view(&[(BlockPos { x: 0, y: 0, z: 3 }, short_grass())]);
         let target = BlockPos { x: 0, y: 0, z: 3 };
-        world.chunks.set_block_state(target, short_grass());
         let from = Vec3 {
             x: 0.5,
             y: 2.5,
@@ -1471,21 +1597,28 @@ mod tests {
         };
         let range = from.distance_to(to);
         let dir = (to - from) * (1. / range);
-        let matcher = |pos, state| can_see_accepts(target, from, to, pos, state);
+        let accept = BlockMatcher::Predicate(Box::new(move |b: &Block| {
+            can_see_accepts(target, from, to, b.pos, b.state)
+        }));
         // nothing clips (grass has no collision shape), but the target's
         // voxel is entered → accepted.
-        assert!(raycast_blocks(&world, from, dir, range, None).is_none());
+        assert!(world_ref.raycast(from, dir, range, None).is_none());
         assert_eq!(
-            raycast_blocks(&world, from, dir, range, Some(&matcher)).map(|(pos, _)| pos),
+            world_ref
+                .raycast(from, dir, range, Some(&accept))
+                .map(|b| b.pos),
             Some(target)
         );
         // an intervening block whose collision clips is accepted first
         // → the target is *not* seen through it.
-        world
+        shared
+            .write()
             .chunks
             .set_block_state(BlockPos { x: 0, y: 1, z: 2 }, stone());
         assert_eq!(
-            raycast_blocks(&world, from, dir, range, Some(&matcher)).map(|(pos, _)| pos),
+            world_ref
+                .raycast(from, dir, range, Some(&accept))
+                .map(|b| b.pos),
             Some(BlockPos { x: 0, y: 1, z: 2 })
         );
     }

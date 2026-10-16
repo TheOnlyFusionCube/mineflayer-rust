@@ -270,6 +270,15 @@ Thus a user predicate can cause a deadlock of the bot.
 
 **Acceptance.** The test completes. The results of the existing `find_blocks` and `raycast` tests do not change.
 
+**Status:** done. `find_matching_unlocked` collects one chunk's in-range
+cells under a short lock and runs the predicate after the release;
+`raycast_unlocked` collects the traversed cells under one lock and runs
+the matcher after the release (the collision-clip path for `None` keeps
+its early exit). The regression test queues a writer while the predicate
+is running: with the predicate under the lock it deadlocks (verified by
+a temporary in-lock scan — the test fails with the deadlock message) and
+passes now. All existing find_blocks/raycast results are unchanged.
+
 ### A6. The bridge can stop without an `End` event (P2) (confirm first)
 
 **Problem.**
