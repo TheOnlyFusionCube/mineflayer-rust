@@ -1,0 +1,34 @@
+# The verify gate (scripts/verify.sh: fmt, clippy, clippy with `live`,
+# unit tests and doctests, build, docs) on every push and pull request.
+# The live tests are not run here: they need the local fixture server and
+# a Java runtime (scripts/live-server.sh).
+name: verify
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rustup reads rust-toolchain.toml (the pinned nightly plus rustfmt and
+      # clippy); .cargo/config.toml carries -Znext-solver=no. Do not use a
+      # toolchain action that installs a different nightly.
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: verify-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: verify-${{ runner.os }}-
+
+      - name: Verify
+        run: bash scripts/verify.sh

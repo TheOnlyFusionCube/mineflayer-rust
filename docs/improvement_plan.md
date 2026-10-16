@@ -881,6 +881,13 @@ texts; `Cargo.toml` has `readme`, `rust-version`, `keywords`, and
 
 **Acceptance.** A pull request shows the five verify steps and the doc step.
 
+**Status:** prepared, not verified. `.github/workflows/verify.yml` runs
+`scripts/verify.sh` (all six steps) with the pinned toolchain
+(`rustup toolchain install` reads `rust-toolchain.toml`) and caches the
+cargo registry and `target/`. The repository still has no remote, so the
+workflow has not run. The acceptance check needs the first pull request
+after a remote exists.
+
 ### F5. Old planning documents (P3)
 
 **Problem.**
@@ -937,6 +944,10 @@ Do these items only if G1 shows a cost.
 4. Run the full gate and the `live-entity` attack test.
 5. Remove the B4 README section.
 
+**Status (review 2026-10-16):** no change. The newest published azalea is
+`0.16.0+mc26.1` (2026-03-28). It does not contain commit `ddef371`, so
+the patch table stays. Do the next review in November 2026.
+
 ### H2. Toolchain pin review (P3)
 
 **Procedure.**
@@ -944,6 +955,13 @@ Do these items only if G1 shows a cost.
 1. Each month, compile azalea with the newest nightly and without `-Znext-solver=no`.
 2. If the compile passes, move the pin and remove the flag in one commit.
 3. Record the result of each review in `rust-toolchain.toml`.
+
+**Status (review 2026-10-16):** no change. `nightly-2026-10-15` (rustc
+`4ebd25825`) panics in `rustc_infer` (`infer/mod.rs:1694`) on azalea:
+without `-Znext-solver=no` it fails on `azalea-entity`, and with the flag
+it fails on `azalea-client`. The pin to `nightly-2026-10-01` and the flag
+stay. The result is in `rust-toolchain.toml`. Do the next review in
+November 2026.
 
 ### H3. Reference checkout at the pinned revision (P3)
 
