@@ -1,0 +1,58 @@
+name: Development bootstrap
+on:
+  push:
+    paths:
+      - '.github/workflows/dev-bootstrap.yml'
+permissions:
+  contents: read
+jobs:
+  bootstrap:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Install compiler and fetch public reference data
+        run: |
+          set -eux
+          rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+          mkdir -p bundle/reference bundle/crate/src
+          printf 'fn main() {}\n' > bundle/crate/src/main.rs
+          cat > bundle/crate/Cargo.toml <<'EOF'
+          [package]
+          name = "mineflayer-rs"
+          version = "0.1.0-alpha.1"
+          edition = "2021"
+          [dependencies]
+          flate2 = "=1.1.0"
+          serde_json = "=1.0.140"
+          serde = { version = "=1.0.219", features = ["derive"] }
+          aes = "=0.8.4"
+          rsa = { version = "=0.9.8", features = ["sha1"] }
+          sha1 = "=0.10.6"
+          md-5 = "=0.10.6"
+          rand = "=0.8.5"
+          reqwest = { version = "=0.12.15", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+          regex = "=1.11.1"
+          uuid = { version = "=1.16.0", features = ["v3", "v4", "serde"] }
+          [dev-dependencies]
+          proptest = "=1.6.0"
+          EOF
+          cd bundle/crate
+          cargo +1.85.1 generate-lockfile
+          cargo +1.85.1 vendor ../vendor > ../vendor-config.toml
+          cargo +1.85.1 check
+          cd ../..
+          git clone --depth 1 https://github.com/PrismarineJS/mineflayer.git bundle/reference/mineflayer
+          git clone --depth 1 https://github.com/PrismarineJS/minecraft-data.git bundle/reference/minecraft-data
+          git clone --depth 1 https://github.com/PrismarineJS/prismarine-physics.git bundle/reference/prismarine-physics
+          git clone --depth 1 https://github.com/PrismarineJS/node-minecraft-protocol.git bundle/reference/node-minecraft-protocol
+          git clone --depth 1 https://github.com/PrismarineJS/prismarine-windows.git bundle/reference/prismarine-windows
+          for d in bundle/reference/*; do git -C "$d" rev-parse HEAD > "$d/UPSTREAM_COMMIT"; rm -rf "$d/.git"; done
+          cp -a "$HOME/.rustup/toolchains/1.85.1-x86_64-unknown-linux-gnu" bundle/toolchain
+          rm -rf bundle/toolchain/share/doc bundle/crate/target
+          tar -cJf development-bundle.tar.xz bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: development-bundle
+          path: development-bundle.tar.xz
+          retention-days: 3
+          compression-level: 0
