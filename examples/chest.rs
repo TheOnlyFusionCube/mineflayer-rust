@@ -9,8 +9,7 @@
 //! cargo run --example chest -- <host> <port> [<name>]
 //! ```
 
-use azalea::registry::builtin::BlockKind;
-use mineflayer::{Bot, BotEvent, FindBlocksOpts, Item, Window};
+use mineflayer::prelude::*;
 
 #[tokio::main]
 async fn main() {

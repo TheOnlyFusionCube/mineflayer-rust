@@ -414,6 +414,13 @@ The examples import `azalea::Vec3` directly.
 
 **Acceptance.** The examples compile without a direct `azalea::` path.
 
+**Status:** done. `pub use azalea;` re-exports the patched crate as
+`mineflayer::azalea`, and `BlockPos`, `EntityRef`, and `BlockKind` join
+the root re-exports (the old comment promised `BlockPos` without
+providing it). A `prelude` module carries the handle, events, errors,
+the common option types, and the azalea value types in signatures; all
+three examples import only `mineflayer::prelude::*` and build clean.
+
 ### B4. Dependent crates do not receive the azalea patch (P1)
 
 **Problem.**

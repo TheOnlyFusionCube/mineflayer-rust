@@ -52,15 +52,23 @@ pub use chat::{
     ChatMessage, ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
-// ItemKind/MenuKind/DataComponentPatch appear in the public inventory API
-// (toss/transfer/deposit/Window::menu_kind) — re-exported like `BlockPos`.
+// The azalea crate itself is re-exported so a dependent crate can name
+// azalea types through this crate (`mineflayer::azalea::...`) and always
+// get the same version and `[patch.crates-io]` table — a bare `azalea`
+// dependency would resolve the published 0.16 (see README, "Use as a
+// dependency").
+pub use azalea;
+// azalea value types that appear in this crate's public signatures —
+// users should not need their own azalea dependency to call them.
+// `ItemKind`/`MenuKind`/`DataComponentPatch` appear in the public
+// inventory API (toss/transfer/deposit/Window::menu_kind).
 /// `BotBuilder::proxy` — azalea's SOCKS5 proxy type (`options.agent`-analog).
 pub use azalea::protocol::connect::Proxy;
 pub use azalea::{
-    Vec3,
+    BlockPos, EntityRef, Vec3,
     inventory::{DataComponentPatch, ItemStack},
     registry::{
-        builtin::{ItemKind, MenuKind},
+        builtin::{BlockKind, ItemKind, MenuKind},
         data::Biome,
     },
 };
@@ -91,6 +99,20 @@ pub use auto_eat::{AutoEat, AutoEatOpts, EatOpts, FoodData, FoodPriority, FoodSe
 pub use collect::{CollectBlock, CollectOpts, CollectTarget, Collected, ItemFilter};
 pub use pvp::{AttackRate, Pvp};
 pub use tool::{EquipOpts, Tool};
+
+/// The common imports for a bot: the handle, its events, the error type,
+/// and the azalea value types that appear in signatures — so examples and
+/// dependent crates never name the `azalea` crate themselves.
+pub mod prelude {
+    pub use crate::bot::{Auth, Bot, BotBuilder, BotEvent};
+    pub use crate::error::{Error, Result};
+    pub use crate::movement::{Control, ControlState};
+    pub use crate::pathfinder::{Goal, Movements};
+    pub use crate::windows::{Item, Window};
+    pub use crate::{
+        BlockKind, BlockPos, EntityRef, EquipDest, FindBlocksOpts, ItemKind, ItemStack, Vec3,
+    };
+}
 
 #[cfg(test)]
 pub(crate) mod test_util {

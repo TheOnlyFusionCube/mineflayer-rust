@@ -6,8 +6,7 @@
 //! cargo run --example digger -- <host> <port> [<name>]
 //! ```
 
-use azalea::Vec3;
-use mineflayer::{Bot, BotEvent, Control, EquipDest, Item, ItemKind};
+use mineflayer::prelude::*;
 
 #[tokio::main]
 async fn main() {

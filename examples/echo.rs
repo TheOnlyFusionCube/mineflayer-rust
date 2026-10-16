@@ -5,7 +5,7 @@
 //! cargo run --example echo -- <host> <port> [<name>] [online]
 //! ```
 
-use mineflayer::{Auth, Bot, BotEvent};
+use mineflayer::prelude::*;
 
 #[tokio::main]
 async fn main() {
