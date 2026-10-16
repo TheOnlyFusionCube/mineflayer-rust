@@ -795,6 +795,21 @@ impl Bot {
     /// open; `None` crafts on the 2x2 inventory grid. Mirrors
     /// `craft.js`: place one item per ingredient cell, put the rest of
     /// the held stack back, take the result, clear leftover grid cells.
+    ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) -> Result<()> {
+    /// // planks on the 2x2 inventory grid: no crafting table needed
+    /// if let Some(recipe) = bot
+    ///     .recipes_for(ItemKind::OakPlanks, None, None, None)
+    ///     .first()
+    /// {
+    ///     bot.craft(recipe, Some(1), None).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn craft(
         &self,
         recipe: &Recipe,

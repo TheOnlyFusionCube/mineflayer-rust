@@ -603,6 +603,17 @@ impl Bot {
     ///
     /// Errors when not in-game, matching upstream throwing before `login` or
     /// after an early disconnect.
+    ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # fn example(bot: Bot) -> Result<()> {
+    /// bot.chat("hello")?;
+    /// bot.chat("/time set day")?; // a command: never split
+    /// bot.whisper("Steve", "meet at spawn")?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn chat(&self, message: &str) -> Result<()> {
         self.chat_with_header("", message)
     }
@@ -683,8 +694,14 @@ impl Bot {
     /// [`Error::Timeout`] after 20s (upstream's default).
     ///
     /// ```no_run
-    /// # async fn example(bot: mineflayer::Bot) -> mineflayer::Result<()> {
-    /// let msg = bot.await_message(["<py5> hello"]).await?;
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) -> Result<()> {
+    /// bot.chat("/list")?;
+    /// let reply = bot
+    ///     .await_message([regex::Regex::new("^There are \\d+").unwrap()])
+    ///     .await?;
+    /// println!("{reply}");
     /// # Ok(())
     /// # }
     /// ```

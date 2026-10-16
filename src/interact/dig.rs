@@ -293,6 +293,20 @@ impl Bot {
     /// fully spawned; `Error::DigAborted` for a stopped/interrupted dig
     /// (`Display` is upstream's `Digging aborted`); `Error::Timeout` when the block never
     /// breaks (upstream would wait forever).
+    ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) -> Result<()> {
+    /// let below = bot.position().to_block_pos_floor().down(1);
+    /// if let Some(block) = bot.block_at(below)
+    ///     && bot.can_dig_block(&block)
+    /// {
+    ///     bot.dig(&block).await?;
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn dig(&self, block: &Block) -> Result<()> {
         self.dig_opts(block, ForceLook::default(), DigFace::default())
             .await

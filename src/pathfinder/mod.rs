@@ -298,6 +298,19 @@ impl Pathfinder<'_> {
     /// `pf-goto.js`), a goal replacement (GoalChanged), or disconnect.
     /// (`dynamic` goals are set via [`Pathfinder::set_goal`].)
     ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) -> Result<()> {
+    /// let goal = Goal::Near {
+    ///     pos: Vec3::new(100.0, 64.0, -20.0),
+    ///     radius: 2.0,
+    /// };
+    /// bot.pathfinder().goto(goal).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// Events are the fast path; the tick poll is the source of truth —
     /// the event stream floods with packets on a busy world, and a lagged
     /// receiver could skip the one event this future waits on. The

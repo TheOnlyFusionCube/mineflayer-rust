@@ -756,6 +756,12 @@ Each A item gives its test. Do not merge an A item without its test.
 
 **Acceptance.** `cargo test --doc` runs at least eight doctests.
 
+**Status:** done. `cargo test --doc` runs 9 doctests. New `no_run`
+examples are on `Bot::events`, `Bot::dig`, `Pathfinder::goto`,
+`Bot::open_container`, `Bot::craft`, `Bot::chat`, and `Bot::equip_kind`.
+The `Bot::await_message` example now uses the prelude. Each example uses
+only `mineflayer::prelude::*` (and `regex` in one example).
+
 ### E4. One coverage measurement (P3)
 
 **Procedure.**

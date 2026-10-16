@@ -513,6 +513,16 @@ impl Bot {
 
     /// `bot.equip` by kind — equip the first matching stack in the
     /// player-inventory region (upstream `equip(itemId, dest)` form).
+    ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) -> Result<()> {
+    /// bot.equip_kind(ItemKind::IronPickaxe, EquipDest::Hand).await?;
+    /// bot.equip_kind(ItemKind::IronHelmet, EquipDest::Head).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn equip_kind(&self, kind: ItemKind, dest: EquipDest) -> Result<()> {
         let item = self.find_inventory_item(kind).ok_or_else(|| {
             Error::InvalidArgument(format!(
@@ -724,6 +734,20 @@ impl Bot {
     /// closes the window before erroring — upstream throws and leaves
     /// it open; closing is the safer default and is noted in
     /// `docs/api-parity.md`.
+    ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) -> Result<()> {
+    /// let chest = bot
+    ///     .find_block(FindBlocksOpts::new(BlockKind::Chest).max_distance(6.0))
+    ///     .ok_or_else(|| Error::NotFound("no chest nearby".into()))?;
+    /// let window = bot.open_container(&chest).await?;
+    /// window.deposit(ItemKind::Cobblestone, None, Some(16), None).await?;
+    /// window.close();
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn open_container(&self, target: impl Into<ContainerTarget>) -> Result<Window> {
         let window = match target.into() {
             ContainerTarget::Block { pos, name } => {

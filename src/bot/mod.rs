@@ -208,6 +208,24 @@ impl Bot {
     /// Crate authors: inside the crate, use the private `subscribe` for
     /// waits. This method is the public API, and the first call hands out
     /// the bootstrap receiver.
+    ///
+    /// ```no_run
+    /// use mineflayer::prelude::*;
+    ///
+    /// # async fn example(bot: Bot) {
+    /// let mut events = bot.events();
+    /// while let Ok(event) = events.recv().await {
+    ///     match event {
+    ///         BotEvent::Spawn => println!("spawned"),
+    ///         BotEvent::End(reason) => {
+    ///             println!("ended: {reason}");
+    ///             break;
+    ///         }
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # }
+    /// ```
     pub fn events(&self) -> broadcast::Receiver<BotEvent> {
         if let Some(rx) = self.bootstrap_events.lock().take() {
             return rx;
