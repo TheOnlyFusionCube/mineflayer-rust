@@ -806,6 +806,26 @@ The finish report records two flakes: `live_misc` ("waiting for end" timeout) an
 
 **Acceptance.** Ten runs on a reset world pass without a failure.
 
+**Status:** done. Series 5 passed 10 of 10 on a reset world (14 tests per
+run, 107 to 122 s each). The two flakes in the finish report did not
+recur. Four earlier series found other causes, and each was corrected:
+
+1. Diagnostics (part 1): a timeout now gives the elapsed time and the last
+   20 non-packet events; the craft check also gives the inventory.
+2. `interact`: the dig phase digs down a shaft, so the bot stands in the
+   hole cell. The test now places the drop back with one pillar jump,
+   sent only near the jump apex (parts 2 and 3; the part-2 sideways exit
+   was wrong and was replaced).
+3. Fixture: each join went to a random point in a 21×21 area. The script
+   now sets `respawn_radius 0` over a localhost-only RCON after boot
+   (part 4). `world_blocks` also searches for the kind under the feet.
+4. `movement`: the look checks ran while Forward was held, and a server
+   position correction can replace the look. The bot now stops first. The
+   world spawn is in a bamboo jungle, so the heading sweep tries headings
+   with free collision shapes first (part 5).
+
+No retry loop was added.
+
 ## 8. Phase F: documentation and tools
 
 ### F1. `rustdoc` warnings and a doc gate (P2)
