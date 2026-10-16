@@ -362,9 +362,24 @@ async fn dig_place_activate_stop() {
     ));
     bot.set_control_state(Control::Forward, true);
     bot.set_control_state(Control::Jump, true);
+    // Out means standing on the ground with the hitbox clear of the hole
+    // column. A height check alone also holds at the top of a jump made
+    // inside the hole; a placement into the hole then hits the bot's own
+    // falling hitbox and the server refuses it (E5 run 7).
+    let clear_of_hole = |p: Vec3| {
+        const HALF_WIDTH: f64 = 0.3;
+        let (hx, hz) = (below_pos.x as f64, below_pos.z as f64);
+        let clear_x = p.x + HALF_WIDTH <= hx || p.x - HALF_WIDTH >= hx + 1.;
+        let clear_z = p.z + HALF_WIDTH <= hz || p.z - HALF_WIDTH >= hz + 1.;
+        clear_x || clear_z
+    };
     let mut out = false;
     for _ in 0..60 {
-        if bot.position().y > below_pos.y as f64 + 0.9 {
+        let p = bot.position();
+        if p.y >= below_pos.y as f64 + 1.
+            && clear_of_hole(p)
+            && bot.entity().on_ground() == Some(true)
+        {
             out = true;
             break;
         }
