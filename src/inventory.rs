@@ -333,7 +333,7 @@ impl Bot {
     /// returning — the packet that matters for U10 crafting.
     pub async fn click_window(&self, slot: i32, mouse_button: u8, mode: u8) -> Result<()> {
         let window = self.current_window().unwrap_or_else(|| self.inventory());
-        click_window_on(&window, slot, mouse_button, mode, self.events()).await
+        click_window_on(&window, slot, mouse_button, mode, self.subscribe()).await
     }
 
     /// `bot.putSelectedItemRange(start, end, window, reservedSlot)` —
@@ -359,7 +359,7 @@ impl Bot {
     /// arrives, like upstream's `once(window, 'updateSlot:${slot}')`.
     pub async fn put_away(&self, slot: u16) -> Result<()> {
         let window = self.current_window().unwrap_or_else(|| self.inventory());
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         let window_id = window.id();
 
         let item = window.slot(i32::from(slot));
@@ -408,7 +408,7 @@ impl Bot {
     /// `stateIdUsed`; mc26 always uses it.
     #[doc(hidden)]
     pub async fn sync_window(&self, window: &Window) {
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         let window_id = window.id();
         let registries = self.registry();
         let carried = window
@@ -735,7 +735,7 @@ impl Bot {
     /// parameters have no azalea equivalent (azalea fabricates the
     /// block-face hit from `force_block`).
     pub async fn open_block(&self, block: &Block) -> Result<Window> {
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         self.look_at(block.pos.center(), false).await?;
         self.client.block_interact(block.pos);
         self.await_window_open(&mut rx).await
@@ -745,7 +745,7 @@ impl Bot {
     /// container-bearing entity (chest minecart, llama, …), and wait
     /// for the window.
     pub async fn open_entity(&self, entity: &azalea::EntityRef) -> Result<Window> {
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         // upstream activateEntity's lookAt aims at the entity's
         // position (feet); half-height approximates the body's center
         if let Some(pos) = entity
@@ -777,7 +777,7 @@ impl Bot {
                         "containerToOpen is neither a block nor an entity".into(),
                     ));
                 }
-                let mut rx = self.events();
+                let mut rx = self.subscribe();
                 self.look_at(pos.center(), false).await?;
                 self.client.block_interact(pos);
                 self.await_window_open(&mut rx).await?

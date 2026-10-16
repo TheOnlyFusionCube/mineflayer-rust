@@ -931,9 +931,9 @@ impl Bot {
                 .find(|item| ingredient.accepts(item))
                 .ok_or_else(|| Error::Operation("missing ingredient".into()))?;
             original_source_slot.get_or_insert(i32::from(source.slot));
-            click_window_on(window, i32::from(source.slot), 0, 0, self.events()).await?;
+            click_window_on(window, i32::from(source.slot), 0, 0, self.subscribe()).await?;
         }
-        click_window_on(window, dest_slot, 1, 0, self.events()).await
+        click_window_on(window, dest_slot, 1, 0, self.subscribe()).await
     }
 }
 

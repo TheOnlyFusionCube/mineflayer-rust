@@ -685,7 +685,7 @@ impl Bot {
         let matchers: Vec<MessageMatcher> = matchers.into_iter().map(Into::into).collect();
         tokio::time::timeout(
             AWAIT_MESSAGE_TIMEOUT,
-            await_message_on(self.events(), &matchers),
+            await_message_on(self.subscribe(), &matchers),
         )
         .await
         .map_err(|_| Error::Timeout)?

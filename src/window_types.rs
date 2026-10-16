@@ -661,7 +661,7 @@ impl EnchantmentTable {
                 "enchantment choice must be 0..=2, got {choice}"
             )));
         }
-        let mut rx = self.bot.events();
+        let mut rx = self.bot.subscribe();
         let id = self.window.id();
         if !self.is_ready() {
             await_event(
@@ -791,7 +791,7 @@ impl Anvil {
             return Err(Error::Operation("Not anvil-able (empty item)".into()));
         }
         let creative = self.bot.game_mode() == Some(GameMode::Creative);
-        let mut rx = self.bot.events();
+        let mut rx = self.bot.subscribe();
         self.put_in_anvil(item_one, item_two).await?;
         // the name goes in before the check — upstream's client-side
         // cost computation includes it, and ours must read the server's
@@ -824,7 +824,7 @@ impl Anvil {
             return Err(Error::Operation("Not valid rename (empty item)".into()));
         }
         let creative = self.bot.game_mode() == Some(GameMode::Creative);
-        let mut rx = self.bot.events();
+        let mut rx = self.bot.subscribe();
         let player = self.window.player_range();
         transfer(TransferOpts {
             window: Some(self.window.clone()),
@@ -1114,7 +1114,7 @@ impl Bot {
         {
             return Err(Error::Operation("Expected villager entity type".into()));
         }
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         let window = self.open_entity(entity).await?;
         let id = window.id();
         match window.menu_kind() {
@@ -1169,7 +1169,7 @@ impl Bot {
     pub async fn trade(&self, villager: &Villager, index: usize, count: Option<i32>) -> Result<()> {
         let window = &villager.window;
         let id = window.id();
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
 
         let (trade, count) = {
             let mut t = self.shared.window_data.lock().unwrap();
@@ -1357,7 +1357,7 @@ impl Bot {
             return Err(Error::Operation(format!("no book found in slot {slot}")));
         }
 
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         let quick_bar_slot = self.quick_bar_slot();
         let move_to_quick_bar = slot < 36;
         if move_to_quick_bar {

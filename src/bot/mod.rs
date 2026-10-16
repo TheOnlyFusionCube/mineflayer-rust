@@ -584,10 +584,24 @@ impl Bot {
     ///
     /// Each call returns an independent receiver; slow consumers see
     /// [`broadcast::error::RecvError::Lagged`] rather than blocking the bot.
+    ///
+    /// Crate authors: inside the crate, use
+    /// [`Bot::subscribe`] for waits. This method is the public API, and the
+    /// first call hands out the bootstrap receiver.
     pub fn events(&self) -> broadcast::Receiver<BotEvent> {
         if let Some(rx) = self.bootstrap_events.lock().unwrap().take() {
             return rx;
         }
+        self.shared.events.subscribe()
+    }
+
+    /// Crate-internal receiver for waits inside the crate.
+    ///
+    /// Use this for every wait that the crate itself runs. It never takes
+    /// the bootstrap receiver, so the first public [`Bot::events`] call
+    /// still receives the pre-`connect` events (`Init`, `Login`, `Spawn`),
+    /// and the crate's waits never complete on events from that queue.
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<BotEvent> {
         self.shared.events.subscribe()
     }
 
@@ -668,7 +682,7 @@ impl Bot {
     pub async fn wait_for_chunks_to_load(&self) -> Result<()> {
         const TIMEOUT: Duration = Duration::from_secs(10);
         tokio::time::timeout(TIMEOUT, async {
-            let mut rx = self.events();
+            let mut rx = self.subscribe();
             loop {
                 if self.spawn_chunks_loaded() {
                     return Ok(());
@@ -747,6 +761,27 @@ mod tests {
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Login));
         assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked(_, _)));
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked(_, _)));
+    }
+
+    /// A crate-internal wait must not consume the bootstrap receiver; the
+    /// first public subscription still sees the queued `Init`.
+    #[tokio::test]
+    async fn crate_waits_do_not_take_the_bootstrap_receiver() {
+        let bot = Bot::new(crate::test_util::despawned_client());
+        bot.emit_event(BotEvent::Init);
+
+        // a crate wait polls first; the outer timeout only cancels it
+        let _ = tokio::time::timeout(
+            Duration::from_millis(50),
+            bot.await_message(["never-matches"]),
+        )
+        .await;
+
+        let mut user = bot.events();
+        assert!(
+            matches!(user.try_recv(), Ok(BotEvent::Init)),
+            "a crate-internal wait consumed the bootstrap receiver"
+        );
     }
 
     #[test]

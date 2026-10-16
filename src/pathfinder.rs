@@ -761,7 +761,7 @@ impl Pathfinder<'_> {
     pub async fn goto(&self, goal: Goal) -> Result<()> {
         // subscribe before set_goal so an already-satisfied goal can't
         // emit `GoalReached` before we listen
-        let mut rx = self.bot.events();
+        let mut rx = self.bot.subscribe();
         let mut ticks = self.client().get_tick_broadcaster();
         // `End` arrives over `rx`, but >8192 queued events at disconnect
         // can push it past a lagged receiver — the bridge's shutdown watch

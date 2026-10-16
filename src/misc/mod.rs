@@ -740,7 +740,7 @@ impl Bot {
         })?;
 
         // subscribe before casting so the bobber spawn can't be missed
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         let mut bobber: Option<MinecraftEntityId> = None;
         self.client.start_use_item();
 

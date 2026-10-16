@@ -240,7 +240,7 @@ impl Bot {
             .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
         let old_block = self.block_at(dest);
         let old_kind = old_block.as_ref().map(|b| b.kind());
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         self.generic_place(reference_block.pos, face_vector, opts)
             .await?;
         let new_block = self
@@ -317,7 +317,7 @@ impl Bot {
         if item_name.ends_with("_spawn_egg") {
             opts.show_hand = false;
         }
-        let mut rx = self.events();
+        let mut rx = self.subscribe();
         let hand = self
             .generic_place(reference_block.pos, face_vector, &opts)
             .await?;

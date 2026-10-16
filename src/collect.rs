@@ -590,7 +590,7 @@ impl CollectBlock<'_> {
         let bot = self.bot;
         // subscribe before the state check so a run finishing between
         // the two can't lose its `finished` event
-        let mut rx = bot.events();
+        let mut rx = bot.subscribe();
         let active = collect_state_mut(&bot.client, |s| {
             if s.active == 0 {
                 return false;

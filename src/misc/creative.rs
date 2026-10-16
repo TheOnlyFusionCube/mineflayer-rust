@@ -26,7 +26,7 @@ impl Bot {
     pub fn creative(&self) -> Creative {
         Creative {
             client: self.client.clone(),
-            events: self.events(),
+            events: self.subscribe(),
         }
     }
 }
