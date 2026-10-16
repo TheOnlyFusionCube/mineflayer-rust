@@ -774,12 +774,16 @@ warnings.
 
 **Acceptance.** `cargo package --list` shows `LICENSE` and no `.DS_Store`.
 
-**Status:** done, except the `cargo clean` size record (the plan runs it
-after E1; `target/` is 36 GB at the time of this pass). `LICENSE` carries
-the port notice plus the mineflayer and azalea MIT texts; `Cargo.toml`
-has `readme`, `repository`, `rust-version`, `keywords`, and `categories`;
-`docs/.DS_Store` is untracked and deleted. `cargo package --list
---allow-dirty` lists `LICENSE` and no `.DS_Store`.
+**Status:** done, except the final `cargo clean` record. `target/` was
+36 GB with the twelve live binaries and 41 GB after E1 plus the items
+before it; the clean-and-rebuild measurement is deferred to the end of
+the plan so the remaining items keep the warm build cache (running it
+earlier would force a full azalea rebuild for every following item).
+`LICENSE` carries the port notice plus the mineflayer and azalea MIT
+texts; `Cargo.toml` has `readme`, `repository`, `rust-version`,
+`keywords`, and `categories`; `docs/.DS_Store` is untracked and deleted.
+`cargo package --list --allow-dirty` lists `LICENSE` and no
+`.DS_Store`.
 
 ### F4. Continuous integration (P2)
 
