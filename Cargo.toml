@@ -90,6 +90,10 @@ name = "live_plugins"
 path = "tests/live/plugins.rs"
 required-features = ["live"]
 
+# NOTE: a crate that depends on this one must repeat this table in its
+# own workspace (Cargo applies patches per workspace) — see the README
+# section "Use as a dependency".
+#
 # The published azalea-protocol 0.16.0 serializes `ServerboundAttack`'s
 # entity id as a fixed i32 while release MC 26.1 servers read a VarInt, so
 # every `bot.attack()` gets the client kicked ("larger than I expected").

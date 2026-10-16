@@ -414,6 +414,14 @@ The README does not tell users about these conditions.
 
 **Acceptance.** A new crate that follows the README compiles and attacks without a kick in the live fixture.
 
+**Status:** done. The README has a "Use as a dependency" section with the
+full patch table, the toolchain file, and the `.cargo/config.toml` flag,
+and `Cargo.toml`'s patch-table comment points at it. Verified with a
+temporary crate at `/tmp/dependent-check` (path dependency on this repo,
+the three files copied from the README): it builds, joins the fixture as
+two bots, attacks a spawned entity, and prints "PATCH-OK: attacked without
+a kick" with no kick or end event for 4 s after the attack.
+
 ### B5. Stringly and sentinel return types (P3)
 
 **Problem.** These public items use a string or a default value where a type is clearer:

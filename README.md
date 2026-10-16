@@ -116,6 +116,60 @@ i32 where release MC 26.1 servers read a VarInt, so every `bot.attack()`
 was rejected as malformed and kicked the client. Drop the patch once a
 fixed release is published.
 
+## Use as a dependency
+
+Cargo applies `[patch.crates-io]` and toolchain settings per workspace, so
+a crate that depends on `mineflayer` must repeat three things in its own
+workspace. Without the patch, the published azalea `0.16` serializes
+`ServerboundAttack` incorrectly and every `bot.attack()` is kicked as
+malformed (see Toolchain above).
+
+1. `Cargo.toml` — the patch table:
+
+   ```toml
+   [patch.crates-io]
+   azalea = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-auth = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-block = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-block-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-brigadier = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-buf = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-buf-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-chat = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-client = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-core = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-crypto = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-entity = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-inventory = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-inventory-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-language = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-physics = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-protocol = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-protocol-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-registry = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-registry-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   azalea-world = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+   ```
+
+2. `rust-toolchain.toml` — the pinned nightly:
+
+   ```toml
+   [toolchain]
+   channel = "nightly-2026-10-01"
+   components = ["rustfmt", "clippy"]
+   ```
+
+3. `.cargo/config.toml` — the trait-solver flag:
+
+   ```toml
+   [build]
+   rustflags = ["-Znext-solver=no"]
+   ```
+
+The gate (`scripts/verify.sh`) plus the live suite is the port's own
+verification; a dependent crate verifies its patch by attacking a spawned
+entity against the fixture (`scripts/live-server.sh`).
+
 ## Limitations
 
 - **One Minecraft version.** azalea tracks latest MC only (`0.16.0+mc26.1`
