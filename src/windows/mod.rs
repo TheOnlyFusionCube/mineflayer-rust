@@ -347,7 +347,7 @@ impl Window {
         nbt: Option<DataComponentPatch>,
     ) -> crate::Result<()> {
         if self.empty_slot_count() == 0 {
-            return Err(Error::Operation(
+            return Err(Error::InvalidState(
                 "Unable to withdraw, Bot inventory is full.".into(),
             ));
         }

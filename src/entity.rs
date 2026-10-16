@@ -984,7 +984,7 @@ impl Bot {
         let pos = entity
             .get_component::<Position>()
             .map(|p| **p)
-            .ok_or_else(|| Error::Operation("entity has no position".to_string()))?;
+            .ok_or_else(|| Error::NotFound("entity has no position".to_string()))?;
         self.look_at(pos.up(1.), false).await?;
         self.client.entity_interact(entity.id());
         Ok(())
@@ -1063,7 +1063,7 @@ impl Bot {
             .map(|f| f.0)
             .unwrap_or(false)
         {
-            return Err(Error::Operation("already elytra flying".to_string()));
+            return Err(Error::InvalidState("already elytra flying".to_string()));
         }
         let physics = me.get_component::<Physics>().ok_or(Error::NotConnected)?;
         // extract before the later get_component calls — the guard holds an
@@ -1071,10 +1071,10 @@ impl Bot {
         let (on_ground, in_water) = (physics.on_ground(), physics.is_in_water());
         drop(physics);
         if on_ground {
-            return Err(Error::Operation("unable to fly from ground".to_string()));
+            return Err(Error::InvalidState("unable to fly from ground".to_string()));
         }
         if in_water {
-            return Err(Error::Operation(
+            return Err(Error::InvalidState(
                 "unable to elytra fly while in water".to_string(),
             ));
         }
@@ -1083,7 +1083,7 @@ impl Bot {
             .map(|effects| effects.0.contains_key(&MobEffect::Levitation))
             .unwrap_or(false)
         {
-            return Err(Error::Operation(
+            return Err(Error::InvalidState(
                 "unable to elytra fly with levitation effect".to_string(),
             ));
         }

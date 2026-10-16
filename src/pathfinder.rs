@@ -921,7 +921,7 @@ impl Pathfinder<'_> {
             f.set_gen
         })
         .ok_or_else(|| {
-            Error::Operation("pathfinder facade is missing — client entity is gone".into())
+            Error::InvalidState("pathfinder facade is missing — client entity is gone".into())
         })?;
         if satisfied {
             stop_pathfinding_patched(&client, false);
@@ -984,7 +984,7 @@ impl Pathfinder<'_> {
             _ => {
                 let chunks = client.world().read().chunks.clone();
                 let Some(azalea_goal) = goal.to_azalea(&chunks) else {
-                    return Err(Error::Operation(
+                    return Err(Error::NotFound(
                         "Goal::Follow's entity isn't loaded".to_string(),
                     ));
                 };
@@ -1220,7 +1220,7 @@ impl Pathfinder<'_> {
         let client = self.client();
         let chunks = client.world().read().chunks.clone();
         let Some(azalea_goal) = goal.to_azalea(&chunks) else {
-            return Err(Error::Operation(
+            return Err(Error::NotFound(
                 "Goal::Follow's entity isn't loaded".to_string(),
             ));
         };
@@ -1254,7 +1254,7 @@ impl Pathfinder<'_> {
             custom_state,
             opts,
         })
-        .ok_or_else(|| Error::Operation("path calculation superseded mid-search".to_string()))?;
+        .ok_or_else(|| Error::Cancelled("path calculation superseded mid-search".to_string()))?;
         let elapsed = started.elapsed();
         let path: Vec<BlockPos> = event
             .path

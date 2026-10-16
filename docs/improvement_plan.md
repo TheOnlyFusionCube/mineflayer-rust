@@ -377,6 +377,18 @@ Upstream also uses message text, but a Rust caller expects a `match` on the vari
 - No `Error::Operation(` site remains, or each remaining site has a comment that gives the reason.
 - All `Display` texts are unchanged. Add one test that compares texts for a sample of ten sites.
 
+**Status:** done. `Error::Operation` is removed. 116 sites now use one of
+six variants: `InvalidArgument` (bad input or wrong target kind),
+`InvalidState` (the bot state does not permit the call now), `NotFound`
+(a required item, block, chest, or trade is not available), `Failed`
+(server refusal, no answer, or time limit), `Cancelled` (a newer call or
+an explicit cancel), and `Unsupported`. The dig abort is
+`DigAborted(DigAbortReason)`, so the payload names the cause. Each variant
+keeps the old text as its `Display` output. The test
+`error::tests::typed_errors_keep_upstream_messages` compares ten texts.
+The change is one commit and not one commit for each module: the removal
+of `Operation` must compile in one step.
+
 ### B2. `Error::Connect` holds an unrelated third-party error (P2)
 
 **Problem.**

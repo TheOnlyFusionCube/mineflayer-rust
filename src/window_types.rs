@@ -108,10 +108,10 @@ const BOOK_MAX_PAGE_UTF16: usize = 1024;
 /// range; the rest mirror the wire limits the server kicks over).
 fn check_book_input(slot: i32, pages: &[String], title: Option<&str>) -> Result<()> {
     if !(0..=44).contains(&slot) {
-        return Err(Error::Operation("slot out of inventory range".into()));
+        return Err(Error::InvalidArgument("slot out of inventory range".into()));
     }
     if pages.len() > BOOK_MAX_PAGES {
-        return Err(Error::Operation(format!(
+        return Err(Error::InvalidArgument(format!(
             "book has too many pages ({BOOK_MAX_PAGES} max)"
         )));
     }
@@ -119,12 +119,12 @@ fn check_book_input(slot: i32, pages: &[String], title: Option<&str>) -> Result<
         .iter()
         .any(|p| p.encode_utf16().count() > BOOK_MAX_PAGE_UTF16)
     {
-        return Err(Error::Operation(format!(
+        return Err(Error::InvalidArgument(format!(
             "book page too long ({BOOK_MAX_PAGE_UTF16} chars max)"
         )));
     }
     if title.is_some_and(|t| t.chars().count() > BOOK_MAX_TITLE_CHARS) {
-        return Err(Error::Operation(format!(
+        return Err(Error::InvalidArgument(format!(
             "book title too long ({BOOK_MAX_TITLE_CHARS} chars max)"
         )));
     }
@@ -489,7 +489,7 @@ impl Furnace {
         let item = self
             .window
             .slot(i32::from(slot))
-            .ok_or_else(|| Error::Operation(format!("no item in furnace slot {slot}")))?;
+            .ok_or_else(|| Error::NotFound(format!("no item in furnace slot {slot}")))?;
         self.bot.put_away(slot).await?;
         Ok(item)
     }
@@ -656,7 +656,7 @@ impl EnchantmentTable {
     /// new item).
     pub async fn enchant(&self, choice: u8) -> Result<Item> {
         if choice > 2 {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidArgument(format!(
                 "enchantment choice must be 0..=2, got {choice}"
             )));
         }
@@ -672,7 +672,7 @@ impl EnchantmentTable {
             .ok_or(Error::Timeout)?;
         }
         if self.enchantments()[usize::from(choice)].level == -1 {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidState(format!(
                 "enchantment choice {choice} is not available"
             )));
         }
@@ -690,7 +690,7 @@ impl EnchantmentTable {
         let BotEvent::WindowUpdateSlot { new, .. } = event else {
             unreachable!()
         };
-        new.ok_or_else(|| Error::Operation("enchant produced no item".into()))
+        new.ok_or_else(|| Error::Failed("enchant produced no item".into()))
     }
 
     /// Whether the three level costs have all arrived (the `ready`
@@ -710,7 +710,7 @@ impl EnchantmentTable {
     pub async fn take_target_item(&self) -> Result<Item> {
         let item = self
             .target_item()
-            .ok_or_else(|| Error::Operation("no item in enchantment target slot".into()))?;
+            .ok_or_else(|| Error::NotFound("no item in enchantment target slot".into()))?;
         self.bot.put_away(0).await?;
         Ok(item)
     }
@@ -749,7 +749,7 @@ impl Deref for Anvil {
 /// rejected before any clicking.
 fn check_anvil_name(name: &str) -> Result<()> {
     if name.chars().count() > 35 {
-        return Err(Error::Operation("Name is too long.".into()));
+        return Err(Error::InvalidArgument("Name is too long.".into()));
     }
     Ok(())
 }
@@ -785,7 +785,7 @@ impl Anvil {
         // upstream `assert.ok(itemOne && itemTwo)`
         if item_one.stack.is_empty() || item_two.stack.is_empty() {
             self.window.close();
-            return Err(Error::Operation("Not anvil-able (empty item)".into()));
+            return Err(Error::InvalidArgument("Not anvil-able (empty item)".into()));
         }
         let creative = self.bot.game_mode() == Some(GameMode::Creative);
         let mut rx = self.bot.subscribe();
@@ -818,7 +818,9 @@ impl Anvil {
         check_anvil_name(name).inspect_err(|_| self.window.close())?;
         if item.stack.is_empty() {
             self.window.close();
-            return Err(Error::Operation("Not valid rename (empty item)".into()));
+            return Err(Error::InvalidArgument(
+                "Not valid rename (empty item)".into(),
+            ));
         }
         let creative = self.bot.game_mode() == Some(GameMode::Creative);
         let mut rx = self.bot.subscribe();
@@ -917,9 +919,9 @@ impl Anvil {
     /// else the xp complaint (upstream's two `err()` sites).
     fn anvil_fail(&self) -> Error {
         if self.window.slot(2).is_some() {
-            Error::Operation("Player does not have enough xp to do action, cancelling.".into())
+            Error::InvalidState("Player does not have enough xp to do action, cancelling.".into())
         } else {
-            Error::Operation("Not anvil-able (in either direction), cancelling.".into())
+            Error::InvalidArgument("Not anvil-able (in either direction), cancelling.".into())
         }
     }
 
@@ -1051,7 +1053,7 @@ impl Bot {
             }),
             other => {
                 window.close();
-                Err(Error::Operation(format!(
+                Err(Error::InvalidArgument(format!(
                     "This is not a furnace-like window: {other:?}"
                 )))
             }
@@ -1062,7 +1064,7 @@ impl Bot {
     /// `enchanting_table` before opening, then verifies the menu kind.
     pub async fn open_enchantment_table(&self, block: &Block) -> Result<EnchantmentTable> {
         if block.kind() != BlockKind::EnchantingTable {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidArgument(format!(
                 "Expected enchanting_table block, got {}",
                 block.name()
             )));
@@ -1075,7 +1077,7 @@ impl Bot {
             }),
             other => {
                 window.close();
-                Err(Error::Operation(format!(
+                Err(Error::InvalidArgument(format!(
                     "Expected minecraft:enchant when opening table but got {other:?}"
                 )))
             }
@@ -1094,7 +1096,7 @@ impl Bot {
             }),
             other => {
                 window.close();
-                Err(Error::Operation(format!(
+                Err(Error::InvalidArgument(format!(
                     "Not a anvil-like window: {other:?}"
                 )))
             }
@@ -1108,7 +1110,9 @@ impl Bot {
     pub async fn open_villager(&self, entity: &EntityRef) -> Result<Villager> {
         if entity.get_component::<EntityKindComponent>().map(|k| k.0) != Some(EntityKind::Villager)
         {
-            return Err(Error::Operation("Expected villager entity type".into()));
+            return Err(Error::InvalidArgument(
+                "Expected villager entity type".into(),
+            ));
         }
         let mut rx = self.subscribe();
         let window = self.open_entity(entity).await?;
@@ -1117,7 +1121,7 @@ impl Bot {
             Some(MenuKind::Merchant) => {}
             other => {
                 window.close();
-                return Err(Error::Operation(format!(
+                return Err(Error::InvalidArgument(format!(
                     "Expected minecraft:villager or minecraft:mechant type, but got {other:?}"
                 )));
             }
@@ -1170,22 +1174,22 @@ impl Bot {
             let record = t
                 .windows
                 .get_mut(&id)
-                .ok_or_else(|| Error::Operation("villager has no trades yet".into()))?;
+                .ok_or_else(|| Error::NotFound("villager has no trades yet".into()))?;
             let offers = record
                 .offers
                 .as_mut()
-                .ok_or_else(|| Error::Operation("villager has no trades yet".into()))?;
+                .ok_or_else(|| Error::NotFound("villager has no trades yet".into()))?;
             let trade = offers
                 .get(index)
                 .cloned()
-                .ok_or_else(|| Error::Operation(format!("no trade at index {index}")))?;
+                .ok_or_else(|| Error::InvalidArgument(format!("no trade at index {index}")))?;
             let remaining = trade.max_uses - trade.uses;
             if remaining <= 0 {
-                return Err(Error::Operation("trade blocked".into()));
+                return Err(Error::InvalidState("trade blocked".into()));
             }
             let count = count.unwrap_or(remaining);
             if count > remaining {
-                return Err(Error::Operation(format!(
+                return Err(Error::InvalidArgument(format!(
                     "cannot trade {count} times, only {remaining} uses left"
                 )));
             }
@@ -1199,12 +1203,12 @@ impl Bot {
             trade.input_item_1.metadata(),
         );
         if have_1 < trade.real_price * count {
-            return Err(Error::Operation("Not enough item 1 to trade".into()));
+            return Err(Error::NotFound("Not enough item 1 to trade".into()));
         }
         if let Some(input_2) = &trade.input_item_2 {
             let have_2 = count_inventory_items(window, input_2.kind(), input_2.metadata());
             if have_2 < input_2.count() * count {
-                return Err(Error::Operation("Not enough item 2 to trade".into()));
+                return Err(Error::NotFound("Not enough item 2 to trade".into()));
             }
         }
 
@@ -1346,9 +1350,9 @@ impl Bot {
         let inventory = self.inventory();
         let book = inventory
             .slot(slot)
-            .ok_or_else(|| Error::Operation(format!("no book found in slot {slot}")))?;
+            .ok_or_else(|| Error::NotFound(format!("no book found in slot {slot}")))?;
         if book.kind() != ItemKind::WritableBook {
-            return Err(Error::Operation(format!("no book found in slot {slot}")));
+            return Err(Error::NotFound(format!("no book found in slot {slot}")));
         }
 
         let mut rx = self.subscribe();
@@ -1411,15 +1415,17 @@ impl Bot {
         options: CommandBlockOpts,
     ) -> Result<()> {
         if self.game_mode() != Some(GameMode::Creative) {
-            return Err(Error::Operation(
+            return Err(Error::InvalidState(
                 "The bot has to be in creative mode to open the command block window".into(),
             ));
         }
         let block = self
             .block_at(pos)
-            .ok_or_else(|| Error::Operation("The block isn't a command block".into()))?;
+            .ok_or_else(|| Error::InvalidArgument("The block isn't a command block".into()))?;
         if !block.name().contains("command_block") {
-            return Err(Error::Operation("The block isn't a command block".into()));
+            return Err(Error::InvalidArgument(
+                "The block isn't a command block".into(),
+            ));
         }
         self.client.write_packet(ServerboundSetCommandBlock {
             pos,

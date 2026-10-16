@@ -608,12 +608,12 @@ impl Bot {
             // disconnect are different errors (and the latter names the
             // reason).
             if let Some(reason) = self.shared.end_reason.lock().clone() {
-                return Err(Error::Operation(format!(
+                return Err(Error::InvalidState(format!(
                     "bot.chat() called after the client disconnected before \
                      entering the play state ({reason})"
                 )));
             }
-            return Err(Error::Operation(
+            return Err(Error::InvalidState(
                 "bot.chat() called before the client entered the play state; \
                  wait for the \"login\" or \"spawn\" event"
                     .to_string(),

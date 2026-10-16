@@ -802,7 +802,7 @@ impl Bot {
         crafting_table: Option<&Block>,
     ) -> Result<()> {
         if recipe.requires_table && crafting_table.is_none() {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidArgument(format!(
                 "Recipe requires craftingTable, but one was not supplied: {recipe:?}"
             )));
         }
@@ -845,7 +845,7 @@ impl Bot {
                 }
                 let window = window_table.clone().unwrap();
                 if window.menu_kind() != Some(MenuKind::Crafting) {
-                    return Err(Error::Operation(format!(
+                    return Err(Error::InvalidArgument(format!(
                         "crafting: non craftingTable used as craftingTable: {:?}",
                         window.menu_kind()
                     )));
@@ -875,7 +875,7 @@ impl Bot {
         if let Some(ings) = &recipe.ingredients {
             for ing in ings {
                 let dest = extra_slots.pop().ok_or_else(|| {
-                    Error::Operation("craft: no free grid slot for ingredient".into())
+                    Error::NotFound("craft: no free grid slot for ingredient".into())
                 })?;
                 self.click_ingredient(&window, ing, dest, &mut original_source_slot)
                     .await?;
@@ -923,7 +923,7 @@ impl Bot {
                 .inventory_items()
                 .into_iter()
                 .find(|item| ingredient.accepts(item))
-                .ok_or_else(|| Error::Operation("missing ingredient".into()))?;
+                .ok_or_else(|| Error::NotFound("missing ingredient".into()))?;
             original_source_slot.get_or_insert(i32::from(source.slot));
             click_window_on(window, i32::from(source.slot), 0, 0, self.subscribe()).await?;
         }

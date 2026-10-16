@@ -470,10 +470,9 @@ impl std::str::FromStr for ViewDistance {
             "normal" => Self::Normal,
             "short" => Self::Short,
             "tiny" => Self::Tiny,
-            _ => Self::Chunks(
-                s.parse::<u8>()
-                    .map_err(|_| Error::Operation(format!("invalid view distance setting: {s}")))?,
-            ),
+            _ => Self::Chunks(s.parse::<u8>().map_err(|_| {
+                Error::InvalidArgument(format!("invalid view distance setting: {s}"))
+            })?),
         })
     }
 }
@@ -592,7 +591,7 @@ impl Bot {
     pub fn set_settings(&self, settings: Settings) -> Result<()> {
         // upstream asserts on an invalid view distance
         if settings.view_distance == 0 {
-            return Err(Error::Operation(
+            return Err(Error::InvalidArgument(
                 "invalid view distance setting: 0".to_string(),
             ));
         }
@@ -614,7 +613,7 @@ impl Bot {
             .get_component::<MiscState>()
             .and_then(|m| m.latest_resource_pack.clone())
         else {
-            return Err(Error::Operation("no resource pack to answer".into()));
+            return Err(Error::InvalidState("no resource pack to answer".into()));
         };
         for action in [
             s_resource_pack::Action::Accepted,
@@ -641,7 +640,7 @@ impl Bot {
             .get_component::<MiscState>()
             .and_then(|m| m.latest_resource_pack.clone())
         else {
-            return Err(Error::Operation("no resource pack to answer".into()));
+            return Err(Error::InvalidState("no resource pack to answer".into()));
         };
         self.client
             .write_packet(s_resource_pack::ServerboundResourcePack {
@@ -673,7 +672,7 @@ impl Bot {
     /// refusal surfaces as `bot is not sleeping`.
     pub async fn sleep(&self, bed: azalea::BlockPos) -> Result<()> {
         if self.is_sleeping() {
-            return Err(Error::Operation("already sleeping".into()));
+            return Err(Error::InvalidState("already sleeping".into()));
         }
         if !self.logged_in() {
             return Err(Error::NotConnected);
@@ -682,12 +681,14 @@ impl Bot {
             let world = self.client.world();
             let world = world.read();
             let Some(state) = world.get_block_state(bed) else {
-                return Err(Error::Operation(
+                return Err(Error::NotFound(
                     "there's no bed block at the given position".into(),
                 ));
             };
             if !self.is_a_bed(state) {
-                return Err(Error::Operation("wrong block : not a bed block".into()));
+                return Err(Error::InvalidArgument(
+                    "wrong block : not a bed block".into(),
+                ));
             }
         }
         // upstream registers the sleep listener before activating the block
@@ -698,13 +699,13 @@ impl Bot {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        Err(Error::Operation("bot is not sleeping".into()))
+        Err(Error::Failed("bot is not sleeping".into()))
     }
 
     /// `bot.wake()` — the stop-sleeping entity action.
     pub fn wake(&self) -> Result<()> {
         if !self.is_sleeping() {
-            return Err(Error::Operation("already awake".into()));
+            return Err(Error::InvalidState("already awake".into()));
         }
         let Some(id) = self
             .client
@@ -758,7 +759,7 @@ impl Bot {
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break Err(Error::NotConnected),
                 },
-                _ = &mut cancel_rx => break Err(Error::Operation(
+                _ = &mut cancel_rx => break Err(Error::Cancelled(
                     "Fishing cancelled due to calling bot.fish() again".into(),
                 )),
                 _ = shutdown.changed() => break Err(Error::NotConnected),
@@ -779,7 +780,7 @@ impl Bot {
                     if let Some(id) = bobber
                         && p.entity_ids.contains(&id)
                     {
-                        break Err(Error::Operation("Fishing cancelled".into()));
+                        break Err(Error::Cancelled("Fishing cancelled".into()));
                     }
                 }
                 ClientboundGamePacket::LevelParticles(p) => {

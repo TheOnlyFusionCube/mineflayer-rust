@@ -204,12 +204,12 @@ pub(crate) fn click_operation(slot: u16, mouse_button: u8, mode: u8) -> Result<C
         0 => match mouse_button {
             0 => PickupClick::Left { slot: Some(slot) }.into(),
             1 => PickupClick::Right { slot: Some(slot) }.into(),
-            b => return Err(Error::Operation(format!("invalid mouse button {b}"))),
+            b => return Err(Error::InvalidArgument(format!("invalid mouse button {b}"))),
         },
         1 => match mouse_button {
             0 => QuickMoveClick::Left { slot }.into(),
             1 => QuickMoveClick::Right { slot }.into(),
-            b => return Err(Error::Operation(format!("invalid mouse button {b}"))),
+            b => return Err(Error::InvalidArgument(format!("invalid mouse button {b}"))),
         },
         2 => SwapClick {
             source_slot: slot,
@@ -222,15 +222,15 @@ pub(crate) fn click_operation(slot: u16, mouse_button: u8, mode: u8) -> Result<C
         4 => match mouse_button {
             0 => ThrowClick::Single { slot }.into(),
             1 => ThrowClick::All { slot }.into(),
-            b => return Err(Error::Operation(format!("invalid mouse button {b}"))),
+            b => return Err(Error::InvalidArgument(format!("invalid mouse button {b}"))),
         },
         // modes 5 (quick-craft drag) and 6 (pickup-all double click)
         // are multi-packet gestures upstream sends raw; nothing in the
         // ported API emits them.
         5 | 6 => {
-            return Err(Error::Operation(format!("unsupported mouse mode {mode}")));
+            return Err(Error::Unsupported(format!("unsupported mouse mode {mode}")));
         }
-        m => return Err(Error::Operation(format!("invalid mode {m}"))),
+        m => return Err(Error::InvalidArgument(format!("invalid mode {m}"))),
     })
 }
 
@@ -273,7 +273,7 @@ impl Bot {
     /// [`BotEvent::HeldItemChanged`] like upstream's `setQuickBarSlot`.
     pub async fn set_quick_bar_slot(&self, slot: u8) -> Result<()> {
         if slot > 8 {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidArgument(format!(
                 "quick_bar_slot must be 0..=8, got {slot}"
             )));
         }
@@ -520,7 +520,9 @@ impl Bot {
     pub async fn equip(&self, item: &Item, dest: EquipDest) -> Result<()> {
         // upstream: `item == null || item.slot === -1` → invalid
         if item.stack.is_empty() || item.slot == -1 {
-            return Err(Error::Operation("Invalid item object in equip".into()));
+            return Err(Error::InvalidArgument(
+                "Invalid item object in equip".into(),
+            ));
         }
         let source_slot = i32::from(item.slot);
         let mut dest_slot = i32::from(self.equipment_dest_slot(dest));
@@ -561,7 +563,7 @@ impl Bot {
     /// player-inventory region (upstream `equip(itemId, dest)` form).
     pub async fn equip_kind(&self, kind: ItemKind, dest: EquipDest) -> Result<()> {
         let item = self.find_inventory_item(kind).ok_or_else(|| {
-            Error::Operation(format!(
+            Error::InvalidArgument(format!(
                 "Invalid item object in equip (item is null): {}",
                 kind.to_str()
             ))
@@ -588,7 +590,9 @@ impl Bot {
             EquipDest::Hand => self.equip_empty().await,
             _ => {
                 if self.current_window().is_some() {
-                    return Err(Error::Operation("can not unequip with open window".into()));
+                    return Err(Error::InvalidState(
+                        "can not unequip with open window".into(),
+                    ));
                 }
                 self.put_away(self.equipment_dest_slot(dest)).await
             }
@@ -610,7 +614,7 @@ impl Bot {
         let Some(slot) = first_empty_in(&slots, 9..45) else {
             let held = self
                 .held_item()
-                .ok_or_else(|| Error::Operation("no held item to toss".into()))?;
+                .ok_or_else(|| Error::InvalidState("no held item to toss".into()))?;
             return self.toss_stack(&held).await;
         };
         let equip_slot = i32::from(self.equipment_dest_slot(EquipDest::Hand));
@@ -689,12 +693,12 @@ impl Bot {
                 .is_some_and(|i| !ALWAYS_CONSUMABLES.contains(&i.kind()))
             && self.food() == 20
         {
-            return Err(Error::Operation("Food is full".into()));
+            return Err(Error::InvalidState("Food is full".into()));
         }
         if self.held_item().is_none() {
             // upstream activateItem() silently returns on an empty hand
             // and the eat task then hangs; erroring is strictly better
-            return Err(Error::Operation("Nothing held to consume".into()));
+            return Err(Error::InvalidState("Nothing held to consume".into()));
         }
         let (generation, notify) = {
             let mut t = self.shared.windows.lock();
@@ -721,7 +725,7 @@ impl Bot {
         if self.shared.windows.lock().eat_generation == generation {
             Ok(())
         } else {
-            Err(Error::Operation(
+            Err(Error::Cancelled(
                 "Consuming cancelled due to calling bot.consume() again".into(),
             ))
         }
@@ -772,7 +776,7 @@ impl Bot {
         let window = match target.into() {
             ContainerTarget::Block { pos, name } => {
                 if !is_container_block_name(&name) {
-                    return Err(Error::Operation(
+                    return Err(Error::InvalidArgument(
                         "containerToOpen is neither a block nor an entity".into(),
                     ));
                 }
@@ -787,7 +791,7 @@ impl Bot {
             Some(kind) if is_container_menu(kind) => Ok(window),
             other => {
                 window.close();
-                Err(Error::Operation(format!(
+                Err(Error::InvalidArgument(format!(
                     "Non-container window used as a container: {other:?}"
                 )))
             }
@@ -845,9 +849,9 @@ pub(crate) async fn click_window_on(
         -999 => match mouse_button {
             0 => ClickOperation::Pickup(PickupClick::LeftOutside),
             1 => ClickOperation::Pickup(PickupClick::RightOutside),
-            b => return Err(Error::Operation(format!("invalid mouse button {b}"))),
+            b => return Err(Error::InvalidArgument(format!("invalid mouse button {b}"))),
         },
-        s if s < 0 => return Err(Error::Operation(format!("invalid slot {s}"))),
+        s if s < 0 => return Err(Error::InvalidArgument(format!("invalid slot {s}"))),
         s => click_operation(s as u16, mouse_button, mode)?,
     };
     window.click(op);
@@ -941,13 +945,13 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
     let window = options
         .window
         .clone()
-        .ok_or_else(|| Error::Operation("transfer requires a window".into()))?;
+        .ok_or_else(|| Error::InvalidArgument("transfer requires a window".into()))?;
     let mut count = options.effective_count();
     if count < 0 {
         // upstream's loop only stops at exactly zero (`count -= 1` walks a
         // negative count away from it and clicks until the source runs
         // out); refuse instead of clicking unbounded
-        return Err(Error::Operation("transfer count must be >= 0".into()));
+        return Err(Error::InvalidArgument("transfer count must be >= 0".into()));
     }
     let kind = options.kind;
     let metadata = options.metadata;
@@ -981,7 +985,7 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
                     nbt.as_ref(),
                 )
                 .ok_or_else(|| {
-                    Error::Operation(format!(
+                    Error::NotFound(format!(
                         "Can't find {} in slots [{} - {}], (item id: {})",
                         kind.to_str(),
                         source.start,
@@ -999,9 +1003,7 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
 
         // clickDest()
         let Some(selected) = window.selected_item() else {
-            return Err(Error::Operation(
-                "transfer: cursor empty after click".into(),
-            ));
+            return Err(Error::Failed("transfer: cursor empty after click".into()));
         };
         let dest_slot: i32;
         let mut dest_slot_count = 0;
@@ -1027,7 +1029,7 @@ pub(crate) async fn transfer(options: TransferOpts) -> Result<()> {
                 None => match first_empty_in(&slots, range) {
                     Some(i) => dest_slot = i as i32,
                     None => {
-                        return Err(Error::Operation("destination full".into()));
+                        return Err(Error::InvalidState("destination full".into()));
                     }
                 },
             }
@@ -1105,7 +1107,7 @@ mod tests {
         };
         let err = transfer(opts(-1)).await.unwrap_err();
         assert!(
-            matches!(&err, Error::Operation(m) if m.contains(">= 0")),
+            matches!(&err, Error::InvalidArgument(m) if m.contains(">= 0")),
             "got {err:?}"
         );
         // zero completes without an error, like upstream

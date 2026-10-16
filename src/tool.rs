@@ -251,7 +251,7 @@ impl Tool<'_> {
     /// # Errors
     ///
     /// [`Error::NotConnected`] before the bot has spawned;
-    /// [`Error::Operation`] `NoItem`/`NoChest`/`UnloadedChunk` on the
+    /// [`Error::NotFound`] `NoItem`/`NoChest`/`UnloadedChunk` on the
     /// upstream failure paths, and whatever `equip`/`open_chest`/`goto`
     /// fails with underneath.
     pub async fn equip_for_block_opts(&self, block: &Block, opts: &EquipOpts) -> Result<()> {
@@ -268,7 +268,7 @@ impl Tool<'_> {
                     return Box::pin(self.equip_for_block_opts(block, opts)).await;
                 }
                 if opts.require_harvest {
-                    return Err(Error::Operation(
+                    return Err(Error::NotFound(
                         "NoItem: Bot does not have a harvestable tool!".into(),
                     ));
                 }
@@ -393,12 +393,12 @@ impl Tool<'_> {
             tokio::time::timeout(CHEST_GOTO_TIMEOUT, pf.goto(Goal::GetToBlock(chest_pos)))
                 .await
                 .map_err(|_| {
-                    Error::Operation(format!(
+                    Error::Failed(format!(
                         "path to {chest_pos} timed out after {CHEST_GOTO_TIMEOUT:?}"
                     ))
                 })??;
             let Some(chest_block) = bot.block_at(chest_pos) else {
-                return Err(Error::Operation(
+                return Err(Error::NotFound(
                     "UnloadedChunk: Chest is located in an unloaded chunk!".into(),
                 ));
             };
@@ -429,7 +429,7 @@ impl Tool<'_> {
             tokio::time::sleep(Duration::from_millis(200)).await;
             return Ok(());
         }
-        Err(Error::Operation(
+        Err(Error::NotFound(
             "NoChest: There are no chests with available tools in them!".into(),
         ))
     }

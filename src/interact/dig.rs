@@ -42,9 +42,6 @@ const DIG_START_GRACE_TICKS: u32 = 20;
 /// [`DigAbortReason::Timeout`] beats hanging.
 const DIG_FINISH_GRACE: Duration = Duration::from_secs(10);
 
-/// `diggingTask` rejection message, identical to upstream's.
-const DIG_ABORTED: &str = "Digging aborted";
-
 /// `bot.dig`'s `digFace` argument (`lib/plugins/digging.js`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum DigFace {
@@ -290,9 +287,11 @@ impl Bot {
     ///
     /// # Errors
     ///
-    /// `Error::NotConnected` before the bot has spawned; `Error::Operation`
-    /// for an unbreakable/undiggable target, an unreachable face, or a
-    /// stopped/interrupted dig; `Error::Timeout` when the block never
+    /// `Error::NotConnected` before the bot has spawned;
+    /// `Error::InvalidArgument` for an unbreakable/undiggable target;
+    /// `Error::InvalidState` for an unreachable face or a bot that is not
+    /// fully spawned; `Error::DigAborted` for a stopped/interrupted dig
+    /// (`Display` is upstream's `Digging aborted`); `Error::Timeout` when the block never
     /// breaks (upstream would wait forever).
     pub async fn dig(&self, block: &Block) -> Result<()> {
         self.dig_opts(block, ForceLook::default(), DigFace::default())
@@ -312,7 +311,7 @@ impl Bot {
         // upstream throws when `digTime` is Infinity — the same check also
         // gates on the local-player components existing (spawned bot)
         let Some(wait) = self.dig_time(block) else {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidArgument(format!(
                 "dig time for {} is Infinity",
                 block.name()
             )));
@@ -321,7 +320,9 @@ impl Bot {
         // event — missing means the pick systems haven't initialized yet,
         // not that we're offline
         if self.client.get_component::<HitResultComponent>().is_none() {
-            return Err(Error::Operation("bot isn't fully spawned yet".to_string()));
+            return Err(Error::InvalidState(
+                "bot isn't fully spawned yet".to_string(),
+            ));
         }
         let force = force_look == ForceLook::Force;
         if force_look != ForceLook::Ignore {
@@ -408,7 +409,7 @@ impl Bot {
                     block: block.clone(),
                     reason,
                 });
-                Err(Error::Operation(DIG_ABORTED.to_string()))
+                Err(Error::DigAborted(reason))
             }
             DigExit::Disconnected => Err(Error::NotConnected),
         }
@@ -707,7 +708,7 @@ impl Bot {
         if !obstructed && block.state.collision_shape().is_empty() {
             return self.look_at(center, force).await;
         }
-        Err(Error::Operation("Block not in view".to_string()))
+        Err(Error::InvalidState("Block not in view".to_string()))
     }
 
     /// Eye position at feet + `EntityDimensions::eye_height` (the same

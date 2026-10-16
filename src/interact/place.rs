@@ -208,8 +208,9 @@ impl Bot {
     ///
     /// # Errors
     ///
-    /// `Error::Operation` for a zero face vector, an empty hand, a missing
-    /// server ack, or the destination staying unchanged ("refused");
+    /// `Error::InvalidArgument` for a zero face vector, `Error::InvalidState`
+    /// for an empty hand, `Error::Failed` for a missing server ack or the
+    /// destination staying unchanged ("refused");
     /// `Error::Timeout` when the ack arrived but the update didn't.
     pub async fn place_block(&self, reference_block: &Block, face_vector: Vec3) -> Result<Block> {
         // upstream's public `placeBlock` is `_placeBlockWithOptions`
@@ -236,8 +237,9 @@ impl Bot {
         face_vector: Vec3,
         opts: &PlaceOpts,
     ) -> Result<Block> {
-        let (dest, ..) = place_geometry(reference_block.pos, face_vector)
-            .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
+        let (dest, ..) = place_geometry(reference_block.pos, face_vector).ok_or_else(|| {
+            Error::InvalidArgument(format!("invalid direction vector {face_vector:?}"))
+        })?;
         let old_block = self.block_at(dest);
         let old_kind = old_block.as_ref().map(|b| b.kind());
         let mut rx = self.subscribe();
@@ -260,8 +262,9 @@ impl Bot {
     ///
     /// # Errors
     ///
-    /// `Error::Operation` when the held item can't spawn an entity or no
-    /// matching entity appears in time.
+    /// `Error::InvalidState` for an empty hand, `Error::Unsupported` when the
+    /// held item can't spawn an entity, `Error::Failed` when no matching
+    /// entity appears in time.
     pub async fn place_entity(
         &self,
         reference_block: &Block,
@@ -283,7 +286,7 @@ impl Bot {
         opts: &PlaceOpts,
     ) -> Result<azalea::EntityRef> {
         let held = self.held_item().ok_or_else(|| {
-            Error::Operation("must be holding an item to place an entity".to_string())
+            Error::InvalidState("must be holding an item to place an entity".to_string())
         })?;
         // `Item::name()` is un-namespaced like upstream's `heldItem.name`
         // (`ItemKind::to_str()` is `minecraft:<id>` — feeding it here made
@@ -291,12 +294,13 @@ impl Bot {
         // never matched the prefix).
         let item_name = held.name();
         let Some(expected) = PlacedEntity::from_item(item_name) else {
-            return Err(Error::Operation(format!(
+            return Err(Error::Unsupported(format!(
                 "Cannot place entity using {item_name}"
             )));
         };
-        let (dest, ..) = place_geometry(reference_block.pos, face_vector)
-            .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
+        let (dest, ..) = place_geometry(reference_block.pos, face_vector).ok_or_else(|| {
+            Error::InvalidArgument(format!("invalid direction vector {face_vector:?}"))
+        })?;
         let dest_corner = Vec3 {
             x: dest.x as f64,
             y: dest.y as f64,
@@ -360,7 +364,7 @@ impl Bot {
             }
         })
         .await
-        .map_err(|_| Error::Operation("Failed to place entity".to_string()))??;
+        .map_err(|_| Error::Failed("Failed to place entity".to_string()))??;
         self.emit_event(BotEvent::EntityPlaced(entity.clone()));
         Ok(entity)
     }
@@ -381,7 +385,7 @@ impl Bot {
     ) -> Result<()> {
         let dir_vec = direction.unwrap_or(Vec3::new(0., 1., 0.));
         let Some(face) = face_direction(dir_vec) else {
-            return Err(Error::Operation(format!(
+            return Err(Error::InvalidArgument(format!(
                 "invalid direction vector {dir_vec:?}"
             )));
         };
@@ -481,8 +485,9 @@ impl Bot {
         face_vector: Vec3,
         opts: &PlaceOpts,
     ) -> Result<InteractionHand> {
-        let direction = face_direction(face_vector)
-            .ok_or_else(|| Error::Operation(format!("invalid direction vector {face_vector:?}")))?;
+        let direction = face_direction(face_vector).ok_or_else(|| {
+            Error::InvalidArgument(format!("invalid direction vector {face_vector:?}"))
+        })?;
         // upstream checks the hand before computing the cursor: offhand
         // wants `bot.inventory.slots[45]`, main hand wants `bot.heldItem`.
         let hand = if opts.offhand {
@@ -491,14 +496,14 @@ impl Bot {
                 .slot(45)
                 .is_some_and(|i| i.stack.is_present())
             {
-                return Err(Error::Operation(
+                return Err(Error::InvalidState(
                     "must be holding an item in the off-hand to place".to_string(),
                 ));
             }
             InteractionHand::OffHand
         } else {
             if self.held_item().is_none() {
-                return Err(Error::Operation(
+                return Err(Error::InvalidState(
                     "must be holding an item to place".to_string(),
                 ));
             }
@@ -548,7 +553,7 @@ impl Bot {
                                     .held_item()
                                     .map(|h| h.name().to_string())
                                     .unwrap_or_else(|| "block".to_string());
-                                return Err(Error::Operation(format!(
+                                return Err(Error::Failed(format!(
                                     "Server refused to place {held_name} at {dest}: \
                                      the block is still {}",
                                     new.name()
@@ -570,7 +575,7 @@ impl Bot {
             if acked {
                 Error::Timeout
             } else {
-                Error::Operation(format!("Server did not answer the placement at {dest}"))
+                Error::Failed(format!("Server did not answer the placement at {dest}"))
             }
         })?
     }

@@ -67,7 +67,7 @@ impl Creative {
     /// Upstream asserts `0 <= slot <= 44`; slots are unsigned here.
     pub async fn set_inventory_slot(&self, slot: u16, item: ItemStack) -> Result<()> {
         if slot > 44 {
-            return Err(Error::Operation("slot must be <= 44".into()));
+            return Err(Error::InvalidArgument("slot must be <= 44".into()));
         }
         // no-op when the slot already holds an identical stack, like
         // upstream's Item.equal check
@@ -81,7 +81,7 @@ impl Creative {
         }
         let in_flight = misc_mut(&self.client, |m| !m.creative_slots_in_flight.insert(slot))?;
         if in_flight {
-            return Err(Error::Operation(format!(
+            return Err(Error::Cancelled(format!(
                 "Setting slot {slot} cancelled due to calling bot.creative.set_inventory_slot({slot}, ...) again"
             )));
         }
@@ -110,7 +110,7 @@ impl Creative {
                             return if p.item_stack == item {
                                 Ok(())
                             } else {
-                                Err(Error::Operation("Server rejected".into()))
+                                Err(Error::Failed("Server rejected".into()))
                             };
                         }
                     }

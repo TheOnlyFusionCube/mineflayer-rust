@@ -501,12 +501,12 @@ impl CollectBlock<'_> {
                         break;
                     }
                     if !ignore_no_path {
-                        return Err(Error::Operation(format!(
+                        return Err(Error::Failed(format!(
                             "path to {pos} timed out after {GOTO_TIMEOUT:?}"
                         )));
                     }
                     tried.insert(pos);
-                    last_err = Some(Error::Operation(format!(
+                    last_err = Some(Error::Failed(format!(
                         "path to {pos} timed out after {GOTO_TIMEOUT:?}"
                     )));
                     continue;
@@ -573,8 +573,9 @@ impl CollectBlock<'_> {
             return Ok(Collected { blocks: collected });
         }
         if collected.is_empty() {
-            return Err(last_err
-                .unwrap_or_else(|| Error::Operation("no matching blocks found".to_string())));
+            return Err(
+                last_err.unwrap_or_else(|| Error::NotFound("no matching blocks found".to_string()))
+            );
         }
         bot.emit_event(BotEvent::CollectDone {
             collected: collected.len(),
@@ -673,7 +674,7 @@ impl CollectBlock<'_> {
             return Ok(());
         }
         if chest_locations.is_empty() {
-            return Err(Error::Operation(
+            return Err(Error::NotFound(
                 "NoChests: There are no defined chest locations!".into(),
             ));
         }
@@ -686,19 +687,19 @@ impl CollectBlock<'_> {
                 .map(|(i, p)| (i, my.distance_to(p.center())))
                 .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
             else {
-                return Err(Error::Operation("NoChests: All chests are full.".into()));
+                return Err(Error::NotFound("NoChests: All chests are full.".into()));
             };
             let chest_pos = locations.remove(nearest);
             let pf = bot.pathfinder();
             tokio::time::timeout(GOTO_TIMEOUT, pf.goto(Goal::GetToBlock(chest_pos)))
                 .await
                 .map_err(|_| {
-                    Error::Operation(format!(
+                    Error::Failed(format!(
                         "path to {chest_pos} timed out after {GOTO_TIMEOUT:?}"
                     ))
                 })??;
             let Some(block) = bot.block_at(chest_pos) else {
-                return Err(Error::Operation(
+                return Err(Error::NotFound(
                     "UnloadedChunk: Chest is in an unloaded chunk!".into(),
                 ));
             };

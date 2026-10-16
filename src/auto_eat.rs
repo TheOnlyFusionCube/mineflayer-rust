@@ -325,7 +325,7 @@ impl AutoEat<'_> {
             true
         }) {
             None => return Err(Error::NotConnected),
-            Some(false) => return Err(Error::Operation("Already eating!".into())),
+            Some(false) => return Err(Error::InvalidState("Already eating!".into())),
             Some(true) => {}
         }
         let result = self.run_eat(opts, &cancel).await;
@@ -389,7 +389,7 @@ impl AutoEat<'_> {
         ));
 
         let Some(food) = self.resolve_food(opts.food.as_ref(), priority) else {
-            return Err(Error::Operation(
+            return Err(Error::NotFound(
                 "No food specified and couldn't find a choice in inventory!".into(),
             ));
         };
@@ -402,9 +402,9 @@ impl AutoEat<'_> {
         let previous = self.hand_item(offhand);
         let switched = previous.as_ref().is_none_or(|p| p.slot != food.slot);
         if switched {
-            bot.equip(&food, dest).await.map_err(|e| {
-                Error::Operation(format!("Failed to equip: {}! ({e})", food.name()))
-            })?;
+            bot.equip(&food, dest)
+                .await
+                .map_err(|e| Error::Failed(format!("Failed to equip: {}! ({e})", food.name())))?;
         }
 
         // register the finish waiter before activating, like
@@ -436,17 +436,17 @@ impl AutoEat<'_> {
         let outcome = if cancel.load(atomic::Ordering::Relaxed) {
             // cancel landed between waiter registration and here — its
             // notify_waiters fired before `enable()` and can't be caught
-            Err(Error::Operation("Eating manually canceled!".into()))
+            Err(Error::Cancelled("Eating manually canceled!".into()))
         } else if tokio::time::timeout(timeout, notified).await.is_err() {
-            Err(Error::Operation(format!(
+            Err(Error::Failed(format!(
                 "Eating timed out with a time of {} milliseconds!",
                 timeout.as_millis()
             )))
         } else if bot.shared.windows.lock().eat_generation != generation {
             if cancel.load(atomic::Ordering::Relaxed) {
-                Err(Error::Operation("Eating manually canceled!".into()))
+                Err(Error::Cancelled("Eating manually canceled!".into()))
             } else {
-                Err(Error::Operation(
+                Err(Error::Cancelled(
                     "Eating cancelled due to calling bot.consume() again".into(),
                 ))
             }
@@ -457,7 +457,7 @@ impl AutoEat<'_> {
             // `\nItem: ${newItem}` — JS prints "[object Object]", so the
             // first line carries all the information.)
             match self.hand_item(offhand) {
-                Some(held) if held.kind() != food.kind() => Err(Error::Operation(format!(
+                Some(held) if held.kind() != food.kind() => Err(Error::Failed(format!(
                     "Item switched early to: {}!",
                     held.name()
                 ))),
