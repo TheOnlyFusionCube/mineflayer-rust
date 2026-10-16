@@ -23,7 +23,11 @@ pub enum Error {
     /// The operation requires a connected bot.
     #[error("not connected")]
     NotConnected,
-    /// An operation did not complete in time.
+    /// An operation did not complete in time and upstream has no message
+    /// for the case (a bare wait limit, like `waitForTicks` or a dig that
+    /// never breaks). A time limit that upstream reports with its own text
+    /// (`path to … timed out`, `Eating timed out …`) is [`Error::Failed`],
+    /// so the text is kept.
     #[error("timed out")]
     Timeout,
     /// An argument is outside its valid range or names the wrong kind of

@@ -2,8 +2,9 @@
 
 Language: ASD-STE100 (Simplified Technical English).
 
-Date: 2026-10-16. Source: commit `8f75b1f` plus the probe
-`examples/event_rate.rs` (added with this report). Release build, Apple
+Date: 2026-10-16. Measured on the source of commit `8f75b1f`, with the
+probe `examples/event_rate.rs` (committed in `9adeb98`). The C2 option and
+the reconciler change came after the measurement. Release build, Apple
 Silicon, local fixture server (MC 26.1, seed `13371337`, reset world).
 
 ## Method

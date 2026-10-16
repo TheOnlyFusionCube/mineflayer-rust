@@ -20,15 +20,10 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup toolchain install
 
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: verify-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-          restore-keys: verify-${{ runner.os }}-
+      # rust-cache prunes target/ to the dependency artifacts, so the entry
+      # stays inside the 10 GB repository cache limit (a full local target/
+      # grows to tens of GB). The toolchain file is part of its cache key.
+      - uses: Swatinem/rust-cache@v2
 
       - name: Verify
         run: bash scripts/verify.sh

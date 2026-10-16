@@ -1991,7 +1991,7 @@ checksum = "d60a6352e005f1f86008644a9fe336a66f74c94428182162cc69eb8c6fff458d"
 
 [[package]]
 name = "mineflayer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "azalea",
  "futures",

@@ -1,0 +1,50 @@
+# Changelog
+
+## 0.2.0 — 2026-10-16
+
+The holistic improvement plan (`docs/improvement_plan.md`). Breaking
+changes first.
+
+### Breaking
+
+- `Error::Operation(String)` is removed. Match on `InvalidArgument`,
+  `InvalidState`, `NotFound`, `Failed`, `Cancelled`, `Unsupported`, or
+  `DigAborted(DigAbortReason)`. Each keeps the old message as `Display`.
+- `Error::Connect` holds a `String` (no hickory type); thread-start
+  failures are the new `Error::Runtime`.
+- `Bot::spawn_point()` returns `Option<BlockPos>` (`None` before the
+  server sends it).
+- `Block::bounding_box()` returns `BoundingBox` (`as_str()` gives
+  `"block"`/`"empty"`).
+- `Bot::player_by_uuid` takes a `Uuid` (re-exported as `mineflayer::Uuid`).
+- `update_held_item`, `close_window`, `activate_item`, and
+  `deactivate_item` are no longer `async`.
+- The 12 live test binaries are one binary, `live`.
+
+### Added
+
+- `mineflayer::prelude` and `pub use azalea` (the patched azalea).
+- `BotBuilder::packet_events(false)` keeps raw `BotEvent::Packet` off the
+  event stream.
+- `Block::short_name()`, `Bot::click_window_operation(ClickOperation)`.
+- `tracing` logs (the crate emits; it never installs a subscriber).
+- `examples/event_rate.rs` (event-volume and query-timing probe).
+
+### Fixed
+
+- Crate-internal waits no longer take the bootstrap event receiver, so the
+  first `Bot::events()` call always gets the startup events.
+- Background drivers (auto-eat, pvp, follow) no longer keep the connection
+  open after the last user handle drops.
+- `unequip(Hand)` after a disconnect returns `NotConnected` (was a panic).
+- `transfer` rejects a negative count (was an unbounded click loop).
+- `find_blocks`/`raycast` predicates run outside the world lock (deadlock).
+- The bridge always sends one `End`, also when azalea's channel closes
+  without a disconnect event.
+- Locks are `parking_lot` (no poisoning); a written lock order.
+- A cancelled `tab_complete` no longer leaks its correlation entry.
+- Skin data is read with `serde_json` (the regexes missed some payloads).
+- The entity tracker drops the old dimension's entries on respawn.
+
+See `docs/improvement_plan.md` for the status of every item and
+`docs/decisions.md` for the rulings.
