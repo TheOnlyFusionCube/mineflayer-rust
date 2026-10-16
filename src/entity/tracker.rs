@@ -112,6 +112,24 @@ impl EntityTracker {
         *self = EntityTracker::default();
     }
 
+    /// Drop every per-entity entry except the bot's own (`c_respawn`). The
+    /// public behavior does not change — upstream clears `bot.entities`
+    /// only on login, and these entries are unreachable once their
+    /// entities are gone — but the maps no longer grow with each dimension
+    /// change. Player-keyed state (`chat_sessions`) and `difficulty` are
+    /// not per-dimension and stay.
+    pub(super) fn forget_other_entities(&mut self, self_id: Option<MinecraftEntityId>) {
+        let keep = |id: &MinecraftEntityId| Some(*id) == self_id;
+        self.known.retain(|id, _| keep(id));
+        self.meta.retain(|id, _| keep(id));
+        self.equipment.retain(|id, _| keep(id));
+        self.attributes.retain(|id, _| keep(id));
+        self.effects.retain(|id, _| keep(id));
+        self.passengers_of.clear();
+        self.vehicle_of.clear();
+        self.seen_fireworks.clear();
+    }
+
     /// Resolve a protocol entity id to an [`EntityRef`], preferring the live
     /// ECS index and falling back to ids remembered before despawn.
     pub(super) fn resolve(
@@ -372,6 +390,12 @@ impl EntityTracker {
                 }
                 vec![]
             }
+            // a dimension change: the server sends no `RemoveEntities` for
+            // the old dimension, so its entries would stay forever
+            Respawn(_) => {
+                self.forget_other_entities(self_id);
+                vec![]
+            }
             _ => vec![],
         }
     }
@@ -591,6 +615,62 @@ mod tests {
         tracker.vehicle_of.insert(id(6), id(2));
         tracker.forget(None, id(6));
         assert!(tracker.passengers_of.get(&id(2)).unwrap().is_empty());
+    }
+
+    /// A dimension change keeps only the bot's own entries (A9).
+    #[test]
+    fn respawn_forgets_other_dimension_entities() {
+        use azalea::{
+            core::game_type::{GameMode, OptionalGameType},
+            protocol::packets::{
+                common::CommonPlayerSpawnInfo, game::c_respawn::ClientboundRespawn,
+            },
+            registry::{DataRegistry as _, data::DimensionKind},
+        };
+        let me = MinecraftEntityId(7);
+        let other = MinecraftEntityId(8);
+        let client = crate::test_util::live_entity_client(me);
+        let mut tracker = EntityTracker::default();
+        for id in [me, other] {
+            tracker.equipment.insert(id, HashMap::new());
+            tracker.attributes.insert(id, HashMap::new());
+            tracker.effects.insert(id, HashMap::new());
+            tracker.meta.insert(id, EntityMeta::default());
+        }
+        tracker.vehicle_of.insert(other, me);
+        tracker.passengers_of.insert(me, vec![other]);
+        tracker.seen_fireworks.insert(other);
+        tracker.difficulty = Some(Difficulty::Hard);
+
+        let respawn = ClientboundGamePacket::Respawn(ClientboundRespawn {
+            common: CommonPlayerSpawnInfo {
+                dimension_type: DimensionKind::new_raw(0),
+                dimension: azalea::Identifier::new("minecraft:the_nether"),
+                seed: 0,
+                game_type: GameMode::Survival,
+                previous_game_type: OptionalGameType(None),
+                is_debug: false,
+                is_flat: false,
+                last_death_location: None,
+                portal_cooldown: 0,
+                sea_level: 32,
+            },
+            data_to_keep: 0,
+        });
+        assert!(tracker.handle_packet(&client, &respawn).is_empty());
+
+        for map_len in [
+            tracker.equipment.len(),
+            tracker.attributes.len(),
+            tracker.effects.len(),
+            tracker.meta.len(),
+        ] {
+            assert_eq!(map_len, 1, "only the bot's own entry stays");
+        }
+        assert!(tracker.equipment.contains_key(&me));
+        assert!(tracker.vehicle_of.is_empty() && tracker.passengers_of.is_empty());
+        assert!(tracker.seen_fireworks.is_empty());
+        assert_eq!(tracker.difficulty, Some(Difficulty::Hard));
     }
 
     #[test]

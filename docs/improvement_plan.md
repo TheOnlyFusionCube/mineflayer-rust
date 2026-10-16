@@ -360,6 +360,12 @@ Upstream also clears `bot.entities` on `login` only, so the public behavior is t
 
 **Acceptance.** The maps contain only the bot entries after a respawn.
 
+**Status:** done. `c_respawn` calls `EntityTracker::forget_other_entities`.
+It keeps the bot's own entries, `chat_sessions`, and `difficulty`, and
+clears the vehicle, passenger, and firework maps. The test
+`respawn_forgets_other_dimension_entities` covers it. The public
+behavior does not change.
+
 ## 4. Phase B: public API and error model
 
 ### B1. Typed errors in place of `Error::Operation(String)` (P2)
