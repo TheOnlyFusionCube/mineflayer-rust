@@ -180,7 +180,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.moveVehicle(left, fwd)` | entity | `bot.move_vehicle(left:i8, fwd:i8)` | diverges | sends raw player_input like upstream, but doesn't integrate with azalea's PhysicsState |
 | `bot.getExplosionDamages(e,pos,r,raw)` | entity | `bot.get_explosion_damages(..) -> Option<f32>` | diverges | exposure raycasts loaded chunks (Collider shapes); armor from tracked c_update_attributes → None when unknown, like upstream's null |
 | `bot.elytraFly()` | entity | `bot.elytra_fly() -> Result<()>` | diverges | same precondition errors; upstream's elytra-equipped check is absent — the server rejects the packet without one |
-| `bot._playerFromUUID(uuid)` | entity | `bot.player_by_uuid(&str) -> Option<Player>` | ported | internal upstream; exposed for parity |
+| `bot._playerFromUUID(uuid)` | entity | `bot.player_by_uuid(Uuid) -> Option<Player>` | diverges | internal upstream; exposed for parity. Takes a typed `Uuid` (re-exported as `mineflayer::Uuid`) instead of upstream's hyphenated string — parse with `Uuid::parse_str` |
 | `bot.entity` | entity | `bot.entity() -> azalea::EntityRef` | ported | azalea Client::entity() |
 | `bot.entities` | entity | `bot.entities() -> HashMap<MinecraftEntityId, EntityRef>` | ported | keyed by protocol entity id like upstream's `{[id]: Entity}` |
 | `bot.player` | entity | `bot.player() -> Option<Player>` | ported | — |

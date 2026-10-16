@@ -81,6 +81,8 @@ pub use misc::{
 };
 pub use pathfinder::{Goal, Movements, PathError, PathResult, PathStatus, Pathfinder};
 pub use scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team};
+/// Player UUIDs in the public API ([`Bot::player_by_uuid`]).
+pub use uuid::Uuid;
 pub use window_types::{
     Anvil, CommandBlockMode, CommandBlockOpts, EnchantmentOption, EnchantmentTable,
     ExpectedEnchant, Furnace, Villager, VillagerTrade,

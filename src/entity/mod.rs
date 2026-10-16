@@ -364,14 +364,13 @@ impl Bot {
             .client
             .get_component::<GameProfileComponent>()
             .map(|p| p.uuid)?;
-        self.player_by_uuid(&uuid.to_string())
+        self.player_by_uuid(uuid)
     }
 
-    /// `bot._playerFromUUID` — tab-list lookup by hyphenated UUID string.
-    pub fn player_by_uuid(&self, uuid: &str) -> Option<Player> {
-        self.players()
-            .into_values()
-            .find(|p| p.info.uuid.to_string() == uuid)
+    /// `bot._playerFromUUID` — tab-list lookup by UUID. Upstream takes the
+    /// hyphenated string; parse one with `Uuid::parse_str`.
+    pub fn player_by_uuid(&self, uuid: uuid::Uuid) -> Option<Player> {
+        self.players().into_values().find(|p| p.info.uuid == uuid)
     }
 
     /// `bot.uuidToUsername` — `{[uuid]: username}` over the tab list. Keys
