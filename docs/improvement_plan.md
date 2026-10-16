@@ -890,7 +890,10 @@ A search for "not a direct dependency" in `src/` finds no result.
 `repository` field is removed. `rust-version` is now 1.101, the version of
 the pinned nightly. A stable compiler cannot build azalea.
 
-**Status:** done, except the final `cargo clean` record. `target/` was
+**Status:** done. Final `cargo clean` record (end of the plan): `target/`
+was 49 GB (59.2 GiB removed). After a clean rebuild, `scripts/verify.sh`
+leaves 4.1 GB, and the live test binary adds 1.7 GB (5.8 GB in all).
+The rest of this paragraph is the earlier note. `target/` was
 36 GB with the twelve live binaries and 41 GB after E1 plus the items
 before it; the clean-and-rebuild measurement is deferred to the end of
 the plan so the remaining items keep the warm build cache (running it
