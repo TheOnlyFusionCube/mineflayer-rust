@@ -28,6 +28,7 @@ run_step "clippy" cargo clippy --all-targets -- -D warnings
 run_step "clippy (live)" cargo clippy --features live --all-targets -- -D warnings
 run_step "test"   cargo test
 run_step "build"  cargo build
+run_step "doc"    env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 echo "==="
 if [ "$failures" -eq 0 ]; then

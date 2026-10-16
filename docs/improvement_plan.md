@@ -655,6 +655,13 @@ Four are public documentation that links to private items (`WEDGE_GRACE`, `GetTo
 
 **Acceptance.** The new verify step passes.
 
+**Status:** done. The six `Bot` links in `src/bot/event.rs` are now
+`crate::Bot` paths, and the links to private items (`Bot::subscribe`,
+`WEDGE_GRACE`, `GetToBlockGoal`, `NearXZGoal`, `ScoreboardState`) are
+plain code text. `verify.sh` gained a `doc` step
+(`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`); it passes with zero
+warnings.
+
 ### F2. Incorrect comments (P3)
 
 **Problem.** These comments say that `parking_lot` is not a dependency. It is a dev-dependency:

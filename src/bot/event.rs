@@ -19,7 +19,7 @@ use crate::{
     scoreboard::{BossBar, ScoreBoard, ScoreItem, ScoreboardSlot, Team},
     world::Block,
 };
-/// Events emitted by a [`Bot`], mirroring mineflayer's `bot.on(...)` events.
+/// Events emitted by a [`crate::Bot`], mirroring mineflayer's `bot.on(...)` events.
 ///
 /// Bridged from azalea's [`Event`](azalea::Event) enum; variant payloads use
 /// azalea's types so no data is lost in translation.
@@ -234,7 +234,7 @@ pub enum BotEvent {
     /// `ClientboundGamePacket`, so config-phase pushes (server.properties /
     /// proxy packs — the dominant modern path) never reach it. azalea's
     /// `AcceptResourcePacksPlugin` also auto-accepts every push (see
-    /// [`Bot::deny_resource_pack`]/api-parity.md).
+    /// [`crate::Bot::deny_resource_pack`]/api-parity.md).
     ResourcePack {
         /// The pack's wire UUID.
         uuid: String,
@@ -437,17 +437,17 @@ pub enum BotEvent {
         /// The vehicle we were riding.
         vehicle: Option<azalea::EntityRef>,
     },
-    /// `diggingCompleted` — a [`Bot::dig`] finished; the payload is the new
+    /// `diggingCompleted` — a [`crate::Bot::dig`] finished; the payload is the new
     /// (usually air) block at the dug position, like upstream's `newBlock`.
     DiggingCompleted(Block),
-    /// `diggingAborted` — a [`Bot::dig`] ended without breaking the block.
+    /// `diggingAborted` — a [`crate::Bot::dig`] ended without breaking the block.
     DiggingAborted {
         /// The block that was being dug.
         block: Block,
         /// Why the dig ended.
         reason: crate::interact::DigAbortReason,
     },
-    /// `blockPlaced` — the server confirmed a [`Bot::place_block`].
+    /// `blockPlaced` — the server confirmed a [`crate::Bot::place_block`].
     BlockPlaced {
         /// The block previously at the position, if observed.
         old: Option<Block>,
@@ -455,7 +455,7 @@ pub enum BotEvent {
         new: Block,
     },
     /// `entityPlaced` (undocumented upstream) — the entity a
-    /// [`Bot::place_entity`] spawned.
+    /// [`crate::Bot::place_entity`] spawned.
     EntityPlaced(azalea::EntityRef),
     /// `goal_updated` — `pathfinder.set_goal` installed a new goal
     /// (upstream emits `(goal, dynamic)`).

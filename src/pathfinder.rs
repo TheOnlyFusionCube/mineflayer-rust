@@ -24,7 +24,7 @@
 //!   and drop inside one gap — no `is_calculating`/goal edges survive.
 //!   The bridge flags a *steady-state wedge* instead: facade goal set
 //!   while the ECS shows no goal, no calc, and no path, persisting past
-//!   [`WEDGE_GRACE`].
+//!   `WEDGE_GRACE`.
 //! - upstream's `thinkTimeout` bounds one A* end-to-end, but azalea
 //!   splits the search into a fresh `max_timeout` per repath, so the
 //!   budget is tracked cumulatively per goal issue — partial progress
@@ -173,7 +173,7 @@ pub enum Goal {
     Block(BlockPos),
     /// `goals.GoalGetToBlock(x, y, z)` — stand directly adjacent to the
     /// block (upstream `isEnd`: `|dx| + |dz| + |dy<0?dy+1:dy| == 1`).
-    /// Custom [`GetToBlockGoal`] — azalea's `ReachBlockPosGoal` is the
+    /// Custom `GetToBlockGoal` — azalea's `ReachBlockPosGoal` is the
     /// *LookAtBlock* analog (reach/LOS, not adjacency).
     GetToBlock(BlockPos),
     /// `goals.GoalXZ(x, z)` → [`goals::XZGoal`].
@@ -183,7 +183,7 @@ pub enum Goal {
         /// Target z coordinate.
         z: i32,
     },
-    /// `goals.GoalNearXZ(x, z, range)` → [`NearXZGoal`] (azalea has no
+    /// `goals.GoalNearXZ(x, z, range)` → `NearXZGoal` (azalea has no
     /// xz-radius goal; ours mirrors upstream's octagonal heuristic and
     /// squared-range `isEnd`).
     NearXZ {

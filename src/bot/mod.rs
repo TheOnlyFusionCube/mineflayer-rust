@@ -587,9 +587,9 @@ impl Bot {
     /// Each call returns an independent receiver; slow consumers see
     /// [`broadcast::error::RecvError::Lagged`] rather than blocking the bot.
     ///
-    /// Crate authors: inside the crate, use
-    /// [`Bot::subscribe`] for waits. This method is the public API, and the
-    /// first call hands out the bootstrap receiver.
+    /// Crate authors: inside the crate, use the private `subscribe` for
+    /// waits. This method is the public API, and the first call hands out
+    /// the bootstrap receiver.
     pub fn events(&self) -> broadcast::Receiver<BotEvent> {
         if let Some(rx) = self.bootstrap_events.lock().unwrap().take() {
             return rx;
