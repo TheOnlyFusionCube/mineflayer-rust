@@ -28,10 +28,12 @@ use crate::common::wait_for;
 use azalea::{
     BlockPos, Vec3,
     entity::{EntityKindComponent, Position, inventory::Inventory},
+    protocol::packets::game::s_interact::InteractionHand,
     registry::builtin::{BlockKind, EntityKind},
 };
 use mineflayer::{
     Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, entity::EntityExt,
+    interact::PlaceOpts,
 };
 
 /// Point the held item at the first non-empty hotbar slot; false while the
@@ -352,45 +354,19 @@ async fn dig_place_activate_stop() {
         "aborted dig still broke the block"
     );
 
-    eprintln!("[phase] hop out of hole");
-    // ---- hop out of the first hole ----------------------------------------
-    // face the original ground level and auto-jump out
-    bot.client().look_at(Vec3::new(
-        below_pos.x as f64,
-        below_pos.y as f64 + 2.,
-        below_pos.z as f64 + 2.,
-    ));
-    bot.set_control_state(Control::Forward, true);
-    bot.set_control_state(Control::Jump, true);
-    // Out means standing on the ground with the hitbox clear of the hole
-    // column. A height check alone also holds at the top of a jump made
-    // inside the hole; a placement into the hole then hits the bot's own
-    // falling hitbox and the server refuses it (E5 run 7).
-    let clear_of_hole = |p: Vec3| {
-        const HALF_WIDTH: f64 = 0.3;
-        let (hx, hz) = (below_pos.x as f64, below_pos.z as f64);
-        let clear_x = p.x + HALF_WIDTH <= hx || p.x - HALF_WIDTH >= hx + 1.;
-        let clear_z = p.z + HALF_WIDTH <= hz || p.z - HALF_WIDTH >= hz + 1.;
-        clear_x || clear_z
-    };
-    let mut out = false;
-    for _ in 0..60 {
-        let p = bot.position();
-        if p.y >= below_pos.y as f64 + 1.
-            && clear_of_hole(p)
-            && bot.entity().on_ground() == Some(true)
-        {
-            out = true;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    bot.set_control_state(Control::Forward, false);
-    bot.set_control_state(Control::Jump, false);
-    assert!(out, "bot couldn't climb out of the hole");
-
-    eprintln!("[phase] place drop back");
+    eprintln!("[phase] pillar-place the drop back");
     // ---- place the drop back into the hole --------------------------------
+    // The dig phase digs down a shaft, so every side of the hole is a wall
+    // and the bot stands in the hole cell itself: the only way to fill it
+    // is a pillar jump (place under the feet at the top of a jump). The
+    // place goes out once, without the default one-tick look wait, and only
+    // near the top of the jump (feet at least 0.2 block above the hole
+    // cell; the apex is about 1.25). The server checks the place against
+    // the position of the last movement packet, which can be one tick
+    // older than `bot.position()`; a place checked against a position
+    // inside the cell hits the bot's own hitbox and the server refuses it
+    // (E5 series 1, run 7; 1.1 still failed 1 run in 5).
+    //
     // reference = a solid side-wall of the hole, face pointing into it so
     // `dest` is the empty hole cell itself.
     let sides = [
@@ -423,32 +399,47 @@ async fn dig_place_activate_stop() {
             Vec3::new(0., 0., 1.),
         ),
     ];
-    let mut placed = None;
-    let mut side_errs = Vec::new();
-    for (ref_pos, face) in sides {
-        let Some(reference) = bot.block_at(ref_pos) else {
-            side_errs.push(format!("{ref_pos:?}: unloaded"));
-            continue;
-        };
-        if reference.state.is_air() {
-            side_errs.push(format!("{ref_pos:?}: air"));
-            continue;
+    let (reference, face) = sides
+        .into_iter()
+        .find_map(|(ref_pos, face)| {
+            bot.block_at(ref_pos)
+                .filter(|b| !b.state.is_air())
+                .map(|b| (b, face))
+        })
+        .unwrap_or_else(|| panic!("no solid wall beside the hole {below_pos:?}"));
+    bot.set_control_state(Control::Jump, true);
+    let mut high = false;
+    for _ in 0..80 {
+        if bot.position().y >= below_pos.y as f64 + 1.2 {
+            high = true;
+            break;
         }
-        match bot.place_block(&reference, face).await {
-            Ok(new) => {
-                placed = Some(new);
-                break;
-            }
-            Err(e) => side_errs.push(format!("{ref_pos:?}: {e:?}")),
-        }
+        bot.wait_for_ticks(1).await.expect("ticks stopped");
     }
-    let placed = placed.unwrap_or_else(|| {
-        panic!(
-            "place_block failed on every side of the hole {below_pos:?} (dug {}; held {:?}): {side_errs:?}",
-            below.name(),
-            bot.held_item().map(|i| i.name())
+    bot.set_control_state(Control::Jump, false);
+    assert!(
+        high,
+        "the bot never jumped clear of the hole cell {below_pos:?}"
+    );
+    let placed = bot
+        .place_block_opts(
+            &reference,
+            face,
+            &PlaceOpts {
+                force_look: ForceLook::Force,
+                swing_arm: Some(InteractionHand::MainHand),
+                ..Default::default()
+            },
         )
-    });
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "pillar place into the hole {below_pos:?} failed: {e:?} (dug {}; held {:?}; feet {:?})",
+                below.name(),
+                bot.held_item().map(|i| i.name()),
+                bot.position()
+            )
+        });
     assert_eq!(placed.pos, below_pos, "placed block isn't the hole");
     match wait_for(
         &mut rx,
