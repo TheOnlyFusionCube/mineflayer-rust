@@ -652,6 +652,19 @@ The code repeats `self.bot.shared.window_data.lock().unwrap().windows.get(&id)` 
 
 **Acceptance.** No production file has more than approximately 1,000 lines before its tests. `scripts/verify.sh` passes after each step.
 
+**Status:** done. The six extractions are in six commits (D1.1 to D1.6).
+The thermo notes are now in `docs/reviews/`. Changes from the plan:
+
+- The pathfinder goal child is `goal.rs`, not `goals.rs`. The parent
+  imports azalea's `pathfinder::goals` module, and the two names collide.
+- `window_types/book.rs` holds book editing and the command block.
+- The repeated window-record lookups use one private accessor,
+  `Bot::with_window_record`.
+
+Largest production parts after the change: `pathfinder/mod.rs` (1,031
+lines), `craft.rs` (972), and `world/mod.rs` (927). `craft.rs` was not in
+the plan.
+
 ### D2. One convention for domain state storage (P3)
 
 **Problem.**
