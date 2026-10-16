@@ -962,6 +962,10 @@ An earlier review read the wrong source because of this difference.
 5. Run the full live suite on a reset world.
 6. Update the version rows in `docs/api-parity.md`.
 
+**Status:** done. The checklist is `docs/version_upgrade.md`. It also
+gives the table of the 66 clientbound packets that the port decodes itself
+and the module that owns each one.
+
 ## 11. Sequence and dependencies
 
 | Step | Items | Condition |
