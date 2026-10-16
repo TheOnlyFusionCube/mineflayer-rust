@@ -63,5 +63,8 @@ U0 (pilot) → U1 → U2..U5 sequential (core bridge consumers) → U6..U10 most
 ## Open risks
 
 - ECS-event coverage for tier-2 packet bridge decoding (packet types must be public in azalea-protocol — verified during U1; fallback: file upstream issue, mark rows diverges).
+  Status: closed. The packet types are public; the bridge decodes them, and `docs/api-parity.md` has zero `pending` rows.
 - Villager/enchanting/anvil window semantics may need raw click choreography mineflayer implements itself; U9 briefs must read mineflayer's plugin source for the transaction sequence, not just api.md.
+  Status: closed. `src/window_types/` implements the upstream click sequences; the parity rows record each divergence.
 - MC version skew: crates.io azalea is mc26.1, repo HEAD is mc26.2. Live fixture jar must match the azalea we link — resolve version in U0.
+  Status: closed. The build uses azalea `ddef371` (`0.16.0+mc26.1`), and the fixture jar is 26.1 (`.live/version.txt`). See `docs/decisions.md` (D-pin).

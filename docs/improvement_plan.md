@@ -886,6 +886,12 @@ The finish reports are in `.superpowers/`, which git ignores.
 
 **Acceptance.** Each ruling that the code depends on is in a tracked file.
 
+**Status:** done. Each of the three open risks in `docs/PORT-PLAN.md` has
+a "Status: closed" line. `docs/decisions.md` records R1 to R7, the azalea
+pin, the toolchain pin, and the rulings from this plan (B1, B8, B9, C1,
+D2). It also records the architecture decisions that section 12 tells you
+not to change.
+
 ## 9. Phase G: performance
 
 ### G1. Performance measurements before changes (P3)
