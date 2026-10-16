@@ -244,7 +244,7 @@ The loop moves and drops items until the source has no items.
 **Status:** done. A negative count returns
 `Operation("transfer count must be >= 0")` before any click. The planned
 "error when less than 1" was narrowed to negative only after the upstream
-comparison step: upstream's `count === 0` branch is a made-up no-op
+comparison step: upstream's `count === 0` branch is a cleanup-only no-op
 (cursor cleanup, no clicks), and the parity row now records both
 behaviors (negative = divergence, zero = upstream no-op).
 
@@ -755,6 +755,9 @@ warnings.
 
 **Procedure.** Correct the three comments. If B8 Option 1 is chosen, change them again in that commit.
 
+**Status:** done. The B8 commit removed the three incorrect comments.
+A search for "not a direct dependency" in `src/` finds no result.
+
 ### F3. Package metadata, `LICENSE`, and tracked junk files (P2)
 
 **Problem.**
@@ -774,14 +777,20 @@ warnings.
 
 **Acceptance.** `cargo package --list` shows `LICENSE` and no `.DS_Store`.
 
+**Correction (review of the F3 commit):** the first F3 commit set
+`repository` to the upstream JavaScript repository and `rust-version` to
+1.85. Both values were incorrect. The port has no public remote, so the
+`repository` field is removed. `rust-version` is now 1.101, the version of
+the pinned nightly. A stable compiler cannot build azalea.
+
 **Status:** done, except the final `cargo clean` record. `target/` was
 36 GB with the twelve live binaries and 41 GB after E1 plus the items
 before it; the clean-and-rebuild measurement is deferred to the end of
 the plan so the remaining items keep the warm build cache (running it
 earlier would force a full azalea rebuild for every following item).
 `LICENSE` carries the port notice plus the mineflayer and azalea MIT
-texts; `Cargo.toml` has `readme`, `repository`, `rust-version`,
-`keywords`, and `categories`; `docs/.DS_Store` is untracked and deleted.
+texts; `Cargo.toml` has `readme`, `rust-version`, `keywords`, and
+`categories`; `docs/.DS_Store` is untracked and deleted.
 `cargo package --list --allow-dirty` lists `LICENSE` and no
 `.DS_Store`.
 

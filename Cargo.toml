@@ -5,8 +5,10 @@ edition = "2024"
 description = "The mineflayer bot API, ported to Rust on top of azalea"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/prismarinejs/mineflayer"
-rust-version = "1.85"
+# No `repository`: the port has no public remote yet. `rust-version` is the
+# pinned nightly's version (rust-toolchain.toml); a stable 1.101 cannot build
+# azalea, so the field is a floor, not a promise of stable support.
+rust-version = "1.101"
 keywords = ["minecraft", "bot", "mineflayer", "azalea"]
 categories = ["games"]
 
