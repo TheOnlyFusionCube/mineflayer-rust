@@ -417,11 +417,11 @@ impl BotBuilder {
                     local.await;
                 });
             })
-            .map_err(|_| Error::Connect("could not spawn the bot thread".into()))?;
+            .map_err(|_| Error::Runtime("could not spawn the bot thread".into()))?;
 
         init_rx
             .await
-            .map_err(|_| Error::Connect("bot thread exited during connect".into()))?
+            .map_err(|_| Error::Runtime("bot thread exited during connect".into()))?
     }
 
     /// Join the server and wire up the event bridge. Runs inside the bot
@@ -522,7 +522,10 @@ async fn join_azalea(
 )> {
     use azalea::protocol::address::ResolvableAddr as _;
 
-    let address = address.resolve().await?;
+    let address = address
+        .resolve()
+        .await
+        .map_err(|e| Error::Connect(e.to_string()))?;
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     // app construction (default plugins + the dig-abort reconciler) lives
     // in `client_app` so tests run the production wiring — see its contract

@@ -9,9 +9,13 @@
 #[non_exhaustive]
 pub enum Error {
     /// The server address could not be resolved or the connection failed.
-    /// Wraps the error returned by [`azalea::Client::join`].
+    /// Carries the message so no third-party error type is in this API.
     #[error("connect failed: {0}")]
-    Connect(#[from] azalea::protocol::resolve::ResolveError),
+    Connect(String),
+    /// The bot's runtime (thread/local task set) could not start, or
+    /// exited during connect.
+    #[error("bot runtime failed: {0}")]
+    Runtime(String),
     /// Microsoft authentication failed (device-code flow or token refresh).
     /// Wraps [`azalea::auth::AuthError`].
     #[error("authentication failed: {0}")]
@@ -40,3 +44,27 @@ pub enum Error {
 
 /// Convenience alias for `Result<T, mineflayer::Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `Connect` carries a message, so no third-party (hickory) type is in
+    /// the public API; thread-start failures are their own variant.
+    #[test]
+    fn connect_and_runtime_hold_strings() {
+        let connect: String = match Error::Connect("bad address".to_string()) {
+            Error::Connect(message) => message,
+            other => panic!("expected Connect, got {other:?}"),
+        };
+        assert_eq!(connect, "bad address");
+        assert_eq!(
+            Error::Connect("bad address".to_string()).to_string(),
+            "connect failed: bad address"
+        );
+        assert_eq!(
+            Error::Runtime("could not spawn the bot thread".to_string()).to_string(),
+            "bot runtime failed: could not spawn the bot thread"
+        );
+    }
+}

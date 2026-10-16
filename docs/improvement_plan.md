@@ -392,6 +392,11 @@ That type is a third-party type in the public API. A change in hickory is a brea
 
 **Acceptance.** No hickory type is in the public API of `mineflayer::Error`.
 
+**Status:** done. `Error::Connect` holds a `String`; the `#[from]
+ResolveError` is gone (the resolve site maps the error to its message),
+and both bot-thread failures use the new `Error::Runtime(String)`. The
+regression test pins the payload type and both display formats.
+
 ### B3. Public signatures use azalea types that are not re-exported (P2)
 
 **Problem.**
