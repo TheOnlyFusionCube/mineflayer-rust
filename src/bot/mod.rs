@@ -111,7 +111,7 @@ pub(crate) struct BotShared {
 }
 
 impl BotShared {
-    fn new(events: broadcast::Sender<BotEvent>) -> Self {
+    pub(crate) fn new(events: broadcast::Sender<BotEvent>) -> Self {
         Self {
             quit_reason: Arc::new(Mutex::new(None)),
             end_reason: Arc::new(Mutex::new(None)),

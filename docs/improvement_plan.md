@@ -295,6 +295,13 @@ Waits without a timeout then wait until the shutdown signal, or forever.
 
 **Acceptance.** Each bridge exit sends exactly one `End` event.
 
+**Status:** done. After the loop, `spawn` emits `End` with the stored
+quit reason or `"socketClosed"` when `state.ended` is false, guarded so a
+`Disconnect` that already emitted stays the only `End`. The regression
+test closes the azalea channel with no disconnect event: baseline never
+delivers `End` (verified), the fixed bridge delivers exactly one and
+retires the driver shutdown sender.
+
 ### A7. `tab_complete` keeps an entry when the caller cancels (P3)
 
 **Problem.**

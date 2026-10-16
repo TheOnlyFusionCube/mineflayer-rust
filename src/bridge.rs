@@ -208,6 +208,21 @@ pub(crate) fn spawn(
         // `ticks.recv()` — that broadcast's sender lives in the World,
         // which their own `Client` handle keeps alive, so the channel
         // never closes on its own.
+        //
+        // The channel can close without a `Disconnect`/`ConnectionFailed`
+        // event (azalea's runner just stops), so emit the same `End` a
+        // local close would ("socketClosed", or the stored quit reason)
+        // before retiring the drivers — an `end` wait must never hang on
+        // a signal that never comes.
+        if !state.ended {
+            state.ended = true;
+            let reason = quit_reason
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or_else(|| "socketClosed".to_string());
+            let _ = events.send(BotEvent::End(reason));
+        }
         drop(shutdown);
         client.exit();
     });
@@ -958,5 +973,49 @@ mod tests {
                 .any(|e| matches!(e, BotEvent::ChatPattern { name, .. } if name == "probe")),
             "expected a ChatPattern event, got {out:?}"
         );
+    }
+
+    /// The azalea channel can close without a `Disconnect` event (its
+    /// runner stops). The bridge must still emit `End` — upstream's socket
+    /// close — or a wait on `End` never resolves.
+    #[tokio::test]
+    async fn channel_close_without_disconnect_emits_end() {
+        let (events_tx, _) = tokio::sync::broadcast::channel(8);
+        let shared = crate::bot::BotShared::new(events_tx);
+        let mut end_rx = shared.events.subscribe();
+        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_alive_tx, alive_rx) = watch::channel(());
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+        spawn(
+            despawned(),
+            input_rx,
+            shared,
+            BridgeOptions {
+                client_information: None,
+                brand: None,
+                check_timeout_interval: std::time::Duration::from_secs(30),
+            },
+            alive_rx,
+            shutdown_tx,
+        );
+        // close the azalea event channel without a Disconnect event
+        drop(input_tx);
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), end_rx.recv())
+            .await
+            .expect("the bridge closed without emitting End")
+            .expect("broadcast channel closed");
+        match event {
+            BotEvent::End(reason) => assert_eq!(reason, "socketClosed"),
+            other => panic!("expected End, got {other:?}"),
+        }
+        // exactly one End (the bridge owns every sender clone, so the
+        // channel may also have closed by now)
+        assert!(matches!(
+            end_rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty
+                | tokio::sync::broadcast::error::TryRecvError::Closed)
+        ));
+        // and the bridge retired the drivers
+        assert!(shutdown_rx.changed().await.is_err());
     }
 }
