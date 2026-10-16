@@ -672,6 +672,15 @@ The binary names mix `-` and `_` (`live-chat`, `live_misc`).
 
 **Acceptance.** `cargo test --features live -- --ignored --test-threads=1` runs all 14 tests in one binary.
 
+**Status:** done. `tests/live/main.rs` declares the twelve former
+binaries as modules; `tests/live/common.rs` carries the shared helpers
+(`wait_for` — was copied in ten files, `collect_until`,
+`horizontal_distance`); `Cargo.toml` has one `[[test]] live` entry; the
+per-file doc comments name the one-binary command. The duplicated
+`until()` variants (craft polls at 100 ms, plugins at 150 ms) and the
+craft-only fresh-username `connect` stayed local — not identical. Live
+run: one `tests/live/main.rs` binary, 14 passed, 116 s.
+
 ### E2. Regression tests for the A items (P1)
 
 Each A item gives its test. Do not merge an A item without its test.

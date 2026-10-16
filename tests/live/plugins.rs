@@ -17,7 +17,7 @@
 //! Only compiled with `--features live`; run with:
 //!
 //! ```sh
-//! bash scripts/live-server.sh && cargo test --features live --test live_plugins -- --ignored
+//! bash scripts/live-server.sh && cargo test --features live -- --ignored --test-threads=1 (single `live` binary)
 //! ```
 
 #![cfg(feature = "live")]
@@ -30,31 +30,9 @@ use azalea::{
     registry::builtin::{BlockKind, EntityKind, ItemKind},
 };
 use mineflayer::{Bot, BotEvent, CollectTarget, EquipDest, FindBlocksOpts};
-use tokio::sync::{
-    broadcast::{Receiver, error::RecvError},
-    mpsc,
-};
+use tokio::sync::{broadcast::error::RecvError, mpsc};
 
-/// Receive events until one satisfies `pred` (`Lagged` just re-reads).
-/// Panics on timeout or a closed stream.
-async fn wait_for(
-    rx: &mut Receiver<BotEvent>,
-    timeout: Duration,
-    pred: impl Fn(&BotEvent) -> bool,
-    what: &str,
-) -> BotEvent {
-    tokio::time::timeout(timeout, async {
-        loop {
-            match rx.recv().await {
-                Ok(event) if pred(&event) => return event,
-                Ok(_) | Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => panic!("event stream closed while waiting for {what}"),
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out after {timeout:?} waiting for {what}"))
-}
+use crate::common::wait_for;
 
 /// Forward only matching events into an unbounded channel.
 ///

@@ -22,40 +22,20 @@
 //! Only compiled with `--features live`; run it with:
 //!
 //! ```sh
-//! bash scripts/live-server.sh && cargo test --features live --test live-windows -- --ignored
+//! bash scripts/live-server.sh && cargo test --features live -- --ignored --test-threads=1 (single `live` binary)
 //! ```
 
 #![cfg(feature = "live")]
 
 use std::time::Duration;
 
+use crate::common::wait_for;
 use azalea::{
     BlockPos,
     entity::{EntityKindComponent, Position, inventory::Inventory},
     registry::builtin::{BlockKind, EntityKind},
 };
 use mineflayer::{Bot, BotEvent, CommandBlockOpts, FindBlocksOpts};
-use tokio::sync::broadcast::{Receiver, error::RecvError};
-
-/// Receive events until one satisfies `pred` (`Lagged` just re-reads).
-async fn wait_for(
-    rx: &mut Receiver<BotEvent>,
-    timeout: Duration,
-    pred: impl Fn(&BotEvent) -> bool,
-    what: &str,
-) -> BotEvent {
-    tokio::time::timeout(timeout, async {
-        loop {
-            match rx.recv().await {
-                Ok(event) if pred(&event) => return event,
-                Ok(_) | Err(RecvError::Lagged(_)) => {}
-                Err(RecvError::Closed) => panic!("event stream closed while waiting for {what}"),
-            }
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("timed out after {timeout:?} waiting for {what}"))
-}
 
 /// The nearest loaded non-player, non-villager entity, if any.
 fn non_villager_entity(bot: &Bot) -> Option<azalea::EntityRef> {

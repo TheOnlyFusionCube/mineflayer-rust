@@ -39,62 +39,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [[test]]
 name = "live"
-path = "tests/live/lifecycle.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live_movement"
-path = "tests/live/movement.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live-chat"
-path = "tests/live/chat.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live_misc"
-path = "tests/live/misc.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live_world"
-path = "tests/live/world.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live-entity"
-path = "tests/live/entity.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live_interact"
-path = "tests/live/interact.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live_pathfinder"
-path = "tests/live/pathfinder.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live-inventory"
-path = "tests/live/inventory.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live-windows"
-path = "tests/live/windows.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live-craft"
-path = "tests/live/craft.rs"
-required-features = ["live"]
-
-[[test]]
-name = "live_plugins"
-path = "tests/live/plugins.rs"
+path = "tests/live/main.rs"
 required-features = ["live"]
 
 # NOTE: a crate that depends on this one must repeat this table in its

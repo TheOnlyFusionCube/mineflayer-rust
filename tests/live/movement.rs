@@ -4,49 +4,15 @@
 //! Only compiled with `--features live`; run it with:
 //!
 //! ```sh
-//! bash scripts/live-server.sh && cargo test --features live --test live_movement -- --ignored
+//! bash scripts/live-server.sh && cargo test --features live -- --ignored --test-threads=1 (single `live` binary)
 //! ```
 
 #![cfg(feature = "live")]
 
 use std::time::Duration;
 
+use crate::common::{collect_until, horizontal_distance};
 use mineflayer::{Bot, BotEvent, Control};
-use tokio::sync::broadcast::{Receiver, error::RecvError};
-
-/// Drain events until `pred` matches, returning every event consumed —
-/// the caller can assert on the whole stream (e.g. ForcedMove arriving on
-/// the way to Spawn), not just the matched event.
-async fn collect_until(
-    rx: &mut Receiver<BotEvent>,
-    timeout: Duration,
-    pred: impl Fn(&BotEvent) -> bool,
-    what: &str,
-) -> Vec<BotEvent> {
-    let mut seen = Vec::new();
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        match tokio::time::timeout_at(deadline, rx.recv()).await {
-            Ok(Ok(event)) => {
-                let done = pred(&event);
-                seen.push(event);
-                if done {
-                    return seen;
-                }
-            }
-            Ok(Err(RecvError::Lagged(_))) => {}
-            Ok(Err(RecvError::Closed)) => {
-                panic!("event stream closed while waiting for {what}")
-            }
-            Err(_) => panic!("timed out after {timeout:?} waiting for {what}"),
-        }
-    }
-}
-
-fn horizontal_distance(a: azalea::Vec3, b: azalea::Vec3) -> f64 {
-    let (dx, dz) = (a.x - b.x, a.z - b.z);
-    (dx * dx + dz * dz).sqrt()
-}
 
 #[tokio::test]
 #[ignore = "requires the live fixture server on localhost:25566"]
