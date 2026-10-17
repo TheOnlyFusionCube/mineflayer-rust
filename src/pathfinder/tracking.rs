@@ -333,7 +333,7 @@ pub(crate) fn bridge_events(
                 // `dynamic` goal can't resurrect the dead search into a
                 // busy re-path loop. No `path_stop`: like upstream, the
                 // `path_update` status is the whole report.
-                stop_pathfinding_patched(client, false);
+                client.stop_pathfinding();
                 facade_mut(client, |f| {
                     if f.goal_gen == now.facade_gen {
                         f.last_failure = search_failure;
@@ -837,7 +837,7 @@ mod tests {
         facade_mut(&client, |f| f.goal = None);
         // a bridge tick in this window sees an ownerless installed goal
         assert!(bridge_events(&client, &mut tracker, &Event::Tick).is_empty());
-        stop_pathfinding_patched(&client, true);
+        client.force_stop_pathfinding();
         let out = bridge_events(&client, &mut tracker, &Event::Tick);
         assert!(
             !out.iter().any(|e| matches!(e, BotEvent::PathUpdate { .. })),

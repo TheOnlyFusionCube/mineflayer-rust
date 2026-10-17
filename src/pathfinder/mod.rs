@@ -470,7 +470,7 @@ impl Pathfinder<'_> {
             Error::InvalidState("pathfinder facade is missing — client entity is gone".into())
         })?;
         if satisfied {
-            stop_pathfinding_patched(&client, false);
+            client.stop_pathfinding();
         }
         self.bot.emit_event(BotEvent::GoalUpdated {
             goal: goal.clone(),
@@ -566,19 +566,19 @@ impl Pathfinder<'_> {
         // idle stop emits nothing
         let active = !client.is_goto_target_reached()
             || facade(client, |f| f.goal.is_some()).unwrap_or(false);
-        // the facade write lands BEFORE the ECS patch: a bridge tick in
-        // the opposite order sees `calc_finished && goal_cleared` with
-        // the facade goal still set and reports a phantom `NoPath` a
-        // pending `goto` would trust over `PathStopped` (N-3). This
-        // order shows an ownerless installed goal — every arm gates on
-        // the facade goal, so it's silent.
+        // the facade write lands BEFORE the engine's stop handler runs:
+        // the opposite order lets a bridge tick see `calc_finished &&
+        // goal_cleared` with the facade goal still set and report a
+        // phantom `NoPath` a pending `goto` would trust over `PathStopped`
+        // (N-3). This order shows an ownerless installed goal — every arm
+        // gates on the facade goal, so it's silent.
         let stopped = facade_mut(client, |f| {
             cancel_watcher(f);
             f.last_failure = None;
             f.goal.take()
         })
         .flatten();
-        stop_pathfinding_patched(client, true);
+        client.force_stop_pathfinding();
         if active {
             self.bot.emit_event(BotEvent::PathStop { goal: stopped });
         }
@@ -842,30 +842,6 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
 
 /// Stop the engine's pathfinder (`force` = halt mid-move) and patch the
 /// component state its 0.16 stop handler drops:
-/// `handle_stop_pathfinding_event` removes `ComputePath` without
-/// resetting `is_calculating`, and with a calculation in flight but no
-/// `ExecutingPath` its `(&mut Pathfinder, &mut ExecutingPath)` query
-/// fails outright so `goal` isn't even cleared — either leaves
-/// `is_goto_target_reached`/`is_thinking` (and the `goto` future on
-/// them) stuck until the next goto.
-///
-/// Workaround for the engine (0.16) (no upstream issue filed); drop the
-/// component write once a released the engine clears `is_calculating` (and
-/// handles the no-`ExecutingPath` case) in
-/// `handle_stop_pathfinding_event` — verify against the engine's
-/// `src/pathfinder/mod.rs`.
-fn stop_pathfinding_patched(client: &mineflayer_engine::Client, force: bool) {
-    if force {
-        client.force_stop_pathfinding();
-    } else {
-        client.stop_pathfinding();
-    }
-    let _ = client.try_query_self::<&mut pathfinder::Pathfinder, _>(|mut p| {
-        p.goal = None;
-        p.is_calculating = false;
-    });
-}
-
 /// The [`Goal::Follow`] driver: every tick, re-issue a radius goal on the
 /// entity's new block position (the engine merges it into the running path).
 /// Ends silently when the facade goal is gone or its generation moved on
@@ -961,7 +937,7 @@ fn follow_driver(
         let Some(goal) = stopped else {
             return;
         };
-        stop_pathfinding_patched(&client, false);
+        client.stop_pathfinding();
         bot.emit_event(BotEvent::PathStop { goal: Some(goal) });
     })
 }
