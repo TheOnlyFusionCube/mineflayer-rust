@@ -70,3 +70,25 @@ reconciler (`reconcile_aborted_dig`, an exclusive system) has an
 indeterminate order against 8 other `GameTick` systems. Only its order
 before `MiningSystems` matters, so the system is now marked
 `ambiguous_with_all()`. The warning no longer shows.
+
+## B3 re-measurement (2026-10-17)
+
+The misc decode now takes the ECS write lock only for `ResourcePackPush`
+(every other clientbound packet builds its events without it — the
+bridge used to take the lock ~5,000 times a second at the peak). The
+`event_rate` probe was re-run on a reset fixture with the same method:
+
+| Measurement | Result |
+|---|---|
+| Idle: events | 155,944 in 120 s; mean 1,299.5/s; peak 9,626/s |
+| Busy (200 chickens): events | 233,874 in 180 s; mean 1,299.3/s; peak 3,783/s |
+| `Lagged` seen by the probe | 0 in both phases |
+| `BotEvent::Packet` share | 47% idle, 57% busy |
+| `Bot::entities()` | 8.9 µs median (174 entities) |
+| `find_blocks` (predicate, distance 64) | 6.8 ms median |
+
+The busy phase lost most of its flock to vanilla's entity cramming (27 of
+the 200 chickens were still alive at the `/kill`), so it is a lighter
+load than the original run above; the idle rate is in the same range
+(1,299/s vs 1,411/s). No `Lagged` and no throughput regression from the
+lock change.

@@ -153,17 +153,22 @@ fn handle_packet(
     if let Some(events) = scoreboard::handle_for(scoreboard, packet) {
         return events;
     }
-    let mut ecs = client.ecs.write();
-    let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
-        return vec![];
-    };
-    if entity.get_mut::<MiscState>().is_none() {
-        entity.insert(MiscState::default());
+    // Only `ResourcePackPush` writes misc state; every other packet
+    // builds its events without the exclusive ECS lock (the bridge used
+    // to take it for every clientbound packet — about 5,000 times a
+    // second at the measured peak). `connect` inserts `MiscState` before
+    // the first packet, so there is no insert-if-missing branch.
+    if matches!(packet, ClientboundGamePacket::ResourcePackPush(_)) {
+        let mut ecs = client.ecs.write();
+        let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
+            return vec![];
+        };
+        let Some(mut state) = entity.get_mut::<MiscState>() else {
+            return vec![];
+        };
+        return handle_packet_state(&mut state, packet, entity_pos);
     }
-    let Some(mut state) = entity.get_mut::<MiscState>() else {
-        return vec![];
-    };
-    handle_packet_state(&mut state, packet, entity_pos)
+    handle_packet_state(&mut MiscState::default(), packet, entity_pos)
 }
 
 /// The pure packet → (state, events) reducer. `entity_pos` is the resolved
@@ -1108,10 +1113,11 @@ mod tests {
     }
 
     #[test]
-    fn sound_entity_after_self_despawn_is_dropped() {
+    fn sound_entity_after_self_despawn_uses_a_default_position() {
         let client = crate::test_util::despawned_client();
         // the sound position resolves through our own entity's index — once
-        // it is despawned the lookup must miss, not panic.
+        // it is despawned the lookup must miss, not panic; the event still
+        // goes out (the reducer needs no ECS state).
         let out = handle_packet(
             &client,
             &Default::default(),
@@ -1124,7 +1130,10 @@ mod tests {
                 seed: 0,
             }),
         );
-        assert!(out.is_empty());
+        assert!(matches!(
+            &out[..],
+            [BotEvent::SoundHeard { pos, .. }] if *pos == Vec3::ZERO
+        ));
     }
 
     /// `fish()` must not park on disconnect: `End` is the in-band exit —
