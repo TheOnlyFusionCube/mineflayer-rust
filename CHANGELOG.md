@@ -18,6 +18,36 @@
   after the update asks for the device-code login again (or rename the
   old cache file to keep the tokens).
 - The packet-log env var is `MINEFLAYER_DO_NOT_CUT_OFF_PACKET_LOGS`.
+- `mineflayer::engine` no longer has `swarm`, `ClientBuilder`, `JoinOpts`,
+  `auto_reconnect`, `NoState`, `HandleFn`, or `BoxHandleFn`. The bot never
+  used them; join with `Client::join` or `StartClientOpts`.
+- `engine::entity::inventory::Inventory` has two more public fields
+  (`early_content`, `last_closed`), so a struct literal needs
+  `..Default::default()`.
+
+### Added
+
+- `engine::ClientPlugins` and `StartClientOpts::new_with_plugins`: build
+  the client app with plugins added or disabled.
+- `engine::mining::CancelMiningEvent`: cancel queued and live mining,
+  ordered against the start messages.
+- `engine::Event::Pathfinder` carries pathfinder results.
+- `engine::registry::tags::item_tag_by_name`.
+
+### Changed
+
+- The engine applies the inventory packets the bot used to patch in:
+  `carried`/`state_id` from content and slot packets for the active menu,
+  `set_player_inventory`, `set_cursor_item` (it was ignored), content
+  before `open_screen`, and syncs under a closed window id. A window-0
+  content packet while a container is open no longer replaces the cursor
+  (vanilla behavior).
+- Event waits that ignored `End` (`await_message`, the place waits, the
+  creative slot wait, `wait_for_chunks_to_load`) now fail with
+  `Error::NotConnected` when the bot ends, instead of waiting out their
+  time limit.
+- All domain observers see an engine event before any of its events go
+  out, so a subscriber reads domain state that already reflects it.
 
 ### Fixed
 
