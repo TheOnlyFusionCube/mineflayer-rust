@@ -33,6 +33,9 @@ run_step "test"   cargo test
 run_step "test (engine)" cargo test --workspace --exclude mineflayer --features mineflayer-client/log
 run_step "build"  cargo build
 run_step "doc"    env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+# rustdoc takes RUSTDOCFLAGS, not the build rustflags, so it needs the
+# solver pin itself (rust-toolchain.toml, .cargo/config.toml)
+run_step "doc (engine)" env RUSTDOCFLAGS="-D warnings -Znext-solver=no" cargo doc --workspace --exclude mineflayer --no-deps
 
 echo "==="
 if [ "$failures" -eq 0 ]; then

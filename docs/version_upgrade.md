@@ -90,7 +90,7 @@ with the new `mineflayer-protocol` definition:
 
 ## 6. Verify
 
-1. Run `scripts/verify.sh`. All eight steps must pass.
+1. Run `scripts/verify.sh`. All nine steps must pass.
 2. Run the full live suite on a reset world:
    `cargo test --features live -- --ignored --test-threads=1`.
 3. Run each example against the fixture one time

@@ -92,3 +92,19 @@ the 200 chickens were still alive at the `/kill`), so it is a lighter
 load than the original run above; the idle rate is in the same range
 (1,299/s vs 1,411/s). No `Lagged` and no throughput regression from the
 lock change.
+
+## E5: engine crates at `opt-level = 1` (2026-10-17, not kept)
+
+`[profile.dev.package.<crate>] opt-level = 1` for the 20 engine crates
+not already at 3 (`mineflayer-crypto` is), measured on the same machine:
+
+| Measurement | opt-level 0 | opt-level 1 |
+|---|---|---|
+| Rebuild of the engine crates (`cargo test --features live --no-run` after `cargo clean -p` of all 21) | 20 s wall, 57 s CPU | 32 s wall, 215 s CPU |
+| Live suite, reset world | 107, 111, 112, 114 s (four runs) | 151, 115 s (two runs) |
+
+The live suite is not faster: its time is waits on the server (the
+keepalive watchdog test alone is 35 s, the craft test 146 s in a run
+without a reset), not client CPU. The plan keeps the change only if the
+suite gets faster, so the profile stays at the default. The pathfinder's
+`OPT_LEVEL == 0` debug warning remains.
