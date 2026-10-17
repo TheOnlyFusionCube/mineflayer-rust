@@ -13,7 +13,7 @@ use std::time::Duration;
 // crate under its real name
 use mineflayer_engine::ecs as bevy_ecs;
 use mineflayer_engine::{
-    ClientInformation, Vec3,
+    ClientInformation, Event, Vec3,
     core::entity_id::MinecraftEntityId,
     ecs::prelude::Component,
     entity::{EntityKindComponent, Pose, Position, metadata::AirSupply},
@@ -31,7 +31,7 @@ use tokio::sync::{broadcast, oneshot};
 mod creative;
 pub use creative::Creative;
 
-use crate::{Bot, BotEvent, Error, Result, scoreboard};
+use crate::{Bot, BotEvent, Error, Result};
 
 /// Facade-kept bot state, stored as an ECS component on the client entity.
 ///
@@ -74,22 +74,13 @@ impl Default for MiscState {
     }
 }
 
-/// The bridge calls this once per emitted [`BotEvent`]. `Packet` events are
-/// decoded into misc-domain state + events; `Tick` drives the pose/air
-/// diffs for `Sleep`/`Wake`/`Breath`.
-pub(crate) fn after_event(
-    client: &mineflayer_engine::Client,
-    scoreboard: &parking_lot::Mutex<scoreboard::ScoreboardState>,
-    bot_event: &BotEvent,
-    events: &broadcast::Sender<BotEvent>,
-) {
-    let extra = match bot_event {
-        BotEvent::Packet(packet) => handle_packet(client, scoreboard, packet),
-        BotEvent::Tick => tick_diffs(client),
-        _ => return,
-    };
-    for event in extra {
-        let _ = events.send(event);
+/// The bridge observer. Packets are decoded into misc-domain state and
+/// events; `Tick` drives the pose/air diffs for `Sleep`/`Wake`/`Breath`.
+pub(crate) fn observe(client: &mineflayer_engine::Client, event: &Event) -> Vec<BotEvent> {
+    match event {
+        Event::Packet(packet) => handle_packet(client, packet),
+        Event::Tick => tick_diffs(client),
+        _ => Vec::new(),
     }
 }
 
@@ -138,7 +129,6 @@ fn tick_diffs(client: &mineflayer_engine::Client) -> Vec<BotEvent> {
 /// Decode a clientbound packet into misc-domain state changes + events.
 fn handle_packet(
     client: &mineflayer_engine::Client,
-    scoreboard: &parking_lot::Mutex<scoreboard::ScoreboardState>,
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
     // Entity sounds carry a minecraft entity id instead of a position —
@@ -148,11 +138,6 @@ fn handle_packet(
         _ => None,
     };
 
-    // the scoreboard domain owns its own state (and the login/respawn
-    // clear); it consumes only scoreboard packets
-    if let Some(events) = scoreboard::handle_for(scoreboard, packet) {
-        return events;
-    }
     // Only `ResourcePackPush` writes misc state; every other packet
     // builds its events without the exclusive ECS lock (the bridge used
     // to take it for every clientbound packet — about 5,000 times a
@@ -1120,7 +1105,6 @@ mod tests {
         // goes out (the reducer needs no ECS state).
         let out = handle_packet(
             &client,
-            &Default::default(),
             &ClientboundGamePacket::SoundEntity(ClientboundSoundEntity {
                 sound: Holder::Reference(SoundEvent::EntityFishingBobberSplash),
                 source: SoundSource::Neutral,

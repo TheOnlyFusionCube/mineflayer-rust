@@ -121,9 +121,19 @@ auto-reconnect and the swarm plugins. The port does not mirror the
 engine's plugin list (plan item A4, 2026-10-17). A dig abort uses the
 engine's `CancelMiningEvent` (A5), so the port adds no plugin.
 
-**D-bridge. One ordered observer loop.** Every domain observer runs inside
-the bridge task, in a fixed order, so derived events follow their source
-packet and a lagging broadcast consumer cannot drop them.
+**D-bridge. One ordered observer list.** Every domain observer runs inside
+the bridge task, so derived events follow their source packet and a
+lagging broadcast consumer cannot drop them. `OBSERVERS` in
+`src/bridge.rs` is the order (plan items B1/B2, 2026-10-17): the direct
+translation (`Packet`, `Tick`, lifecycle), misc, scoreboard, the
+lifecycle and chat events derived from the packet, movement, pathfinder,
+entity, windows, window types, craft, world. This is the order the bridge
+loop had before; `bridge_emission_order` pins it, and upstream
+`health.js` emits `health` before the re-arm `spawn` as it does. All
+observers run before the first event of an engine event goes out. Each
+entry is an adapter that passes one shared `Observe` context to the
+domain function with the inputs that domain needs, so the domain
+functions keep narrow arguments and their unit tests.
 
 **D-events. One `BotEvent` enum.** Events are one broadcast protocol;
 nested event types would cause match churn with no gain.

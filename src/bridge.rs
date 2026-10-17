@@ -60,18 +60,6 @@ pub(crate) fn spawn(
     shutdown: watch::Sender<()>,
 ) {
     tokio::spawn(async move {
-        let crate::bot::BotShared {
-            events,
-            quit_reason,
-            end_reason,
-            chat,
-            world_state: world,
-            entities,
-            windows,
-            window_data,
-            recipes,
-            scoreboard,
-        } = shared;
         let BridgeOptions {
             client_information,
             brand,
@@ -82,7 +70,7 @@ pub(crate) fn spawn(
         // resolves when the channel closes (all `Bot`s dropped).
         let _ = alive.borrow_and_update();
         let mut state = BridgeState {
-            chat,
+            chat: shared.chat.clone(),
             ..Default::default()
         };
         // Keepalive watchdog deadline (`options.checkTimeoutInterval`) —
@@ -119,73 +107,30 @@ pub(crate) fn spawn(
                         );
                     }
                     let keepalive_seen = matches!(&event, Event::KeepAlive(_));
-                    // Domain decodes the engine doesn't lift into `Event`s
-                    // (movement: move diff/forcedMove/abilities; entities:
-                    // the whole entity event family). Both run before
-                    // translate borrows the event; their events are emitted
-                    // right after the raw `Packet`/`Spawn` they came from.
-                    let movement_events =
-                        crate::movement::bridge_events(&client, &mut state.movement, &event);
-                    let pathfinder_events = crate::pathfinder::bridge_events(
-                        &client,
-                        &mut state.pathfinder,
-                        &event,
-                    );
-                    let derived = entity::observe_event(&entities, &client, &event);
-                    // window domain: open/close/slot/held bookkeeping and
-                    // the ECS patches for pieces the engine drops (its
-                    // observer must run *inside* this event loop so ECS
-                    // writes land between ticks).
-                    let window_events =
-                        crate::windows::observe_event(&windows, &client, &event);
-                    // typed windows: container_set_data / merchant_offers
-                    // decode (furnace/enchant/anvil properties, villager
-                    // trades). No ECS access — runs on packet fields only.
-                    let window_data_events =
-                        crate::window_types::observe_event(&window_data, &event);
-                    // recipe book: records c_recipe_book_add/remove into
-                    // shared state; emits no events (craft has none)
-                    crate::craft::observe_event(&recipes, &event);
-                    // world domain: blocks/time/weather/game decode off the
-                    // packets the engine drops. Runs here — not in a second task
-                    // — so derived events keep packet order and a lagging
-                    // broadcast consumer can't drop them.
-                    let world_events =
-                        crate::world::observe_event(&world, &client, &mut state.lids, &event);
-                    for bot_event in translate(&mut state, &quit_reason, &client, event) {
+                    // every observer sees the event before any of its
+                    // events go out, so a subscriber that reacts to one
+                    // reads domain state that already reflects the event
+                    let mut cx = Observe {
+                        client: &client,
+                        shared: &shared,
+                        local: &mut state,
+                    };
+                    let derived: Vec<BotEvent> = OBSERVERS
+                        .iter()
+                        .flat_map(|observe| observe(&mut cx, &event))
+                        .collect();
+                    for bot_event in derived {
                         // upstream chat.js keeps `endReason` for the
                         // pre-play error message — record it before the
                         // event goes out so a racing `chat()` sees it.
                         if let BotEvent::End(reason) = &bot_event {
-                            *end_reason.lock() = Some(reason.clone());
+                            *shared.end_reason.lock() = Some(reason.clone());
                         }
                         // SendError = no subscribers right now; that's fine,
                         // receivers may subscribe later.
                         if packet_events || !matches!(bot_event, BotEvent::Packet(_)) {
-                            let _ = events.send(bot_event.clone());
+                            let _ = shared.events.send(bot_event);
                         }
-                        // misc domains (scoreboards, sounds, …) decode Packet
-                        // events into facade state + their own BotEvents,
-                        // emitted after the source event itself.
-                        crate::misc::after_event(&client, &scoreboard, &bot_event, &events);
-                    }
-                    for bot_event in movement_events {
-                        let _ = events.send(bot_event);
-                    }
-                    for bot_event in pathfinder_events {
-                        let _ = events.send(bot_event);
-                    }
-                    for bot_event in derived {
-                        let _ = events.send(bot_event);
-                    }
-                    for bot_event in window_events {
-                        let _ = events.send(bot_event);
-                    }
-                    for bot_event in window_data_events {
-                        let _ = events.send(bot_event);
-                    }
-                    for bot_event in world_events {
-                        let _ = events.send(bot_event);
                     }
                     if keepalive_seen {
                         keepalive_deadline =
@@ -207,18 +152,24 @@ pub(crate) fn spawn(
                         timeout_ms = check_timeout_interval.as_millis(),
                         "server keepalive timed out — ending with keepAliveError"
                     );
-                    let _ = events.send(BotEvent::Error(format!(
+                    let _ = shared.events.send(BotEvent::Error(format!(
                         "client timed out after {} milliseconds",
                         check_timeout_interval.as_millis()
                     )));
-                    *quit_reason.lock() = Some("keepAliveError".to_string());
+                    *shared.quit_reason.lock() = Some("keepAliveError".to_string());
                     client.disconnect();
                 }
                 _ = alive.changed() => break "all Bot handles dropped",
             }
         };
         debug!(reason = exit_reason, ended = state.ended, "bridge exit");
-        exit(&mut state, &quit_reason, &events, shutdown, &client);
+        exit(
+            &mut state,
+            &shared.quit_reason,
+            &shared.events,
+            shutdown,
+            &client,
+        );
     });
 }
 
@@ -250,6 +201,38 @@ fn exit(
     drop(shutdown);
     client.exit();
 }
+
+/// What every observer in [`OBSERVERS`] gets for one engine event.
+struct Observe<'a> {
+    client: &'a mineflayer_engine::Client,
+    shared: &'a crate::bot::BotShared,
+    local: &'a mut BridgeState,
+}
+
+type Observer = fn(&mut Observe<'_>, &Event) -> Vec<BotEvent>;
+
+/// The observers, in emission order (D-bridge, pinned by
+/// `bridge_emission_order`): the direct translation first (`Packet`,
+/// `Tick`, lifecycle), then misc and scoreboard, which derive from that
+/// `Packet` or `Tick`, then the lifecycle and chat events derived from the
+/// packet, then the other domains. Upstream `health.js` emits `health`
+/// before the re-arm `spawn`, which this order keeps.
+const OBSERVERS: &[Observer] = &[
+    |cx, e| translate(cx.local, &cx.shared.quit_reason, cx.client, e.clone()),
+    |cx, e| crate::misc::observe(cx.client, e),
+    |cx, e| crate::scoreboard::observe(&cx.shared.scoreboard, e),
+    |cx, e| packet_events(cx.local, e),
+    |cx, e| crate::movement::bridge_events(cx.client, &mut cx.local.movement, e),
+    |cx, e| crate::pathfinder::bridge_events(cx.client, &mut cx.local.pathfinder, e),
+    |cx, e| entity::observe_event(&cx.shared.entities, cx.client, e),
+    |cx, e| crate::windows::observe_event(&cx.shared.windows, cx.client, e),
+    |cx, e| crate::window_types::observe_event(&cx.shared.window_data, e),
+    |cx, e| {
+        crate::craft::observe_event(&cx.shared.recipes, e);
+        Vec::new()
+    },
+    |cx, e| crate::world::observe_event(&cx.shared.world_state, cx.client, &mut cx.local.lids, e),
+];
 
 /// Bridge bookkeeping that doesn't fit in the events themselves.
 #[derive(Default)]
@@ -375,12 +358,7 @@ fn translate(
             out
         }
         Event::Tick => vec![BotEvent::Tick],
-        Event::Packet(packet) => {
-            let mut out = vec![BotEvent::Packet(packet.clone())];
-            out.extend(lifecycle_packet_events(state, &packet));
-            out.extend(packet_side_events(&state.chat, &packet));
-            out
-        }
+        Event::Packet(packet) => vec![BotEvent::Packet(packet)],
         Event::AddPlayer(info) => {
             // upstream keys on whether the uuid was already in bot.players:
             // a re-add (the engine emits AddPlayerEvent unconditionally on the
@@ -431,6 +409,17 @@ fn translate(
             vec![]
         }
     }
+}
+
+/// The lifecycle and chat events derived from a packet. They go out after
+/// the misc and scoreboard events of the same packet.
+fn packet_events(state: &mut BridgeState, event: &Event) -> Vec<BotEvent> {
+    let Event::Packet(packet) = event else {
+        return Vec::new();
+    };
+    let mut out = lifecycle_packet_events(state, packet);
+    out.extend(packet_side_events(&state.chat, packet));
+    out
 }
 
 fn lifecycle_packet_events(
@@ -504,6 +493,19 @@ mod tests {
     };
 
     use super::*;
+
+    /// The direct translation plus the lifecycle and chat events the
+    /// bridge derives from a packet (no misc or domain observers).
+    fn translate(
+        state: &mut BridgeState,
+        quit_reason: &Mutex<Option<String>>,
+        client: &mineflayer_engine::Client,
+        event: Event,
+    ) -> Vec<BotEvent> {
+        let mut out = super::translate(state, quit_reason, client, event.clone());
+        out.extend(packet_events(state, &event));
+        out
+    }
 
     fn despawned() -> mineflayer_engine::Client {
         crate::test_util::despawned_client()

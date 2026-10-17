@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 use mineflayer_engine::chat::style::ChatFormatting;
 use mineflayer_engine::{
-    FormattedText,
+    Event, FormattedText,
     protocol::packets::game::{
         ClientboundGamePacket,
         c_boss_event::{self, BossBarColor, BossBarOverlay},
@@ -59,21 +59,20 @@ impl ScoreboardState {
     }
 }
 
-/// Decode a packet into scoreboard state; `Some(events)` when the packet
-/// belongs to this domain (login/respawn clear the state and emit nothing),
-/// `None` when another domain owns it.
-pub(crate) fn handle_for(
-    state: &Mutex<ScoreboardState>,
-    packet: &ClientboundGamePacket,
-) -> Option<Vec<BotEvent>> {
+/// The bridge observer: decode a packet into scoreboard state and events.
+/// Login and respawn clear the state and emit nothing.
+pub(crate) fn observe(state: &Mutex<ScoreboardState>, event: &Event) -> Vec<BotEvent> {
+    let Event::Packet(packet) = event else {
+        return Vec::new();
+    };
     if matches!(
-        packet,
+        &**packet,
         ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_)
     ) {
         state.lock().reset_on_login();
-        return Some(Vec::new());
+        return Vec::new();
     }
-    handle(&mut state.lock(), packet)
+    handle(&mut state.lock(), packet).unwrap_or_default()
 }
 
 /// One entry on a [`ScoreBoard`] — the `itemsMap` values (`{name, value}`,
@@ -955,9 +954,9 @@ mod tests {
     /// Login/respawn clear objectives, teams, and the member map — but not
     /// boss bars, like upstream's `login` handler. The clear belongs to
     /// the scoreboard domain (it owns the state) and runs through the same
-    /// `handle_for` entry the bridge uses.
+    /// `observe` entry the bridge uses.
     #[test]
-    fn login_clears_the_domain_state_through_handle_for() {
+    fn login_clears_the_domain_state_through_observe() {
         use mineflayer_engine::{
             core::game_type::{GameMode, OptionalGameType},
             protocol::packets::{common::CommonPlayerSpawnInfo, game::c_login::ClientboundLogin},
@@ -1032,8 +1031,8 @@ mod tests {
             },
             enforces_secure_chat: false,
         });
-        let events = handle_for(&state, &login);
-        assert!(matches!(&events, Some(v) if v.is_empty()));
+        let events = observe(&state, &Event::Packet(std::sync::Arc::new(login)));
+        assert!(events.is_empty());
         let state = state.lock();
         assert!(state.scoreboards.is_empty() && state.display_slots.is_empty());
         assert!(state.teams.is_empty() && state.team_map.is_empty());
