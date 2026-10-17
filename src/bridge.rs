@@ -284,6 +284,46 @@ fn translate(
 ) -> Vec<BotEvent> {
     match event {
         Event::Init => vec![BotEvent::Init],
+        Event::Login
+        | Event::Spawn
+        | Event::Death(_)
+        | Event::Disconnect(_)
+        | Event::ConnectionFailed(_) => lifecycle_events(state, quit_reason, event),
+        Event::AddPlayer(_) | Event::UpdatePlayer(_) | Event::RemovePlayer(_) => {
+            player_list_events(state, client, event)
+        }
+        Event::Chat(packet) => {
+            let mut out = vec![BotEvent::Chat(packet.clone())];
+            out.extend(state.chat.lock().message_events(&packet));
+            out
+        }
+        Event::Tick => vec![BotEvent::Tick],
+        Event::Packet(packet) => vec![BotEvent::Packet(packet)],
+        Event::ReceiveChunk(pos) => vec![BotEvent::ChunkColumnLoad(pos)],
+        // KeepAlive has no mineflayer analog — the engine answers keepalives
+        // itself. Dropped by design (see api-parity.md `options.keepAlive`).
+        Event::KeepAlive(_) => vec![],
+        // The engine's Event is #[non_exhaustive]: anything it adds upstream in
+        // the future is dropped rather than crashing the bridge — with a
+        // debug log so a new upstream event does not vanish silently.
+        _ => {
+            debug!(
+                ?event,
+                "dropping an engine event the bridge does not translate"
+            );
+            vec![]
+        }
+    }
+}
+
+/// The connection lifecycle: `connect`/`login`, the first `spawn`, `death`
+/// once per life, and one `end` (with `kicked` or `error` first).
+fn lifecycle_events(
+    state: &mut BridgeState,
+    quit_reason: &Mutex<Option<String>>,
+    event: Event,
+) -> Vec<BotEvent> {
+    match event {
         Event::Login => {
             // upstream order: 'connect' (socket up) then 'login'. The engine has
             // no socket-level event; Event::Login is the earliest
@@ -352,13 +392,18 @@ fn translate(
                 BotEvent::End("socketClosed".to_string()),
             ]
         }
-        Event::Chat(packet) => {
-            let mut out = vec![BotEvent::Chat(packet.clone())];
-            out.extend(state.chat.lock().message_events(&packet));
-            out
-        }
-        Event::Tick => vec![BotEvent::Tick],
-        Event::Packet(packet) => vec![BotEvent::Packet(packet)],
+        _ => vec![],
+    }
+}
+
+/// `playerJoined`/`playerUpdated`/`playerLeft`, gated on upstream's
+/// `bot.players` membership.
+fn player_list_events(
+    state: &mut BridgeState,
+    client: &mineflayer_engine::Client,
+    event: Event,
+) -> Vec<BotEvent> {
+    match event {
         Event::AddPlayer(info) => {
             // upstream keys on whether the uuid was already in bot.players:
             // a re-add (the engine emits AddPlayerEvent unconditionally on the
@@ -394,20 +439,7 @@ fn translate(
             }
             vec![BotEvent::PlayerLeft(info)]
         }
-        Event::ReceiveChunk(pos) => vec![BotEvent::ChunkColumnLoad(pos)],
-        // KeepAlive has no mineflayer analog — the engine answers keepalives
-        // itself. Dropped by design (see api-parity.md `options.keepAlive`).
-        Event::KeepAlive(_) => vec![],
-        // The engine's Event is #[non_exhaustive]: anything it adds upstream in
-        // the future is dropped rather than crashing the bridge — with a
-        // debug log so a new upstream event does not vanish silently.
-        _ => {
-            debug!(
-                ?event,
-                "dropping an engine event the bridge does not translate"
-            );
-            vec![]
-        }
+        _ => vec![],
     }
 }
 

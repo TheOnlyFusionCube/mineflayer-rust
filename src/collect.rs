@@ -141,6 +141,14 @@ impl Default for CollectState {
     }
 }
 
+/// What one candidate block came to in [`CollectBlock::attempt`].
+enum Attempt {
+    Collected(Block),
+    /// Skipped; the error is reported at the end if nothing was collected.
+    Skipped(Option<Error>),
+    Cancelled,
+}
+
 /// `true` when `generation` went stale — `cancel_task` or a newer
 /// non-`append` collect retired this run (or the state itself is gone).
 fn stale(client: &mineflayer_engine::Client, generation: u64) -> bool {
@@ -460,98 +468,20 @@ impl CollectBlock<'_> {
                 continue;
             }
             bot.emit_event(BotEvent::CollectBlockFound(block.clone()));
-            let pf = bot.pathfinder();
-            // upstream's mineBlock paths with `GoalLookAtBlock` — get
-            // within sight+reach of a face, not strictly adjacent
-            // (`cb.ts:24`)
-            match tokio::time::timeout(GOTO_TIMEOUT, pf.goto(Goal::LookAtBlock(pos))).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    if stale(&bot.client, generation) {
-                        cancelled = true;
-                        break;
-                    }
-                    if !ignore_no_path {
-                        return Err(e);
-                    }
-                    tried.insert(pos);
-                    last_err = Some(e);
-                    continue;
-                }
-                Err(_) => {
-                    // a stalled path stays installed — stop it before the
-                    // next candidate or `goto` sees the old goal
-                    bot.pathfinder().stop();
-                    if stale(&bot.client, generation) {
-                        cancelled = true;
-                        break;
-                    }
-                    if !ignore_no_path {
-                        return Err(Error::Failed(format!(
-                            "path to {pos} timed out after {GOTO_TIMEOUT:?}"
-                        )));
-                    }
-                    tried.insert(pos);
-                    last_err = Some(Error::Failed(format!(
-                        "path to {pos} timed out after {GOTO_TIMEOUT:?}"
-                    )));
-                    continue;
-                }
-            }
-            if stale(&bot.client, generation) {
-                cancelled = true;
-                break;
-            }
-            // re-resolve after the walk — the block may have been dug by
-            // someone else or changed while we travelled
-            if !world.find_blocks(&target.opts).contains(&pos) {
-                tried.insert(pos);
-                continue;
-            }
-            let Some(block) = world.block_at(pos) else {
-                tried.insert(pos);
-                continue;
-            };
-            if block.state.is_air() || !block.diggable() {
-                tried.insert(pos);
-                continue;
-            }
-            // upstream mineBlock equips the best harvest tool first and
-            // skips blocks the held item can't harvest
-            if let Err(e) = bot
-                .tool()
-                .equip_for_block_opts(
-                    &block,
-                    &EquipOpts {
-                        require_harvest: true,
-                        get_from_chest: true,
-                        max_tools: Some(2),
-                    },
-                )
-                .await
-            {
-                if stale(&bot.client, generation) {
-                    cancelled = true;
-                    break;
-                }
-                return Err(e);
-            }
-            if let Some(held) = bot.held_item()
-                && !can_harvest(block.state, &held.stack)
-            {
-                tried.insert(pos);
-                continue;
-            }
-            match bot.dig(&block).await {
-                Ok(()) => {
+            let attempt = self
+                .attempt(world, &target.opts, pos, generation, ignore_no_path)
+                .await?;
+            tried.insert(pos);
+            match attempt {
+                Attempt::Collected(block) => {
                     bot.emit_event(BotEvent::Collected(block.clone()));
                     collected.push(block);
-                    tried.insert(pos); // it's air now — don't re-find it
                     self.vacuum_drops(generation).await;
                 }
-                Err(e) => {
-                    tried.insert(pos);
-                    last_err = Some(e);
+                Attempt::Skipped(err) => last_err = err.or(last_err),
+                Attempt::Cancelled => {
+                    cancelled = true;
+                    break;
                 }
             }
         }
@@ -567,6 +497,86 @@ impl CollectBlock<'_> {
             collected: collected.len(),
         });
         Ok(Collected { blocks: collected })
+    }
+
+    /// Walk to the candidate at `pos`, check it again, equip the best
+    /// harvest tool, and dig it (upstream `mineBlock`). An error is
+    /// returned only when it ends the whole collect.
+    async fn attempt(
+        &self,
+        world: &WorldRef,
+        opts: &FindBlocksOpts,
+        pos: BlockPos,
+        generation: u64,
+        ignore_no_path: bool,
+    ) -> Result<Attempt> {
+        let bot = self.bot;
+        // upstream's mineBlock paths with `GoalLookAtBlock` — get within
+        // sight+reach of a face, not strictly adjacent (`cb.ts:24`)
+        let walked =
+            match tokio::time::timeout(GOTO_TIMEOUT, bot.pathfinder().goto(Goal::LookAtBlock(pos)))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => {
+                    // a stalled path stays installed — stop it before the
+                    // next candidate or `goto` sees the old goal
+                    bot.pathfinder().stop();
+                    Err(Error::Failed(format!(
+                        "path to {pos} timed out after {GOTO_TIMEOUT:?}"
+                    )))
+                }
+            };
+        if stale(&bot.client, generation) {
+            return Ok(Attempt::Cancelled);
+        }
+        if let Err(e) = walked {
+            return if ignore_no_path {
+                Ok(Attempt::Skipped(Some(e)))
+            } else {
+                Err(e)
+            };
+        }
+        // re-resolve after the walk — the block may have been dug by
+        // someone else or changed while we travelled
+        if !world.find_blocks(opts).contains(&pos) {
+            return Ok(Attempt::Skipped(None));
+        }
+        let Some(block) = world.block_at(pos) else {
+            return Ok(Attempt::Skipped(None));
+        };
+        if block.state.is_air() || !block.diggable() {
+            return Ok(Attempt::Skipped(None));
+        }
+        // upstream mineBlock equips the best harvest tool first and skips
+        // blocks the held item can't harvest
+        let equipped = bot
+            .tool()
+            .equip_for_block_opts(
+                &block,
+                &EquipOpts {
+                    require_harvest: true,
+                    get_from_chest: true,
+                    max_tools: Some(2),
+                },
+            )
+            .await;
+        if let Err(e) = equipped {
+            return if stale(&bot.client, generation) {
+                Ok(Attempt::Cancelled)
+            } else {
+                Err(e)
+            };
+        }
+        if let Some(held) = bot.held_item()
+            && !can_harvest(block.state, &held.stack)
+        {
+            return Ok(Attempt::Skipped(None));
+        }
+        Ok(match bot.dig(&block).await {
+            Ok(()) => Attempt::Collected(block),
+            Err(e) => Attempt::Skipped(Some(e)),
+        })
     }
 
     /// `bot.collectBlock.cancelTask()` — retire every in-flight collect

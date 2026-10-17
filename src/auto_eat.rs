@@ -387,63 +387,9 @@ impl AutoEat<'_> {
                 .map_err(|e| Error::Failed(format!("Failed to equip: {}! ({e})", food.name())))?;
         }
 
-        // register the finish waiter before activating, like
-        // `Bot::consume` — a finish packet landing between the use_item
-        // write and the await can't be missed
-        let (generation, notify) = {
-            let mut t = bot.shared.windows.lock();
-            t.eat_generation += 1;
-            t.eat_notify.notify_waiters();
-            (t.eat_generation, t.eat_notify.clone())
-        };
-        // `eat_cancel` goes live with the wait — upstream's
-        // `_rejectionBinding` only exists during `buildEatingListener`,
-        // so a `cancel_eat` before this point is a silent no-op there too
-        with_component_mut::<AutoEatState, _>(&bot.client, |s| s.eat_cancel = Some(cancel.clone()));
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-
-        // sanitize any prior use state before activating, like upstream
-        bot.deactivate_item();
-        bot.activate_item(offhand);
-        bot.emit_event(BotEvent::EatStart {
-            food: food.clone(),
-            offhand,
-            equip_old_item: equip_old,
-        });
-
-        let outcome = if cancel.load(atomic::Ordering::Relaxed) {
-            // cancel landed between waiter registration and here — its
-            // notify_waiters fired before `enable()` and can't be caught
-            Err(Error::Cancelled("Eating manually canceled!".into()))
-        } else if tokio::time::timeout(timeout, notified).await.is_err() {
-            Err(Error::Failed(format!(
-                "Eating timed out with a time of {} milliseconds!",
-                timeout.as_millis()
-            )))
-        } else if bot.shared.windows.lock().eat_generation != generation {
-            if cancel.load(atomic::Ordering::Relaxed) {
-                Err(Error::Cancelled("Eating manually canceled!".into()))
-            } else {
-                Err(Error::Cancelled(
-                    "Eating cancelled due to calling bot.consume() again".into(),
-                ))
-            }
-        } else {
-            // the wake fired: upstream's itemListener rejects when the
-            // slot's item changed type mid-eat — an empty slot is a
-            // finished stack, not a switch. (Upstream appends
-            // `\nItem: ${newItem}` — JS prints "[object Object]", so the
-            // first line carries all the information.)
-            match self.hand_item(offhand) {
-                Some(held) if held.kind() != food.kind() => Err(Error::Failed(format!(
-                    "Item switched early to: {}!",
-                    held.name()
-                ))),
-                _ => Ok(()),
-            }
-        };
+        let outcome = self
+            .use_food(&food, offhand, equip_old, timeout, cancel)
+            .await;
 
         // upstream's finally: restore the previous item first, then
         // report — eatFinish fires even on failure
@@ -476,6 +422,76 @@ impl AutoEat<'_> {
                     equip_old_item: equip_old,
                 });
                 if strict { Err(e) } else { Ok(()) }
+            }
+        }
+    }
+
+    /// Use the food in hand and wait until the eat ends: finished,
+    /// timed out, cancelled, or the held item switched.
+    async fn use_food(
+        &self,
+        food: &Item,
+        offhand: bool,
+        equip_old: bool,
+        timeout: Duration,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<()> {
+        let bot = self.bot;
+        // register the finish waiter before activating, like
+        // `Bot::consume` — a finish packet landing between the use_item
+        // write and the await can't be missed
+        let (generation, notify) = {
+            let mut t = bot.shared.windows.lock();
+            t.eat_generation += 1;
+            t.eat_notify.notify_waiters();
+            (t.eat_generation, t.eat_notify.clone())
+        };
+        // `eat_cancel` goes live with the wait — upstream's
+        // `_rejectionBinding` only exists during `buildEatingListener`,
+        // so a `cancel_eat` before this point is a silent no-op there too
+        with_component_mut::<AutoEatState, _>(&bot.client, |s| s.eat_cancel = Some(cancel.clone()));
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+
+        // sanitize any prior use state before activating, like upstream
+        bot.deactivate_item();
+        bot.activate_item(offhand);
+        bot.emit_event(BotEvent::EatStart {
+            food: food.clone(),
+            offhand,
+            equip_old_item: equip_old,
+        });
+
+        if cancel.load(atomic::Ordering::Relaxed) {
+            // cancel landed between waiter registration and here — its
+            // notify_waiters fired before `enable()` and can't be caught
+            Err(Error::Cancelled("Eating manually canceled!".into()))
+        } else if tokio::time::timeout(timeout, notified).await.is_err() {
+            Err(Error::Failed(format!(
+                "Eating timed out with a time of {} milliseconds!",
+                timeout.as_millis()
+            )))
+        } else if bot.shared.windows.lock().eat_generation != generation {
+            if cancel.load(atomic::Ordering::Relaxed) {
+                Err(Error::Cancelled("Eating manually canceled!".into()))
+            } else {
+                Err(Error::Cancelled(
+                    "Eating cancelled due to calling bot.consume() again".into(),
+                ))
+            }
+        } else {
+            // the wake fired: upstream's itemListener rejects when the
+            // slot's item changed type mid-eat — an empty slot is a
+            // finished stack, not a switch. (Upstream appends
+            // `\nItem: ${newItem}` — JS prints "[object Object]", so the
+            // first line carries all the information.)
+            match self.hand_item(offhand) {
+                Some(held) if held.kind() != food.kind() => Err(Error::Failed(format!(
+                    "Item switched early to: {}!",
+                    held.name()
+                ))),
+                _ => Ok(()),
             }
         }
     }
