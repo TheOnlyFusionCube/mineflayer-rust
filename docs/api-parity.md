@@ -1,6 +1,6 @@
 # mineflayer -> mineflayer-rs API parity table
 
-Binding spec: every public API row from `docs/surveys/mineflayer-api.md`, grouped by domain.
+Binding spec: every public API row from `docs/history/mineflayer-api.md`, grouped by domain.
 Status ∈ `pending` (not ported), `ported`, `diverges` (intentional semantic difference), `wontfix`, `additive` (Rust surface beyond the upstream inventory).
 
 Global divergence (standing order 11): **The engine tracks a single MC version** (crates.io the engine `0.16.0+mc26.1` -> MC `26.1`).

@@ -115,7 +115,7 @@ pub(crate) struct BotShared {
     pub scoreboard: Arc<Mutex<crate::scoreboard::ScoreboardState>>,
 }
 
-/// Lock rule (see docs/PORT-PLAN.md, B9). Two lock families meet here:
+/// Lock rule (see docs/history/PORT-PLAN.md, B9). Two lock families meet here:
 /// the domain locks in [`BotShared`] and the engine's ECS lock
 /// (`client.ecs.read()/write()`, `get_component`, `entity_mut`,
 /// `client.world()`).
