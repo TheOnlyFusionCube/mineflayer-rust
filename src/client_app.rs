@@ -28,6 +28,16 @@ pub(crate) fn app() -> mineflayer_engine::app::App {
 mod tests {
     use mineflayer_engine::{BlockPos, core::direction::Direction, mining::MiningQueued};
 
+    /// D-log: the crate never installs a global subscriber. The engine's
+    /// `log` feature adds a log plugin that does, and a dependent's own
+    /// `tracing_subscriber::…::init()` after `connect` then panics.
+    #[test]
+    fn the_production_app_installs_no_global_subscriber() {
+        let mut app = crate::client_app::app();
+        app.finish();
+        assert!(!tracing::dispatcher::has_been_set());
+    }
+
     /// The integration guarantee the dig-abort design rests on: a pending
     /// start materialized in `Update` is cancelled by the reconciler inside
     /// `GameTick`, before the mining chain runs — through the *production*

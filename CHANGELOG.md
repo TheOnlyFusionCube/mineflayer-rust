@@ -15,6 +15,10 @@
 
 - The `McBuf` derive generates field shorthand, so workspace clippy is
   clean. Three engine doctests that cannot compile are `ignore`.
+- `connect` no longer tries to install a global log subscriber. The
+  engine's `log` feature (bevy's log plugin) is off by default, so a
+  dependent's own `tracing_subscriber` `init()` after `connect` cannot
+  panic.
 
 ## 0.2.0 — 2026-10-16
 

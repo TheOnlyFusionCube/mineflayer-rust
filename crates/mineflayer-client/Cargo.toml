@@ -44,8 +44,8 @@ bevy_utils = { workspace = true, features = ["debug"] }
 eyre.workspace = true
 
 [features]
-default = ["log", "packet-event", "online-mode"]
-# enables bevy_log::LogPlugin by default
+default = ["packet-event", "online-mode"]
+# adds bevy_log::LogPlugin, which installs a global subscriber (off by default)
 log = ["bevy_log"]
 packet-event = []
 online-mode = [

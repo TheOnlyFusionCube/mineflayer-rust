@@ -1,5 +1,6 @@
 # The verify gate (scripts/verify.sh: fmt, clippy, clippy with `live`,
-# unit tests and doctests, build, docs) on every push and pull request.
+# port and engine unit tests and doctests, build, docs) on every push and
+# pull request.
 # The live tests are not run here: they need the local fixture server and
 # a Java runtime (scripts/live-server.sh).
 name: verify
