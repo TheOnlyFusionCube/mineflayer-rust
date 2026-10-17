@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use azalea::{
+use mineflayer_engine::{
     Vec3,
     entity::{Position, inventory::Inventory},
     inventory::ItemStack,
@@ -31,7 +31,7 @@ impl Bot {
 
 /// `bot.creative`.
 pub struct Creative {
-    client: azalea::Client,
+    client: mineflayer_engine::Client,
     events: broadcast::Receiver<BotEvent>,
 }
 
@@ -40,7 +40,7 @@ pub struct Creative {
 /// cleanup statement would skip and thereby poison the slot with the
 /// "calling again" error.
 struct CreativeSlotGuard {
-    client: azalea::Client,
+    client: mineflayer_engine::Client,
     slot: u16,
 }
 
@@ -179,7 +179,8 @@ impl Creative {
         {
             let mut ecs = self.client.ecs.write();
             if let Ok(mut entity) = ecs.get_entity_mut(self.client.entity)
-                && let Some(mut abilities) = entity.get_mut::<azalea::entity::PlayerAbilities>()
+                && let Some(mut abilities) =
+                    entity.get_mut::<mineflayer_engine::entity::PlayerAbilities>()
             {
                 abilities.flying = flying;
             }
@@ -234,7 +235,7 @@ mod tests {
     /// later call for the slot would fail with "calling again".
     #[tokio::test]
     async fn cancelled_set_inventory_slot_releases_the_in_flight_slot() {
-        use azalea::registry::builtin::ItemKind;
+        use mineflayer_engine::registry::builtin::ItemKind;
 
         let mut inventory = Inventory::default();
         *inventory.inventory_menu.slot_mut(5).unwrap() = ItemStack::new(ItemKind::Stone, 1);
@@ -259,7 +260,7 @@ mod tests {
     /// (upstream `Promise.all` shape), and no slot may stay flagged.
     #[tokio::test]
     async fn clear_inventory_settles_every_started_slot() {
-        use azalea::registry::builtin::ItemKind;
+        use mineflayer_engine::registry::builtin::ItemKind;
 
         let mut inventory = Inventory::default();
         *inventory.inventory_menu.slot_mut(10).unwrap() = ItemStack::new(ItemKind::Stone, 1);

@@ -1,4 +1,4 @@
-//! Path events: the per-tick diff of the azalea `Pathfinder`/`ExecutingPath`
+//! Path events: the per-tick diff of the engine `Pathfinder`/`ExecutingPath`
 //! components and the facade, turned into `path_update`/`goal_reached`/
 //! `path_stop` events (see the module notes in `pathfinder` on wedges and
 //! the cumulative search budget).
@@ -15,7 +15,7 @@ pub(crate) struct PathTracker {
     calc_started: Option<Instant>,
     /// First snapshot the goal sat wedged (facade goal set, no ECS
     /// goal/calc/path, goal unmet). A fast-failing search installs and
-    /// drops inside one GameTick gap — azalea runs the whole goto chain
+    /// drops inside one GameTick gap — the engine runs the whole goto chain
     /// per Update (~17 ms) while snapshots land per GameTick (50 ms) —
     /// so edge detection can't see it; the persistent wedge is the only
     /// observable signature. Armed under [`WEDGE_GRACE`] so a
@@ -30,7 +30,7 @@ pub(crate) struct PathTracker {
     tracked_gen: u64,
     /// Observed search time accumulated for `tracked_gen` since the
     /// last complete path. Upstream's `thinkTimeout` bounds one A*
-    /// end-to-end; azalea splits it into a fresh `max_timeout` per
+    /// end-to-end; the engine splits it into a fresh `max_timeout` per
     /// repath, so the budget has to span them — a goal whose searches
     /// total `think_timeout` without producing a complete path rejects
     /// `Timeout` even while partial progress keeps coming (the common
@@ -54,7 +54,7 @@ pub(crate) struct PathTracker {
 /// (extract, drop, then diff — never hold the guard across another lock).
 pub(super) struct PathSnapshot {
     /// `Pathfinder.goal` — kept for the success check when it clears.
-    ecs_goal: Option<Arc<dyn AzaleaGoal>>,
+    ecs_goal: Option<Arc<dyn EngineGoal>>,
     is_calculating: bool,
     executing: bool,
     /// The active path's node list (empty when not executing).
@@ -68,11 +68,11 @@ pub(super) struct PathSnapshot {
     pos: Option<Vec3>,
 }
 
-/// Called by the bridge for every azalea [`Event`]; emits the pathfinder
+/// Called by the bridge for every engine [`Event`]; emits the pathfinder
 /// `BotEvent`s derivable from component state. Only `Tick` carries a
 /// signal — see the module docs for the diff rules.
 pub(crate) fn bridge_events(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     tracker: &mut PathTracker,
     event: &Event,
 ) -> Vec<BotEvent> {
@@ -116,7 +116,7 @@ pub(crate) fn bridge_events(
     } else {
         None
     };
-    // upstream's thinkTimeout bounds one A* end-to-end; azalea splits it
+    // upstream's thinkTimeout bounds one A* end-to-end; the engine splits it
     // into a fresh search per repath, so elapsed accumulates across them
     if let Some(elapsed) = calc_elapsed {
         tracker.search_spent += elapsed;
@@ -149,7 +149,7 @@ pub(crate) fn bridge_events(
         };
     // the promise-level budget: searches for this goal totaling
     // think_timeout without ever producing a complete path → upstream
-    // 'timeout' (azalea would repath a partial frontier forever)
+    // 'timeout' (the engine would repath a partial frontier forever)
     let budget_exceeded =
         now.facade_goal.is_some() && !tracker.saw_success && spent_now >= now.think_timeout;
 
@@ -195,7 +195,7 @@ pub(crate) fn bridge_events(
             .wedge_since
             .is_some_and(|t| t.elapsed() >= WEDGE_GRACE);
 
-    // azalea drops its goal on an empty result only when
+    // The engine drops its goal on an empty result only when
     // `retry_on_no_path` is false (every issue here sets it) — an ECS
     // goal drop in the same tick a calculation finished, with no path
     // executing and the goal unmet, is a failed search; so is a wedge
@@ -267,7 +267,7 @@ pub(crate) fn bridge_events(
             // goto on this ("goal is already met")
             PathStatus::Success
         } else {
-            // a calculation whose result landed with no path — azalea's
+            // a calculation whose result landed with no path — the engine's
             // result was either empty (a real `noPath`) or superseded;
             // a pending `goto` corroborates against `last_failure`
             // before trusting it
@@ -281,7 +281,7 @@ pub(crate) fn bridge_events(
     }
 
     // promise-expired report — the facade goal is upstream's surviving
-    // `stateGoal` and stays (azalea's ECS goal/partial path is alive and
+    // `stateGoal` and stays (the engine's ECS goal/partial path is alive and
     // keeps repathing; `monitorMovement` survives a 'timeout' reject
     // there too). The watcher stays with it. Only the outcome is
     // recorded so a pending `goto` can reject `Timeout` — that's the
@@ -300,7 +300,7 @@ pub(crate) fn bridge_events(
         });
     }
 
-    // `goal_reached` / `path_stop` / failure-clear — azalea cleared its
+    // `goal_reached` / `path_stop` / failure-clear — the engine cleared its
     // goal, or the goal sits in a wedge the drop left behind.
     // `now.facade_goal.is_some()` gates the whole thing: `stop()`
     // and the follow driver clear the facade goal when they report, so a
@@ -343,7 +343,7 @@ pub(crate) fn bridge_events(
                 });
             } else if goal_cleared {
                 // the same goal was abandoned without reaching (world
-                // change, azalea-internal stop). A goal_gen bump means the
+                // change, the engine-internal stop). A goal_gen bump means the
                 // cleared goal belonged to an older set_goal — its death
                 // was already announced by that call's path_reset, so say
                 // nothing. A wedge still inside its grace window
@@ -370,7 +370,7 @@ pub(crate) fn bridge_events(
 }
 
 /// Read the current pathfinder components out of the ECS in one guard.
-pub(super) fn snapshot(client: &azalea::Client) -> PathSnapshot {
+pub(super) fn snapshot(client: &mineflayer_engine::Client) -> PathSnapshot {
     let empty = PathSnapshot {
         ecs_goal: None,
         is_calculating: false,
@@ -503,7 +503,7 @@ mod tests {
             facade(&client, |f| (f.goal.is_some(), f.last_failure)),
             Some((true, Some(PathError::Timeout)))
         );
-        // the search's own timeout then kills it (azalea's max_timeout
+        // the search's own timeout then kills it (the engine's max_timeout
         // drops the goal) — the observed edge reports its result and
         // clears the dead goal like any failed search
         set_searching(&client, false);
@@ -689,7 +689,7 @@ mod tests {
 
     /// Upstream's `thinkTimeout` is a cumulative promise budget: a goal
     /// that keeps producing *partial* paths without ever completing must
-    /// report `Timeout` once its searches total the budget — azalea
+    /// report `Timeout` once its searches total the budget — the engine
     /// would otherwise repath the unreachable frontier forever. The
     /// facade goal is upstream's surviving `stateGoal` — it stays
     /// installed with the outcome recorded for a pending `goto`, and
@@ -701,7 +701,7 @@ mod tests {
         fn unreached(_: moves::IsReachedCtx) -> bool {
             false
         }
-        let partial_path = |client: &azalea::Client, target| {
+        let partial_path = |client: &mineflayer_engine::Client, target| {
             client
                 .ecs
                 .write()

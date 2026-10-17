@@ -1,0 +1,58 @@
+[package]
+name = "mineflayer-client"
+description = "A headless Minecraft client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-compat.workspace = true
+mineflayer-auth.workspace = true
+mineflayer-block.workspace = true
+mineflayer-buf.workspace = true
+mineflayer-chat.workspace = true
+mineflayer-core.workspace = true
+mineflayer-crypto.workspace = true
+mineflayer-entity.workspace = true
+mineflayer-inventory.workspace = true
+mineflayer-physics.workspace = true
+mineflayer-protocol = { workspace = true, features = ["connecting", "bevy_ecs"] }
+mineflayer-registry.workspace = true
+mineflayer-world.workspace = true
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_log = { workspace = true, optional = true }
+bevy_tasks.workspace = true
+bevy_time.workspace = true
+chrono = { workspace = true, features = ["now"] }
+derive_more = { workspace = true, features = ["deref", "deref_mut"] }
+indexmap.workspace = true
+minecraft_folder_path.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+reqwest = { workspace = true, optional = true, features = ["socks"] }
+simdnbt.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+uuid.workspace = true
+# TODO: this is here to make bevy show system names in conflict warnings.
+# in bevy 0.18, we should be able to just enable the debug feature on bevy_ecs instead.
+bevy_utils = { workspace = true, features = ["debug"] }
+
+[dev-dependencies]
+eyre.workspace = true
+
+[features]
+default = ["log", "packet-event", "online-mode"]
+# enables bevy_log::LogPlugin by default
+log = ["bevy_log"]
+packet-event = []
+online-mode = [
+    "mineflayer-auth/online-mode",
+    "mineflayer-protocol/online-mode",
+    "dep:reqwest",
+]
+
+[lints]
+workspace = true

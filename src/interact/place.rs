@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
-// `azalea::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // crate under its real name
-use azalea::{
+use mineflayer_engine::{
     BlockPos, Vec3,
     core::direction::Direction,
     entity::Position,
@@ -269,7 +269,7 @@ impl Bot {
         &self,
         reference_block: &Block,
         face_vector: Vec3,
-    ) -> Result<azalea::EntityRef> {
+    ) -> Result<mineflayer_engine::EntityRef> {
         self.place_entity_opts(reference_block, face_vector, &PlaceOpts::default())
             .await
     }
@@ -284,7 +284,7 @@ impl Bot {
         reference_block: &Block,
         face_vector: Vec3,
         opts: &PlaceOpts,
-    ) -> Result<azalea::EntityRef> {
+    ) -> Result<mineflayer_engine::EntityRef> {
         let held = self.held_item().ok_or_else(|| {
             Error::InvalidState("must be holding an item to place an entity".to_string())
         })?;
@@ -331,7 +331,7 @@ impl Bot {
             let seq = self.next_sequence();
             let (y_rot, x_rot) = self
                 .client
-                .get_component::<azalea::entity::LookDirection>()
+                .get_component::<mineflayer_engine::entity::LookDirection>()
                 .map(|l| (l.y_rot(), l.x_rot()))
                 .unwrap_or_default();
             self.client.write_packet(ServerboundUseItem {
@@ -346,7 +346,7 @@ impl Bot {
                 match rx.recv().await {
                     Ok(BotEvent::EntitySpawn(entity)) => {
                         let kind = entity
-                            .get_component::<azalea::entity::EntityKindComponent>()
+                            .get_component::<mineflayer_engine::entity::EntityKindComponent>()
                             .map(|k| k.0.to_str());
                         let pos = entity.get_component::<Position>().map(|p| **p);
                         if kind.is_some_and(|k| expected.matches(k))
@@ -376,7 +376,7 @@ impl Bot {
     ///
     /// The click point lands on the wire (`BlockHit.location`), so
     /// non-default `cursor_pos` values are honored — a difference from an
-    /// azalea `block_interact` call, which raycasts the target itself.
+    /// The engine `block_interact` call, which raycasts the target itself.
     pub async fn activate_block(
         &self,
         block: &Block,
@@ -410,7 +410,7 @@ impl Bot {
         .await
     }
 
-    /// Increment the action sequence like azalea's predicted interactions
+    /// Increment the action sequence like the engine's predicted interactions
     /// (`BlockStatePredictionHandler::start_predicting`); `0` pre-spawn.
     fn next_sequence(&self) -> u32 {
         self.client
@@ -533,7 +533,7 @@ impl Bot {
         &self,
         reference: BlockPos,
         dest: BlockPos,
-        old_kind: Option<azalea::registry::builtin::BlockKind>,
+        old_kind: Option<mineflayer_engine::registry::builtin::BlockKind>,
         rx: &mut broadcast::Receiver<BotEvent>,
     ) -> Result<Block> {
         let mut acked = false;
@@ -655,7 +655,7 @@ mod tests {
     /// message.
     #[tokio::test]
     async fn generic_place_requires_item_in_chosen_hand() {
-        use azalea::entity::inventory::Inventory;
+        use mineflayer_engine::entity::inventory::Inventory;
 
         let client = crate::test_util::live_entity_client(Inventory::default());
         let bot = crate::Bot::new(client);
@@ -696,7 +696,7 @@ mod tests {
     /// four types upstream supports.
     #[test]
     fn placed_entity_uses_unnamespaced_item_name() {
-        use azalea::{inventory::ItemStack, registry::builtin::ItemKind};
+        use mineflayer_engine::{inventory::ItemStack, registry::builtin::ItemKind};
 
         let item = crate::windows::Item {
             stack: ItemStack::new(ItemKind::EndCrystal, 1),

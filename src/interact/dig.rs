@@ -4,10 +4,10 @@
 
 use std::time::{Duration, Instant};
 
-// `azalea::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // crate under its real name
-use azalea::ecs as bevy_ecs;
-use azalea::{
+use mineflayer_engine::ecs as bevy_ecs;
+use mineflayer_engine::{
     BlockPos, Vec3,
     app::{App, Plugin},
     block::BlockTrait,
@@ -32,7 +32,7 @@ use tokio::sync::broadcast;
 use super::ForceLook;
 use crate::{Bot, BotEvent, Error, Result, world::Block};
 
-/// Ticks allowed for a queued dig to reach `Mining` (~1s — azalea converts
+/// Ticks allowed for a queued dig to reach `Mining` (~1s — the engine converts
 /// `MiningQueued`→`Mining` on the next `GameTick`; anything longer means the
 /// engine refused the dig).
 const DIG_START_GRACE_TICKS: u32 = 20;
@@ -85,7 +85,7 @@ enum DigExit {
 ///
 /// upstream's `targetDigBlock`/`targetDigFace`/`lastDigTime` live in
 /// `digging.js` and settle in the same synchronous step as the dig's
-/// promise; azalea's `Mining`/`MiningQueued` components lag that by up to
+/// promise; the engine's `Mining`/`MiningQueued` components lag that by up to
 /// a tick (an instant-break dig resolves while `MiningQueued` is still
 /// queued), so the promise-visible target is owned here. `dig_seq`/
 /// `aborted_seq` drive `stop_digging`'s generation check.
@@ -112,7 +112,7 @@ pub(crate) struct InteractShared {
 ///
 /// `start_mining` only enqueues a message: at abort time the engine may
 /// have no `MiningQueued`/`Mining` yet, and the message may materialize
-/// and be acted on (including azalea's creative instant-break) before any
+/// and be acted on (including the engine's creative instant-break) before any
 /// external task can look. [`reconcile_aborted_dig`] runs at the head of
 /// the mining chain, so this is the earliest point the port can cancel
 /// inside the tick that materializes the start.
@@ -214,7 +214,7 @@ pub(crate) fn reconcile_aborted_dig(world: &mut World) {
             world.entity_mut(entity).remove::<MiningQueued>();
         }
         if mining {
-            // azalea's stop handler runs in `Update`, but this pass runs in
+            // The engine's stop handler runs in `Update`, but this pass runs in
             // `GameTick` ahead of the mining chain: enqueueing the event
             // alone would let `continue_mining_block` progress (or insta-
             // finish) the block for the rest of this tick, so the handler's
@@ -258,7 +258,7 @@ pub(crate) fn reconcile_aborted_dig(world: &mut World) {
 }
 
 /// Installs [`reconcile_aborted_dig`]; added by the bot bootstrap
-/// (`BotBuilder::connect` mirrors azalea's `StartClientOpts::new` and adds
+/// (`BotBuilder::connect` mirrors the engine's `StartClientOpts::new` and adds
 /// this plugin before the ECS runner starts).
 pub(crate) struct DigAbortPlugin;
 
@@ -337,7 +337,7 @@ impl Bot {
                 block.name()
             )));
         };
-        // azalea `unwrap`s HitResultComponent when handling the start
+        // The engine `unwrap`s HitResultComponent when handling the start
         // event — missing means the pick systems haven't initialized yet,
         // not that we're offline
         if self.client.get_component::<HitResultComponent>().is_none() {
@@ -360,7 +360,7 @@ impl Bot {
 
         let pos = block.pos;
         // upstream sets `targetDigBlock`/`targetDigFace` synchronously at
-        // dig start; the face is the one azalea will send — the hit result
+        // dig start; the face is the one the engine will send — the hit result
         // when we're looking at the block, `Down` otherwise (its
         // `handle_start_mining_block_event` rule)
         let target_face = self
@@ -386,7 +386,7 @@ impl Bot {
                 shared.dig_target = Some((pos, target_face, seq));
                 seq
             };
-            ecs.write_message(azalea::mining::StartMiningBlockEvent {
+            ecs.write_message(mineflayer_engine::mining::StartMiningBlockEvent {
                 entity: self.client.entity,
                 position: pos,
                 force: true,
@@ -448,7 +448,7 @@ impl Bot {
     /// clear the port-owned `targetDigBlock` (only while it is still this
     /// dig's — a superseding `dig` owns it otherwise), stamp
     /// `lastDigTime` (upstream's resolve-or-abort stamp), and drop a
-    /// queued-but-never-started mine for this block so azalea cannot begin
+    /// queued-but-never-started mine for this block so the engine cannot begin
     /// mining the (now broken) cell on the next tick.
     fn settle_dig(&self, pos: BlockPos, my_seq: u64) {
         let entity = self.client.entity;
@@ -476,7 +476,7 @@ impl Bot {
     /// until the block turns air, the dig aborts, the deadline hits, or
     /// the connection ends. Split from `dig_opts` so tests can drive it —
     /// the `HitResultComponent` it gates on can't be constructed outside
-    /// azalea.
+    /// The engine.
     ///
     /// The `shutdown` and `sleep_until` arms carry the exits ticks can't:
     /// `TickBroadcast`'s sender lives in the ECS `World` kept alive by
@@ -564,7 +564,7 @@ impl Bot {
     /// `if (!targetDigBlock) return`); the target is set before the wire
     /// call, so a stop landing in the `start_mining`→`MiningQueued` window
     /// still aborts the pending `dig`. Otherwise it stamps the abort
-    /// generation, clears the port-owned target, sends azalea's
+    /// generation, clears the port-owned target, sends the engine's
     /// `StopMiningBlockEvent` (→ `AbortDestroyBlock` packet) and drops a
     /// stale `MiningQueued`.
     pub fn stop_digging(&self) {
@@ -807,7 +807,7 @@ mod tests {
     /// window no outside-tick code can close).
     #[test]
     fn reconcile_drops_a_queued_start_for_the_aborted_generation() {
-        use azalea::mining::MiningQueued;
+        use mineflayer_engine::mining::MiningQueued;
 
         let pos = BlockPos::new(9, 64, 9);
         let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 1);
@@ -834,7 +834,7 @@ mod tests {
     /// A live `Mining` at the aborted position is retired by the pass
     /// itself — Mining removed, progress reset, the abort packet sent —
     /// before the mining chain below can progress (or insta-finish) it in
-    /// the same tick (azalea's own stop handler runs a schedule later).
+    /// the same tick (the engine's own stop handler runs a schedule later).
     #[test]
     fn reconcile_retires_live_mining_in_span() {
         use std::sync::{
@@ -842,7 +842,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
         };
 
-        use azalea::ecs::observer::On;
+        use mineflayer_engine::ecs::observer::On;
 
         let pos = BlockPos::new(4, 64, 5);
         let (mut world, entity) = aborted_world(aborted_marker(pos, 3), 3);
@@ -907,7 +907,7 @@ mod tests {
     /// and the stale marker is dropped.
     #[test]
     fn reconcile_leaves_a_newer_generation_alone() {
-        use azalea::mining::MiningQueued;
+        use mineflayer_engine::mining::MiningQueued;
 
         let pos = BlockPos::new(2, 64, 2);
         let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 2);
@@ -951,7 +951,7 @@ mod tests {
     /// is not a no-op and drops the queued mine.
     #[tokio::test]
     async fn stop_digging_reaches_engine_leftovers_without_a_target() {
-        use azalea::mining::MiningQueued;
+        use mineflayer_engine::mining::MiningQueued;
 
         let client = crate::test_util::live_entity_client((
             InteractShared::default(),

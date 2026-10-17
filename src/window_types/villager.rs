@@ -47,13 +47,13 @@ pub(super) fn decode_offers(offers: &[MerchantOffer]) -> Vec<VillagerTrade> {
         .iter()
         .map(|offer| {
             let input_1 = Item {
-                stack: azalea::inventory::ItemStack::Present(
+                stack: mineflayer_engine::inventory::ItemStack::Present(
                     offer.base_cost_a.clone().into_item_stack(),
                 ),
                 slot: -1,
             };
             let input_2 = offer.cost_b.clone().map(|cost| Item {
-                stack: azalea::inventory::ItemStack::Present(cost.into_item_stack()),
+                stack: mineflayer_engine::inventory::ItemStack::Present(cost.into_item_stack()),
                 slot: -1,
             });
             let output = Item {
@@ -351,7 +351,7 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azalea::{
+    use mineflayer_engine::{
         inventory::ItemStack,
         protocol::packets::game::c_merchant_offers::{DataComponentExactPredicate, ItemCost},
     };

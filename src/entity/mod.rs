@@ -1,8 +1,8 @@
 //! Entities, players, and combat — queries, the entity event family, and the
 //! attack/interact/mount action surface.
 //!
-//! Entity *state* lives in azalea's ECS (tracked by its `EntityPlugin`); this
-//! module only adds what azalea doesn't expose: packet-driven entity events
+//! Entity *state* lives in the engine's ECS (tracked by its `EntityPlugin`); this
+//! module only adds what the engine doesn't expose: packet-driven entity events
 //! ([`BotEvent`] variants decoded in `observe_event`), tracked side state
 //! that isn't in the ECS (equipment, raw attributes, vehicles), and the
 //! `bot.*` method surface.
@@ -14,7 +14,7 @@ use std::{
 
 use parking_lot::RwLock;
 
-use azalea::{
+use mineflayer_engine::{
     EntityRef, Event, FormattedText, Vec3,
     core::{difficulty::Difficulty, direction::Direction, entity_id::MinecraftEntityId},
     ecs::{
@@ -65,10 +65,10 @@ pub(crate) use tracker::{
 
 /// The mineflayer `Player` object — a tab-list entry plus its world entity.
 ///
-/// `info` is azalea's [`PlayerInfo`] (`profile.uuid`, `gamemode`, `latency`,
+/// `info` is the engine's [`PlayerInfo`] (`profile.uuid`, `gamemode`, `latency`,
 /// `display_name`); `entity` is the player's in-world entity when it's
 /// spawned and loaded. `profile_keys` is the chat-signing key upstream
-/// exposes as `player.profileKeys` — azalea's `PlayerInfo` drops it, so the
+/// exposes as `player.profileKeys` — the engine's `PlayerInfo` drops it, so the
 /// bridge tracks it off the `c_player_info_update` wire data.
 #[derive(Clone)]
 pub struct Player {
@@ -110,11 +110,11 @@ pub struct Painting {
     pub position: Vec3,
     /// `painting.name` — the variant as its registry handle. Resolve the
     /// title (`"kebab"`, `"pigscene"`, …) with
-    /// `azalea::Client::resolve_registry_key` →
+    /// `mineflayer_engine::Client::resolve_registry_key` →
     /// `data::PaintingVariantKey`.
-    pub variant: azalea::registry::data::PaintingVariant,
+    pub variant: mineflayer_engine::registry::data::PaintingVariant,
     /// `painting.direction` — the wall face the painting hangs on
-    /// (upstream stores the face's normal `Vec3`; azalea decodes the typed
+    /// (upstream stores the face's normal `Vec3`; the engine decodes the typed
     /// [`Direction`]).
     pub direction: Direction,
 }
@@ -125,7 +125,7 @@ impl Painting {
     pub fn from_entity(entity: &EntityRef) -> Option<Painting> {
         // `_ =` drops the lock guard at the statement (a `let`-binding
         // would hold it for the rest of the function).
-        let _ = entity.get_component::<azalea::entity::metadata::Painting>()?;
+        let _ = entity.get_component::<mineflayer_engine::entity::metadata::Painting>()?;
         Some(Painting {
             id: *entity.get_component::<MinecraftEntityId>()?,
             position: **entity.get_component::<Position>()?,
@@ -146,7 +146,7 @@ impl Player {
         self.info.display_name.as_deref()
     }
     /// `player.gamemode`.
-    pub fn gamemode(&self) -> azalea::core::game_type::GameMode {
+    pub fn gamemode(&self) -> mineflayer_engine::core::game_type::GameMode {
         self.info.gamemode
     }
     /// `player.ping` — latency in milliseconds.
@@ -229,15 +229,15 @@ impl EntityExt for EntityRef {
 }
 
 impl Bot {
-    /// `bot.entity` — the bot's own entity as an azalea [`azalea::EntityRef`],
+    /// `bot.entity` — the bot's own entity as an engine [`mineflayer_engine::EntityRef`],
     /// usable anywhere a world entity is expected.
-    pub fn entity(&self) -> azalea::EntityRef {
+    pub fn entity(&self) -> mineflayer_engine::EntityRef {
         self.client.entity()
     }
 
     /// `bot.entity.position` convenience — the bot's feet position.
-    /// `Vec3::ZERO` until the first position arrives (azalea's own default).
-    pub fn position(&self) -> azalea::Vec3 {
+    /// `Vec3::ZERO` until the first position arrives (the engine's own default).
+    pub fn position(&self) -> mineflayer_engine::Vec3 {
         self.client
             .get_component::<Position>()
             .map(|p| **p)
@@ -246,7 +246,7 @@ impl Bot {
 
     /// Entities in our world, sorted nearest-first — the listing
     /// `nearest_entities_by` produces, but under **one** ECS lock with the
-    /// `EntityRef`s built only after it drops. Azalea's
+    /// `EntityRef`s built only after it drops. The engine's
     /// `nearest_entity_ids_by` binds its `WorldName` component guard
     /// across the `Position` lookup — a nested `ecs.read()` that
     /// permanently deadlocks whenever the ECS runner queues a write
@@ -305,7 +305,7 @@ impl Bot {
     /// `bot.findPlayer`/`bot.findPlayers` — player entities matching
     /// `filter` (upstream returns entities, not tab-list entries).
     pub fn find_players(&self, filter: PlayerFilter) -> Vec<EntityRef> {
-        self.entities_sorted_by_distance::<With<azalea::entity::metadata::Player>>()
+        self.entities_sorted_by_distance::<With<mineflayer_engine::entity::metadata::Player>>()
             .into_iter()
             .filter(|e| match &filter {
                 PlayerFilter::Predicate(f) => f(e),
@@ -331,7 +331,7 @@ impl Bot {
         // then take the next lock.)
         let infos: Vec<PlayerInfo> = self
             .client
-            .get_component::<azalea::local_player::TabList>()
+            .get_component::<mineflayer_engine::local_player::TabList>()
             .map(|tab_list| tab_list.values().cloned().collect())
             .unwrap_or_default();
         infos
@@ -377,7 +377,7 @@ impl Bot {
     /// are hyphenated UUID strings, like upstream.
     pub fn uuid_to_username(&self) -> HashMap<String, String> {
         self.client
-            .get_component::<azalea::local_player::TabList>()
+            .get_component::<mineflayer_engine::local_player::TabList>()
             .map(|tab_list| {
                 tab_list
                     .values()
@@ -401,7 +401,7 @@ impl Bot {
     }
 
     /// `entity.equipment` — the entity's equipment by slot, tracked from
-    /// `c_set_equipment` (azalea drops that packet). Empty for entities that
+    /// `c_set_equipment` (the engine drops that packet). Empty for entities that
     /// never sent equipment.
     pub fn equipment(&self, entity: &EntityRef) -> HashMap<EquipmentSlot, ItemStack> {
         // resolve the id before touching the tracker — holding the
@@ -421,7 +421,7 @@ impl Bot {
     // -- actions ---------------------------------------------------------
 
     /// `bot.attack(entity, swing?)` — with `swing` it queues the attack
-    /// through azalea (which sends attack + arm swing on the next game tick,
+    /// through the engine (which sends attack + arm swing on the next game tick,
     /// like vanilla input); without it sends a bare attack packet.
     pub fn attack(&self, entity: &EntityRef, swing: bool) {
         if swing {
@@ -466,7 +466,7 @@ impl Bot {
         self.client
             .ecs
             .write()
-            .trigger(azalea::interact::EntityInteractEvent {
+            .trigger(mineflayer_engine::interact::EntityInteractEvent {
                 client: self.client.entity,
                 target: entity.id(),
                 location: Some(pos),
@@ -499,10 +499,10 @@ impl Bot {
             shift: true,
             ..Default::default()
         });
-        // azalea sends player_input diffs against its own LastSentInput, so a
+        // The engine sends player_input diffs against its own LastSentInput, so a
         // matching release restores the on-wire state without a second packet
         self.client.write_packet(ServerboundPlayerInput::default());
-        // edge: if azalea already thinks shift is held (trying_to_crouch),
+        // edge: if the engine already thinks shift is held (trying_to_crouch),
         // the press packet diffs to nothing — the sneak never reaches the
         // server; matching upstream's raw write is still the closest analog
         // (upstream has the same desync when its sneak flag drifts).
@@ -574,7 +574,7 @@ impl Bot {
 
 /// Decode the `textures` profile property into [`SkinData`]
 /// (upstream `extractSkinInformation`).
-fn skin_data(profile: &azalea::auth::game_profile::GameProfile) -> Option<SkinData> {
+fn skin_data(profile: &mineflayer_engine::auth::game_profile::GameProfile) -> Option<SkinData> {
     let textures = profile.properties.map.get("textures")?;
     let json = String::from_utf8(base64_decode(&textures.value)?).ok()?;
     // key order inside `textures` (and `SKIN`) is not fixed — read the
@@ -659,15 +659,16 @@ mod tests {
             String::from_utf8(base64_decode(b64).unwrap()).unwrap(),
             json
         );
-        let mut properties = azalea::auth::game_profile::GameProfileProperties::default();
+        let mut properties =
+            mineflayer_engine::auth::game_profile::GameProfileProperties::default();
         properties.map.insert(
             "textures".to_string(),
-            azalea::auth::game_profile::ProfilePropertyValue {
+            mineflayer_engine::auth::game_profile::ProfilePropertyValue {
                 value: b64.to_string(),
                 signature: None,
             },
         );
-        let profile = azalea::auth::game_profile::GameProfile {
+        let profile = mineflayer_engine::auth::game_profile::GameProfile {
             uuid: Default::default(),
             name: "faye".to_string(),
             properties: std::sync::Arc::new(properties),
@@ -681,7 +682,8 @@ mod tests {
             })
         );
         // no textures property -> None
-        let bare = azalea::auth::game_profile::GameProfile::new(Default::default(), "x".into());
+        let bare =
+            mineflayer_engine::auth::game_profile::GameProfile::new(Default::default(), "x".into());
         assert_eq!(skin_data(&bare), None);
     }
 
@@ -696,15 +698,16 @@ mod tests {
             String::from_utf8(base64_decode(b64).unwrap()).unwrap(),
             json
         );
-        let mut properties = azalea::auth::game_profile::GameProfileProperties::default();
+        let mut properties =
+            mineflayer_engine::auth::game_profile::GameProfileProperties::default();
         properties.map.insert(
             "textures".to_string(),
-            azalea::auth::game_profile::ProfilePropertyValue {
+            mineflayer_engine::auth::game_profile::ProfilePropertyValue {
                 value: b64.to_string(),
                 signature: None,
             },
         );
-        let profile = azalea::auth::game_profile::GameProfile {
+        let profile = mineflayer_engine::auth::game_profile::GameProfile {
             uuid: Default::default(),
             name: "faye".to_string(),
             properties: std::sync::Arc::new(properties),
@@ -731,7 +734,9 @@ mod tests {
 
     #[test]
     fn painting_from_entity_reads_metadata() {
-        use azalea::registry::{DataRegistry as _, data::PaintingVariant as VariantKind};
+        use mineflayer_engine::registry::{
+            DataRegistry as _, data::PaintingVariant as VariantKind,
+        };
 
         let client = crate::test_util::live_entity_client(());
         let e = client
@@ -744,7 +749,7 @@ mod tests {
                     y: 2.,
                     z: 3.,
                 }),
-                azalea::entity::metadata::Painting,
+                mineflayer_engine::entity::metadata::Painting,
                 PaintingDirection(Direction::South),
                 PaintingVariant(VariantKind::new_raw(2)),
             ))
@@ -769,7 +774,7 @@ mod tests {
 
     #[test]
     fn players_attaches_profile_keys() {
-        use azalea::{
+        use mineflayer_engine::{
             auth::game_profile::GameProfile, core::game_type::GameMode, local_player::TabList,
         };
 
@@ -791,7 +796,7 @@ mod tests {
         client
             .ecs
             .write()
-            .init_resource::<azalea::entity::indexing::EntityUuidIndex>();
+            .init_resource::<mineflayer_engine::entity::indexing::EntityUuidIndex>();
         let bot = Bot::new(client);
         let mut tracker = EntityTracker::default();
         tracker.chat_sessions.insert(

@@ -24,12 +24,12 @@
 
 use std::time::Duration;
 
-use azalea::{
+use mineflayer::{Bot, BotEvent, CollectTarget, EquipDest, FindBlocksOpts};
+use mineflayer_engine::{
     BlockPos, Vec3,
     entity::EntityKindComponent,
     registry::builtin::{BlockKind, EntityKind, ItemKind},
 };
-use mineflayer::{Bot, BotEvent, CollectTarget, EquipDest, FindBlocksOpts};
 use tokio::sync::{broadcast::error::RecvError, mpsc};
 
 use crate::common::wait_for;

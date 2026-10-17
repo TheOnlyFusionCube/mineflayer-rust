@@ -5,12 +5,12 @@
 use super::*;
 
 /// Facade-kept world/game state, fed by [`observe_event`] inside the
-/// bridge's event loop. Fields that azalea already owns (dimension,
+/// bridge's event loop. Fields that the engine already owns (dimension,
 /// gamemode) are read live off the client instead.
 #[derive(Default)]
 pub(crate) struct WorldState {
     /// `bot.spawnPoint` — from `c_set_default_spawn_position` (dropped
-    /// by azalea).
+    /// by the engine).
     pub(super) spawn_point: Option<GlobalPos>,
     /// Per-dimension clocks from `c_set_time`, advanced one tick per
     /// game tick like vanilla does.
@@ -27,7 +27,7 @@ pub(crate) struct WorldState {
     pub(super) server_brand: Option<String>,
     /// `BlockState` last *reported* per updated position — the
     /// `blockUpdate` `oldBlock` source of truth. The bridge decodes
-    /// `Event::Packet` only after azalea's `Update` pass finished (its
+    /// `Event::Packet` only after the engine's `Update` pass finished (its
     /// `run_schedule_loop` holds the ECS write guard across the whole
     /// pass, and both `packet_listener` and
     /// `handle_block_update_event` run inside it — the async receiver
@@ -153,9 +153,9 @@ impl LidCounts {
     }
 }
 
-/// Feed one azalea [`Event`] into the world domain — the packet decode of
+/// Feed one engine [`Event`] into the world domain — the packet decode of
 /// mineflayer's `plugins/blocks.js` + `time.js` + `rain.js` + `game.js`.
-/// Azalea drops or internalizes these packets, so the bridge runs this
+/// The engine drops or internalizes these packets, so the bridge runs this
 /// synchronously on every event (same loop position as the entity and
 /// window observers): derived events keep packet order like upstream's
 /// in-handler emits, and nothing rides a second broadcast hop that could
@@ -165,7 +165,7 @@ impl LidCounts {
 /// connection, like upstream's.
 pub(crate) fn observe_event(
     state: &RwLock<WorldState>,
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     lids: &mut LidCounts,
     event: &Event,
 ) -> Vec<BotEvent> {
@@ -180,7 +180,7 @@ pub(crate) fn observe_event(
 }
 
 pub(super) fn decode_packet(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     state: &RwLock<WorldState>,
     lids: &mut LidCounts,
     packet: &ClientboundGamePacket,
@@ -275,7 +275,7 @@ pub(super) fn decode_packet(
         ClientboundGamePacket::CustomPayload(p) => {
             // `minecraft:brand` → bot.game.serverBrand.
             if p.identifier.to_string() == "minecraft:brand"
-                && let Ok(brand) = String::azalea_read(&mut Cursor::new(&p.data.0[..]))
+                && let Ok(brand) = String::mc_read(&mut Cursor::new(&p.data.0[..]))
             {
                 state.write().server_brand = Some(brand);
             }
@@ -307,13 +307,13 @@ pub(super) fn decode_packet(
 }
 
 pub(super) fn block_update_event(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     state: &mut WorldState,
     lids: &mut LidCounts,
     pos: BlockPos,
     new_state: BlockState,
 ) -> BotEvent {
-    // azalea's `handle_block_update_event` drains the queued updates in
+    // The engine's `handle_block_update_event` drains the queued updates in
     // the same `Update` pass that emits `Event::Packet`, and the async
     // bridge can't observe mid-pass (`run_schedule_loop` only yields
     // between iterations), so the live world already reports `new_state`
@@ -335,7 +335,7 @@ pub(super) fn block_update_event(
 }
 
 pub(super) fn block_event(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     lids: &mut LidCounts,
     p: &ClientboundBlockEvent,
 ) -> Vec<BotEvent> {
@@ -379,7 +379,7 @@ pub(super) fn block_event(
 mod tests {
     use std::sync::Arc;
 
-    use azalea::{
+    use mineflayer_engine::{
         core::entity_id::MinecraftEntityId,
         protocol::packets::game::c_block_destruction::ClientboundBlockDestruction,
     };
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn observe_event_decodes_packets_in_call_order() {
-        use azalea::protocol::packets::game::{
+        use mineflayer_engine::protocol::packets::game::{
             c_forget_level_chunk::ClientboundForgetLevelChunk, c_game_event::ClientboundGameEvent,
         };
 
@@ -613,7 +613,7 @@ mod tests {
     /// already shows the new one.
     #[test]
     fn block_update_old_comes_from_update_history() {
-        use azalea::protocol::packets::game::c_block_update::ClientboundBlockUpdate;
+        use mineflayer_engine::protocol::packets::game::c_block_update::ClientboundBlockUpdate;
 
         let client = crate::test_util::live_entity_client(());
         let (world, _partial) = test_world();
@@ -634,7 +634,7 @@ mod tests {
             )))
         };
 
-        // Simulate azalea's real ordering: `handle_block_update_event`
+        // Simulate the engine's real ordering: `handle_block_update_event`
         // already wrote the new state into the world when this packet's
         // `Event::Packet` is decoded.
         shared.write().chunks.set_block_state(pos, stone());

@@ -205,7 +205,7 @@ impl Bot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azalea::inventory::ItemStack;
+    use mineflayer_engine::inventory::ItemStack;
 
     #[test]
     fn book_input_guards() {
@@ -234,7 +234,7 @@ mod tests {
         // so what actually distinguishes an edited book is non-empty
         // pages — which the write-ack predicate in edit_book relies on
         let book = ItemStack::new(ItemKind::WritableBook, 1).with_component(WritableBookContent {
-            pages: vec![azalea::core::filterable::Filterable {
+            pages: vec![mineflayer_engine::core::filterable::Filterable {
                 raw: "page one".to_string(),
                 filtered: None,
             }],

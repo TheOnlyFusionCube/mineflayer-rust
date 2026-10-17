@@ -1,0 +1,14 @@
+[package]
+name = "mineflayer-block"
+description = "Representation of Minecraft block states."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mineflayer-block-macros.workspace = true
+mineflayer-buf.workspace = true
+mineflayer-registry.workspace = true
+
+[lints]
+workspace = true

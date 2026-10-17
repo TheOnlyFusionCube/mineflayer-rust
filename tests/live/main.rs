@@ -5,7 +5,7 @@
 //! bash scripts/live-server.sh && cargo test --features live -- --ignored --test-threads=1
 //! ```
 //!
-//! One binary (not twelve) keeps the azalea link step and build disk use
+//! One binary (not twelve) keeps the engine link step and build disk use
 //! in check. `--test-threads=1` is required: the tests share one fixture
 //! world and some connect several bots.
 

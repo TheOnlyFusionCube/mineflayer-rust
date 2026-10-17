@@ -4,7 +4,7 @@
 //! # Slot conventions (load-bearing for U9 typed windows and U10 crafting)
 //!
 //! Slot indices are the protocol's absolute window indices, identical to
-//! mineflayer's `window.slots` indexing and to azalea's [`Menu`] layout:
+//! mineflayer's `window.slots` indexing and to the engine's [`Menu`] layout:
 //!
 //! - **Player inventory window** (always id 0): `0` craft result, `1..=4`
 //!   2x2 craft grid, `5..=8` armor head/torso/legs/feet, `9..=35` main
@@ -20,7 +20,7 @@
 //! # Ownership model
 //!
 //! mineflayer's windows are shared objects closed by an explicit
-//! `window.close()`; azalea's `ContainerHandle` instead closes the
+//! `window.close()`; the engine's `ContainerHandle` instead closes the
 //! container on `Drop`. [`Window`] ports the upstream model: it is a cheap
 //! cloneable `Arc` over a [`ContainerHandleRef`] (the non-closing handle)
 //! with an explicit, idempotent [`Window::close`]. Dropping a `Window`
@@ -29,15 +29,15 @@
 //!
 //! # Events
 //!
-//! The bridge calls `observe_event` for every azalea event. It decodes
-//! the container packets azalea doesn't lift into `Event`s (open/close/
+//! The bridge calls `observe_event` for every engine event. It decodes
+//! the container packets the engine doesn't lift into `Event`s (open/close/
 //! set-content/set-slot/held-slot/cooldown) into
 //! [`BotEvent::WindowOpen`], [`BotEvent::WindowClose`],
 //! [`BotEvent::WindowUpdateSlot`], [`BotEvent::SetWindowItems`] and
 //! [`BotEvent::HeldItemChanged`], keeps `WindowTracker` current, and
-//! patches the two azalea gaps that matter for parity:
-//! `container_set_content`'s `carried_item` (azalea ignores it, so the
-//! cursor would desync) and `c_set_player_inventory` (azalea drops the
+//! patches the two the engine gaps that matter for parity:
+//! `container_set_content`'s `carried_item` (the engine ignores it, so the
+//! cursor would desync) and `c_set_player_inventory` (the engine drops the
 //! packet entirely). Upstream's `setSlot:{id}` is `WindowUpdateSlot`'s
 //! `window_id` field; `confirmTransaction{id}` has no wire on mc26 —
 //! the transaction packet was removed in 1.17 and click rejects arrive
@@ -53,7 +53,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use azalea::{
+use mineflayer_engine::{
     FormattedText,
     container::ContainerHandleRef,
     entity::inventory::Inventory,
@@ -102,7 +102,7 @@ pub(crate) struct WindowShared {
     /// Non-closing container handle — sends clicks and the close packet.
     pub handle: ContainerHandleRef,
     /// Kept for ECS access (`Window::close`'s `copyInventory`).
-    pub client: azalea::Client,
+    pub client: mineflayer_engine::Client,
     /// Set once the window is closed — by [`Window::close`] or by the
     /// server (`container_close`) — or displaced by a new `open_screen`.
     pub closed: AtomicBool,
@@ -128,7 +128,7 @@ impl Window {
         id: i32,
         menu_kind: MenuKind,
         title: FormattedText,
-        client: azalea::Client,
+        client: mineflayer_engine::Client,
         tracker: &Arc<Mutex<WindowTracker>>,
     ) -> Window {
         let menu = Menu::from_kind(menu_kind);
@@ -152,7 +152,7 @@ impl Window {
     /// stateless over the ECS `Inventory` component, so identity doesn't
     /// matter; upstream's `bot.inventory` is the same object forever.
     pub(crate) fn player_inventory(
-        client: azalea::Client,
+        client: mineflayer_engine::Client,
         tracker: &Arc<Mutex<WindowTracker>>,
     ) -> Window {
         Window {
@@ -160,7 +160,7 @@ impl Window {
                 id: 0,
                 menu_kind: None,
                 title: None,
-                player_start: *azalea::inventory::Player::INVENTORY_SLOTS.start(),
+                player_start: *mineflayer_engine::inventory::Player::INVENTORY_SLOTS.start(),
                 len: Menu::Player(Default::default()).len(),
                 handle: ContainerHandleRef::new(0, client.clone()),
                 client,
@@ -371,7 +371,7 @@ impl Window {
     /// [`BotEvent::WindowClose`] exactly once. Idempotent.
     ///
     /// For the player inventory (id 0) this is a client-side no-op —
-    /// azalea only sends `container_close` for the open container id.
+    /// The engine only sends `container_close` for the open container id.
     pub fn close(&self) {
         if self.shared.closed.swap(true, Ordering::SeqCst) {
             return;
@@ -380,7 +380,7 @@ impl Window {
             // copyInventory: while the window was open the server's
             // player-inventory updates landed on the container menu, so
             // the window's player region is fresher than inventory_menu.
-            // Copy it before azalea's close handler drops the menu.
+            // Copy it before the engine's close handler drops the menu.
             // lock rule: this ECS guard must be dropped (the `drop(ecs)`
             // below) before the tracker lock is taken — never hold the
             // ECS lock while taking a domain lock.
@@ -421,10 +421,10 @@ impl Window {
 
     /// Send a click operation on this window (`ContainerClickEvent` →
     /// local `simulate_click` + `s_container_click`). No-ops server-side
-    /// if the window id isn't the open one (azalea drops it).
+    /// if the window id isn't the open one (the engine drops it).
     pub(crate) fn click(
         &self,
-        operation: impl Into<azalea::inventory::operations::ClickOperation>,
+        operation: impl Into<mineflayer_engine::inventory::operations::ClickOperation>,
     ) {
         self.shared.handle.click(operation);
     }
@@ -437,7 +437,7 @@ pub type Chest = Window;
 pub type Dispenser = Window;
 
 /// Resolve the live [`Menu`] for a window id. Id 0 always reads
-/// `inventory_menu` — azalea's `ContainerHandleRef` accessors gate on
+/// `inventory_menu` — the engine's `ContainerHandleRef` accessors gate on
 /// `inv.id == self.id`, which blinds the player window while a container
 /// is open (upstream keeps `bot.inventory` live during open windows via
 /// the id-0 packet writes our observer patches into `inventory_menu`).
@@ -492,7 +492,7 @@ mod tests {
     use super::*;
 
     /// The C2 regression: `bot.inventory()` (id 0) must resolve the
-    /// player menu even while a container is open — azalea's
+    /// player menu even while a container is open — the engine's
     /// `ContainerHandleRef` gates on `inv.id == self.id`, which would
     /// return `None` for every id-0 read during an open window.
     #[test]

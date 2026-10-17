@@ -5,7 +5,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use azalea::{
+use mineflayer_engine::{
     Event, FormattedText,
     core::entity_id::MinecraftEntityId,
     entity::inventory::Inventory,
@@ -98,7 +98,7 @@ impl WindowTracker {
     /// reacts to type/count changes).
     /// lock rule: called with the tracker lock held; the ECS read below
     /// is brief (domain lock → ECS lock is the allowed direction).
-    fn held_sig_changed(&mut self, client: &azalea::Client) {
+    fn held_sig_changed(&mut self, client: &mineflayer_engine::Client) {
         let sig = held_signature(client, self.selected_hotbar);
         if sig != self.last_held {
             self.last_held = sig;
@@ -114,7 +114,7 @@ impl WindowTracker {
 ///
 /// lock rule: callers hold the tracker lock; the ECS read is brief
 /// (domain lock → ECS lock is the allowed direction).
-fn held_signature(client: &azalea::Client, sel: Option<u8>) -> Option<(ItemKind, i32)> {
+fn held_signature(client: &mineflayer_engine::Client, sel: Option<u8>) -> Option<(ItemKind, i32)> {
     let inv = client.get_component::<Inventory>()?;
     let sel = sel.unwrap_or(inv.selected_hotbar_slot);
     let stack = inv
@@ -131,7 +131,7 @@ fn held_signature(client: &azalea::Client, sel: Option<u8>) -> Option<(ItemKind,
 /// when the hand is empty or the component is gone.
 /// lock rule: callers hold the tracker lock; the ECS read is brief
 /// (domain lock → ECS lock is the allowed direction).
-pub(crate) fn held_item(client: &azalea::Client, sel: u8) -> Option<Item> {
+pub(crate) fn held_item(client: &mineflayer_engine::Client, sel: u8) -> Option<Item> {
     let inv = client.get_component::<Inventory>()?;
     let index = crate::inventory::QUICK_BAR_START + usize::from(sel);
     Item::of(inv.inventory_menu.slot(index)?.clone(), index as i16)
@@ -153,16 +153,16 @@ pub(crate) fn player_inventory_slot_to_window(slot: u32) -> u32 {
     }
 }
 
-/// Decode one azalea [`Event`] into window-domain [`BotEvent`]s — the
-/// inventory-side analog of `entity::observe_event`. Runs after azalea's
+/// Decode one engine [`Event`] into window-domain [`BotEvent`]s — the
+/// inventory-side analog of `entity::observe_event`. Runs after the engine's
 /// own packet handlers, so the ECS `Inventory` component already reflects
-/// the packet; the pieces azalea drops (`carried_item` on set-content,
+/// the packet; the pieces the engine drops (`carried_item` on set-content,
 /// `set_player_inventory`, non-hotbar `set_slot` writes while a container
 /// is open, slot data sent before `open_screen`, trailing syncs under a
 /// closed id) are patched into the ECS here.
 pub(crate) fn observe_event(
     tracker: &Arc<Mutex<WindowTracker>>,
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     event: &Event,
 ) -> Vec<BotEvent> {
     let Event::Packet(packet) = event else {
@@ -197,7 +197,7 @@ pub(crate) fn observe_event(
                 .map(|(_, items)| items);
             if let Some(items) = early_items {
                 // slot data arrived before the open packet (upstream's
-                // prepareWindow sync branch). azalea dropped that early
+                // prepareWindow sync branch). The engine dropped that early
                 // content — write it into the fresh menu now.
                 // lock rule: the tracker lock is held while this ECS
                 // guard is taken — allowed direction, keep it brief.
@@ -287,7 +287,7 @@ pub(crate) fn observe_event(
         }
         ClientboundGamePacket::SetPlayerInventory(p) => {
             let win_slot = player_inventory_slot_to_window(p.slot);
-            // azalea drops this packet entirely — apply it ourselves to
+            // The engine drops this packet entirely — apply it ourselves to
             // the player menu, then report it like a `set_slot`.
             // lock rule: this ECS guard must close before the tracker lock
             // below (never hold the ECS lock while taking a domain lock).
@@ -384,8 +384,8 @@ pub(crate) fn observe_event(
 /// ordering.
 fn set_content_events(
     tracker: &Arc<Mutex<WindowTracker>>,
-    client: &azalea::Client,
-    p: &azalea::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
+    client: &mineflayer_engine::Client,
+    p: &mineflayer_engine::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
 ) -> Vec<BotEvent> {
     // lock rule: tracker lock held while ECS reads (`get_component`,
     // `patch_carried`, `held_sig_changed`, `held_item`) and the short
@@ -516,23 +516,23 @@ fn set_content_events(
     out
 }
 
-/// Write `container_set_content`'s `carried_item` into the ECS — azalea
+/// Write `container_set_content`'s `carried_item` into the ECS — the engine
 /// ignores the field, so without this the cursor stack desyncs and click
 /// packets carry the wrong item. Upstream applies it only on resolved
 /// packets (window 0 or `currentWindow`, which includes pending windows);
 /// early-buffered and `lastClosedWindow`-remapped packets return first.
-fn patch_carried(client: &azalea::Client, stack: &ItemStack) {
+fn patch_carried(client: &mineflayer_engine::Client, stack: &ItemStack) {
     let mut ecs = client.ecs.write();
     if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
         inv.carried = stack.clone();
     }
 }
 
-/// Protocol id of the menu clicks target — azalea's `Inventory.id`
+/// Protocol id of the menu clicks target — the engine's `Inventory.id`
 /// (0 = the player window, which `WindowTracker` mirrors in `pending`/
 /// `current`).
 /// lock rule: callers hold the tracker lock; the ECS read is brief.
-fn active_inventory_id(client: &azalea::Client) -> i32 {
+fn active_inventory_id(client: &mineflayer_engine::Client) -> i32 {
     client
         .get_component::<Inventory>()
         .map(|inv| inv.id)
@@ -543,13 +543,13 @@ fn active_inventory_id(client: &azalea::Client) -> i32 {
 /// `initializeContents` / `setItem(slot, stateId, item)` update the active
 /// menu's id, and upstream mineflayer mirrors it with a global
 /// `stateId = packet.stateId` listener over `set_slot`/`window_items`.
-/// azalea adopts one only from non-hotbar `set_slot` writes: hotbar writes
+/// The engine adopts one only from non-hotbar `set_slot` writes: hotbar writes
 /// into an idle window 0 skip it and `container_set_content` never carries
 /// it, so after a pickup or a full resync our clicks go out stale. The
 /// server answers a stale id with a full resync instead of a slot diff,
 /// and a resync landing mid-choreography (craft -> grab -> deposit)
 /// clobbers the cursor the next click is gated on.
-fn patch_state_id(client: &azalea::Client, state_id: u32) {
+fn patch_state_id(client: &mineflayer_engine::Client, state_id: u32) {
     // lock rule: callers hold the tracker lock; this ECS write is brief
     // (domain lock → ECS lock is the allowed direction).
     let mut ecs = client.ecs.write();
@@ -559,14 +559,14 @@ fn patch_state_id(client: &azalea::Client, state_id: u32) {
 }
 
 /// `container_set_slot` — single-slot write. `container_id` -1 is the
-/// cursor (applied by azalea, no event upstream), -2 and 0 hit the player
+/// cursor (applied by the engine, no event upstream), -2 and 0 hit the player
 /// window, anything else resolves the open *or pending* container (or a
 /// trailing sync under `last_closed`) — upstream's `currentWindow` is set
 /// at `open_window`, before its first `window_items` arrives.
 fn set_slot_events(
     tracker: &Arc<Mutex<WindowTracker>>,
-    client: &azalea::Client,
-    p: &azalea::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
+    client: &mineflayer_engine::Client,
+    p: &mineflayer_engine::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
 ) -> Vec<BotEvent> {
     // lock rule: the tracker lock is held while ECS reads (and, through
     // `patch_state_id`, one short ECS write) are taken — allowed
@@ -589,17 +589,17 @@ fn set_slot_events(
 
     match p.container_id {
         -1 => {
-            // cursor item — azalea applies it; upstream emits nothing.
+            // cursor item — the engine applies it; upstream emits nothing.
             t.held_sig_changed(client);
         }
         -2 | 0 => {
-            // While a container is open azalea only applies id-0 writes
+            // While a container is open the engine only applies id-0 writes
             // to hotbar slots — patch the rest into the player menu so
             // the model matches the server's write (upstream applies
             // every id-0 set_slot to bot.inventory).
             if p.container_id == 0
                 && t.current.is_some()
-                && !azalea::inventory::Player::is_hotbar_slot(usize::from(p.slot))
+                && !mineflayer_engine::inventory::Player::is_hotbar_slot(usize::from(p.slot))
             {
                 let mut ecs = client.ecs.write();
                 if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
@@ -688,12 +688,12 @@ fn snapshot_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azalea::inventory::Menu;
+    use mineflayer_engine::inventory::Menu;
 
     // — packet→event decode: the per-window-id events upstream's
     // inventory.js emits (`setSlot:{id}`, `setWindowItems:{id}`) —
 
-    use azalea::protocol::packets::game::{
+    use mineflayer_engine::protocol::packets::game::{
         c_container_set_content::ClientboundContainerSetContent,
         c_container_set_slot::ClientboundContainerSetSlot, c_open_screen::ClientboundOpenScreen,
     };
@@ -707,15 +707,15 @@ mod tests {
         Arc::new(Mutex::new(WindowTracker::new(events)))
     }
 
-    fn client() -> azalea::Client {
+    fn client() -> mineflayer_engine::Client {
         crate::test_util::live_entity_client(Inventory::default())
     }
 
-    fn client_with(inv: Inventory) -> azalea::Client {
+    fn client_with(inv: Inventory) -> mineflayer_engine::Client {
         crate::test_util::live_entity_client(inv)
     }
 
-    fn state_id_of(client: &azalea::Client) -> u32 {
+    fn state_id_of(client: &mineflayer_engine::Client) -> u32 {
         client.get_component::<Inventory>().unwrap().state_id
     }
 
@@ -723,7 +723,7 @@ mod tests {
         packet_event(ClientboundGamePacket::OpenScreen(ClientboundOpenScreen {
             container_id: id,
             menu_type: MenuKind::Generic9x3,
-            title: azalea::FormattedText::from("chest"),
+            title: mineflayer_engine::FormattedText::from("chest"),
         }))
     }
 
@@ -796,7 +796,7 @@ mod tests {
     }
 
     /// The live-craft regression: clicks carried a stale `state_id`
-    /// because azalea adopts one only from non-hotbar `set_slot` writes —
+    /// because the engine adopts one only from non-hotbar `set_slot` writes —
     /// never from `container_set_content`, and never from hotbar writes.
     /// The server answers a stale id with a full resync instead of a slot
     /// diff, and a resync landing mid-choreography (craft -> grab ->
@@ -809,7 +809,7 @@ mod tests {
         let t = tracker();
         let client = client();
 
-        // hotbar set_slot into an idle window 0 adopts (azalea skips these)
+        // hotbar set_slot into an idle window 0 adopts (the engine skips these)
         observe_event(
             &t,
             &client,
@@ -817,7 +817,7 @@ mod tests {
         );
         assert_eq!(state_id_of(&client), 9);
 
-        // resolved window-0 bulk content adopts (azalea never does)
+        // resolved window-0 bulk content adopts (the engine never does)
         observe_event(
             &t,
             &client,
@@ -1014,8 +1014,9 @@ mod tests {
     fn carried_item_applies_only_on_resolved_set_content() {
         let t = tracker();
         let client = client();
-        let carried =
-            |client: &azalea::Client| client.get_component::<Inventory>().unwrap().carried.clone();
+        let carried = |client: &mineflayer_engine::Client| {
+            client.get_component::<Inventory>().unwrap().carried.clone()
+        };
 
         // buffered packet for an unseen id — carried untouched
         let stone = ItemStack::new(ItemKind::Stone, 1);

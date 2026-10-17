@@ -4,7 +4,7 @@
 //!
 //! Incoming messages are normalized by `ChatShared::message_events`, which
 //! the bridge calls for every chat packet and for the dedicated action-bar
-//! packet (azalea drops `c_set_action_bar_text`; upstream routes game_info
+//! packet (the engine drops `c_set_action_bar_text`; upstream routes game_info
 //! text through `message`/`messagestr`/`actionBar`, so we synthesize an
 //! overlay [`ChatPacket::System`] to take the same path).
 
@@ -13,7 +13,7 @@ use std::{
     time::Duration,
 };
 
-use azalea::{
+use mineflayer_engine::{
     FormattedText, client_chat::ChatPacket,
     protocol::packets::game::s_command_suggestion::ServerboundCommandSuggestion,
 };
@@ -23,7 +23,7 @@ use tokio::sync::{broadcast, oneshot};
 use crate::{Bot, BotEvent, Error, Result};
 
 /// Upstream's `CHAT_LENGTH_LIMIT` for >=1.11 (`options.chatLengthLimit`
-/// default; azalea targets mc26 so the pre-1.11 100-char limit never applies).
+/// default; the engine targets mc26 so the pre-1.11 100-char limit never applies).
 pub(crate) const CHAT_LENGTH_LIMIT: usize = 256;
 
 /// Upstream's default `awaitMessage` / `tabComplete` timeout behavior
@@ -170,7 +170,7 @@ impl From<Vec<&str>> for MessageMatcher {
 }
 
 /// `bot.tablist` — the tab-list header and footer, updated whenever the
-/// server sends `c_tab_list` (which azalea drops; the bridge stores it).
+/// server sends `c_tab_list` (which the engine drops; the bridge stores it).
 /// Both fields are empty until the first packet arrives, like upstream's
 /// `new ChatMessage('')` initializer.
 #[derive(Clone, Debug, Default)]
@@ -185,13 +185,13 @@ pub struct TabList {
 /// accessors: `toString`/`toAnsi`/`toHtml`, `text`/`translate`/`with`/`extra`,
 /// `ChatMessage.fromNotch`.
 ///
-/// A thin wrapper over azalea's [`FormattedText`] (`inner` is upstream's
+/// A thin wrapper over the engine's [`FormattedText`] (`inner` is upstream's
 /// `.json` — the parsed component). `Display`/`to_ansi`/`to_html` render it;
 /// translatable components resolve through the bundled en_us strings
-/// (azalea-language), the same default upstream's `toString()` uses.
+/// (mineflayer-language), the same default upstream's `toString()` uses.
 ///
 /// [`ChatMessage::parse`] fails on `score`/`selector`/`keybind`/`nbt`/
-/// `object` components — azalea's deserializer doesn't support them yet
+/// `object` components — the engine's deserializer doesn't support them yet
 /// (prismarine-chat does).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChatMessage {
@@ -217,7 +217,9 @@ impl ChatMessage {
 
     /// `ChatMessage.fromNotch(str)` — parse a legacy `§`-coded string.
     pub fn from_notch(text: &str) -> Self {
-        Self::new(azalea::chat::text_component::legacy_color_code_to_text_component(text))
+        Self::new(
+            mineflayer_engine::chat::text_component::legacy_color_code_to_text_component(text),
+        )
     }
 
     /// `msg.toAnsi()` — the plain-text render with ANSI style escapes.
@@ -248,7 +250,9 @@ impl ChatMessage {
     }
 
     /// `msg.with` — the translation arguments, when translatable.
-    pub fn with(&self) -> Option<&[azalea::chat::translatable_component::PrimitiveOrComponent]> {
+    pub fn with(
+        &self,
+    ) -> Option<&[mineflayer_engine::chat::translatable_component::PrimitiveOrComponent]> {
         match &self.inner {
             FormattedText::Translatable(c) => Some(&c.args),
             _ => None,
@@ -261,12 +265,12 @@ impl ChatMessage {
     }
 
     /// `msg`'s style — upstream's `color`/`bold`/`clickEvent`/`hoverEvent`
-    /// fields all live on azalea's `Style`.
-    pub fn style(&self) -> &azalea::chat::style::Style {
+    /// fields all live on the engine's `Style`.
+    pub fn style(&self) -> &mineflayer_engine::chat::style::Style {
         &self.inner.get_base().style
     }
 
-    /// Unwrap into the azalea [`FormattedText`].
+    /// Unwrap into the engine [`FormattedText`].
     pub fn into_inner(self) -> FormattedText {
         self.inner
     }
@@ -646,7 +650,7 @@ impl Bot {
         }
         for part in split_chat_message(header, message, self.chat_length_limit) {
             if part.starts_with('/') {
-                // commands go through azalea's command path (leading `/`
+                // commands go through the engine's command path (leading `/`
                 // stripped into a signed command packet)
                 self.client.chat(&part);
             } else {
@@ -772,8 +776,8 @@ mod tests {
     /// its correlation entry behind (A7).
     #[tokio::test]
     async fn cancelled_tab_complete_leaves_no_pending_entry() {
-        let client = crate::test_util::live_entity_client(azalea::world::WorldName(
-            azalea::Identifier::new("minecraft:overworld"),
+        let client = crate::test_util::live_entity_client(mineflayer_engine::world::WorldName(
+            mineflayer_engine::Identifier::new("minecraft:overworld"),
         ));
         let bot = Bot::new(client);
         let call = bot.tab_complete("/he");
@@ -1058,7 +1062,7 @@ mod tests {
     fn message_events_game_info_gets_action_bar() {
         let mut shared = ChatShared::default();
         let packet = ChatPacket::System(Arc::new(
-            azalea::protocol::packets::game::c_system_chat::ClientboundSystemChat {
+            mineflayer_engine::protocol::packets::game::c_system_chat::ClientboundSystemChat {
                 content: FormattedText::from("action!"),
                 overlay: true,
             },
@@ -1136,7 +1140,7 @@ mod tests {
         assert_eq!(msg.to_string(), "<faye> hello");
         assert!(msg.text().is_none());
 
-        // documented gap: azalea's deserializer rejects score/selector/
+        // documented gap: the engine's deserializer rejects score/selector/
         // keybind/nbt/object components (prismarine-chat accepts them)
         for json in [
             r#"{"score":{"name":"a","objective":"b"}}"#,

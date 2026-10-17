@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{self, AtomicBool},
 };
 
-use azalea::{
+use mineflayer_engine::{
     EntityRef,
     attack::get_attack_strength_delay,
     ecs::{self as bevy_ecs, prelude::Component},
@@ -46,7 +46,7 @@ pub enum AttackRate {
         max: u32,
     },
     /// `MaxDamageOffset(min, max)` — the held weapon's attack cooldown
-    /// (azalea's `get_attack_strength_delay`, the vanilla
+    /// (the engine's `get_attack_strength_delay`, the vanilla
     /// `20 / attack_speed` upstream's `getCooldown` reads from mcdata)
     /// plus a uniformly-random offset in `[min, max)` ticks. This is
     /// the upstream default (`-2..2`).
@@ -129,7 +129,7 @@ impl Default for PvpOpts {
     }
 }
 
-/// Facade state azalea has no slot for: the pvp target, the cancel
+/// Facade state the engine has no slot for: the pvp target, the cancel
 /// flag for its driver task, and the option fields — the same shape
 /// [`crate::pathfinder`] uses for its watcher
 /// (`PathfinderFacade.watcher_cancel`).
@@ -147,7 +147,7 @@ struct PvpState {
 
 /// Read from the [`PvpState`] component. `None` when it or the entity
 /// doesn't exist.
-fn pvp_state<R>(client: &azalea::Client, f: impl FnOnce(&PvpState) -> R) -> Option<R> {
+fn pvp_state<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&PvpState) -> R) -> Option<R> {
     let ecs = client.ecs.read();
     let entity = ecs.get_entity(client.entity).ok()?;
     entity.get::<PvpState>().map(f)
@@ -155,7 +155,10 @@ fn pvp_state<R>(client: &azalea::Client, f: impl FnOnce(&PvpState) -> R) -> Opti
 
 /// Run `f` against [`PvpState`], inserting a default one first. `None`
 /// when the client entity is gone.
-fn pvp_state_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut PvpState) -> R) -> Option<R> {
+fn pvp_state_mut<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut PvpState) -> R,
+) -> Option<R> {
     let mut ecs = client.ecs.write();
     let mut entity = ecs.get_entity_mut(client.entity).ok()?;
     if entity.get::<PvpState>().is_none() {
@@ -514,7 +517,7 @@ fn report_end_if_ours(bot: &Bot, cancel: &Arc<AtomicBool>) {
 
 #[cfg(test)]
 mod tests {
-    use azalea::{Vec3, registry::identifier::Identifier, world::WorldName};
+    use mineflayer_engine::{Vec3, registry::identifier::Identifier, world::WorldName};
 
     use super::*;
     use crate::test_util::{despawned_client, live_entity_client, tick_client};

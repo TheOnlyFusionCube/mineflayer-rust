@@ -3,10 +3,10 @@
 //!
 //! Block selection scans the whole player inventory like upstream's
 //! `equipForBlock` (`bot.inventory.items()` + a bare-hand candidate
-//! when a free slot exists), scoring each stack with azalea's
+//! when a free slot exists), scoring each stack with the engine's
 //! `get_mine_progress` — item dig speed per block state including
 //! physics/effect modifiers, the same scoring `mine_with_auto_tool`
-//! uses. Entity selection has no azalea analog: ours equips the hotbar
+//! uses. Entity selection has no the engine analog: ours equips the hotbar
 //! item with the highest melee `attack_damage` (vanilla's base damage
 //! before enchant/cooldown factors) — upstream's weapon pick does the
 //! same from mcdata; entity-specific scoring exists on neither side
@@ -14,10 +14,10 @@
 
 use std::time::Duration;
 
-// `azalea::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // real crate name in scope.
-use azalea::ecs as bevy_ecs;
-use azalea::{
+use mineflayer_engine::ecs as bevy_ecs;
+use mineflayer_engine::{
     BlockPos,
     block::BlockTrait,
     core::attribute_modifier_operation::AttributeModifierOperation,
@@ -64,7 +64,7 @@ pub struct EquipOpts {
     pub max_tools: Option<usize>,
 }
 
-/// Facade state azalea has no slot for — upstream's
+/// Facade state the engine has no slot for — upstream's
 /// `Tool.chestLocations` array.
 /// Stored as an ECS component created on first use — rule 2 of the
 /// storage rule on `bot::BotShared`.
@@ -76,14 +76,17 @@ struct ToolState {
 }
 
 /// Read from the [`ToolState`] component; `None` pre-spawn.
-fn tool_state<R>(client: &azalea::Client, f: impl FnOnce(&ToolState) -> R) -> Option<R> {
+fn tool_state<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&ToolState) -> R) -> Option<R> {
     let ecs = client.ecs.read();
     let entity = ecs.get_entity(client.entity).ok()?;
     entity.get::<ToolState>().map(f)
 }
 
 /// Run `f` against [`ToolState`], inserting a default one first.
-fn tool_state_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut ToolState) -> R) -> Option<R> {
+fn tool_state_mut<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut ToolState) -> R,
+) -> Option<R> {
     let mut ecs = client.ecs.write();
     let mut entity = ecs.get_entity_mut(client.entity).ok()?;
     if entity.get::<ToolState>().is_none() {
@@ -93,11 +96,11 @@ fn tool_state_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut ToolState) -> 
 }
 
 /// `block.canHarvest(itemType)` — whether `stack` produces drops
-/// breaking `state`. Mirrors azalea-entity's private
+/// breaking `state`. Mirrors mineflayer-entity's private
 /// `has_correct_tool_for_drops` (the mc1.20.5+ tool-component rule
 /// check upstream reads from mcdata `harvestTools`): blocks that don't
 /// require a correct tool harvest with anything, bare hand included.
-pub(crate) fn can_harvest(state: azalea::block::BlockState, stack: &ItemStack) -> bool {
+pub(crate) fn can_harvest(state: mineflayer_engine::block::BlockState, stack: &ItemStack) -> bool {
     let block = Box::<dyn BlockTrait>::from(state);
     if !block.behavior().requires_correct_tool_for_drops {
         return true;
@@ -121,7 +124,7 @@ pub(crate) fn can_harvest(state: azalea::block::BlockState, stack: &ItemStack) -
 /// is its monotone inverse, so we sort descending).
 #[allow(clippy::too_many_arguments)]
 fn dig_progress(
-    state: azalea::block::BlockState,
+    state: mineflayer_engine::block::BlockState,
     stack: &ItemStack,
     fluid_on_eyes: &FluidOnEyes,
     physics: &Physics,
@@ -172,7 +175,7 @@ fn attack_damage(stack: &ItemStack) -> f64 {
 /// The hotbar index (0–8) of the highest-damage item — first strictly-
 /// better slot wins, so ties keep the earlier slot and an all-empty
 /// hotbar returns 0.
-fn best_melee_slot(menu: &azalea::inventory::Menu) -> usize {
+fn best_melee_slot(menu: &mineflayer_engine::inventory::Menu) -> usize {
     let slots = menu.slots();
     let mut best = 0;
     let mut best_damage = f64::NEG_INFINITY;
@@ -459,10 +462,10 @@ impl Tool<'_> {
 
     /// `bot.tool.equipForEntity(entity)` — equip the strongest melee
     /// weapon on the hotbar. The entity's own attributes can't be
-    /// consulted (azalea's best-tool is block-oriented, and no
+    /// consulted (the engine's best-tool is block-oriented, and no
     /// entity-aware weapon scoring exists), so this is a generic
     /// max-damage pick — see the `equipForEntity` row in api-parity.md.
-    pub async fn equip_for_entity(&self, _entity: &azalea::EntityRef) -> Result<()> {
+    pub async fn equip_for_entity(&self, _entity: &mineflayer_engine::EntityRef) -> Result<()> {
         let index = self
             .bot
             .client
@@ -485,7 +488,7 @@ fn standard_tool_filter(item: &Item) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use azalea::{
+    use mineflayer_engine::{
         BlockPos,
         block::{BlockState, fluid_state::FluidKind},
         entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory},
@@ -501,7 +504,7 @@ mod tests {
     /// being scored, with the given (absolute player-window slot →
     /// stack) entries set — hotbar slots are 36–44, main inventory
     /// 9–35.
-    fn player_with_inventory(items: &[(usize, ItemStack)]) -> azalea::Client {
+    fn player_with_inventory(items: &[(usize, ItemStack)]) -> mineflayer_engine::Client {
         let mut inventory = Inventory::default();
         for (slot, stack) in items {
             *inventory.inventory_menu.slot_mut(*slot).unwrap() = stack.clone();
@@ -517,7 +520,7 @@ mod tests {
     }
 
     /// Hotbar-slot shorthand — `player_with_inventory(&[(QUICK_BAR_START + i, s)])`.
-    fn player_with_hotbar(items: &[(usize, ItemStack)]) -> azalea::Client {
+    fn player_with_hotbar(items: &[(usize, ItemStack)]) -> mineflayer_engine::Client {
         player_with_inventory(
             &items
                 .iter()

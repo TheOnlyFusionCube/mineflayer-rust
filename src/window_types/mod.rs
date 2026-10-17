@@ -5,7 +5,7 @@
 //! # Server-pushed window data
 //!
 //! Upstream attaches per-window fields (furnace fuel, enchant options,
-//! trades) to the window object and updates them from packets azalea
+//! trades) to the window object and updates them from packets the engine
 //! drops entirely (`container_set_data` = upstream `craft_progress_bar`,
 //! `merchant_offers` = upstream `trade_list`). `WindowDataTracker`
 //! decodes them per window id; `observe_event` runs in the bridge next
@@ -17,7 +17,7 @@
 //! Windows aren't event emitters here (same call U8 made): typed-window
 //! events are bot-level and carry the `window_id` they belong to.
 //!
-//! # Slot layouts (azalea [`Menu`](azalea::inventory::Menu) shapes, same as upstream)
+//! # Slot layouts (the engine [`Menu`](mineflayer_engine::inventory::Menu) shapes, same as upstream)
 //!
 //! - Furnace/blast/smoker: `0` input, `1` fuel, `2` output.
 //! - Enchantment table: `0` target item, `1` lapis.
@@ -26,7 +26,7 @@
 //!
 //! # Costs the server computes
 //!
-//! Upstream predicts anvil xp cost client-side via `Item.anvil`; azalea
+//! Upstream predicts anvil xp cost client-side via `Item.anvil`; the engine
 //! has no equivalent, so [`Anvil::combine`]/[`Anvil::rename`] measure the
 //! `container_set_data` repair-cost field the server reports after the
 //! inputs land — same guard, different information source (noted in
@@ -41,7 +41,7 @@ use std::{
 
 use parking_lot::Mutex;
 
-use azalea::{
+use mineflayer_engine::{
     BlockPos, EntityRef, Event,
     core::{data_registry::DataRegistryWithKey, game_type::GameMode},
     entity::EntityKindComponent,
@@ -179,7 +179,7 @@ impl Bot {
     }
 }
 
-/// Decode one azalea [`Event`] into typed-window state + [`BotEvent`]s.
+/// Decode one engine [`Event`] into typed-window state + [`BotEvent`]s.
 /// Needs no ECS access: everything it writes comes straight off the
 /// packets. Emitted events run through the same bridge arm as
 /// `windows::observe_event`'s.
@@ -299,7 +299,7 @@ async fn wait_for_slot_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azalea::protocol::packets::game::{
+    use mineflayer_engine::protocol::packets::game::{
         c_container_close::ClientboundContainerClose,
         c_container_set_data::ClientboundContainerSetData, c_open_screen::ClientboundOpenScreen,
     };
@@ -312,7 +312,7 @@ mod tests {
         packet_event(ClientboundGamePacket::OpenScreen(ClientboundOpenScreen {
             container_id: id,
             menu_type: kind,
-            title: azalea::FormattedText::from("t"),
+            title: mineflayer_engine::FormattedText::from("t"),
         }))
     }
 

@@ -2,17 +2,17 @@
 //! fishing, and creative mode — plus the facade-kept state that backs the
 //! scoreboard module.
 //!
-//! azalea stores none of this data (scores, teams, boss bars, pending
+//! The engine stores none of this data (scores, teams, boss bars, pending
 //! resource packs, …), so `MiscState` is kept as an ECS component on the
 //! bot entity: the bridge writes it from decoded packets, `Bot` methods
 //! read it.
 
 use std::time::Duration;
 
-// `azalea::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // crate under its real name
-use azalea::ecs as bevy_ecs;
-use azalea::{
+use mineflayer_engine::ecs as bevy_ecs;
+use mineflayer_engine::{
     ClientInformation, Vec3,
     core::entity_id::MinecraftEntityId,
     ecs::prelude::Component,
@@ -78,7 +78,7 @@ impl Default for MiscState {
 /// decoded into misc-domain state + events; `Tick` drives the pose/air
 /// diffs for `Sleep`/`Wake`/`Breath`.
 pub(crate) fn after_event(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     scoreboard: &parking_lot::Mutex<scoreboard::ScoreboardState>,
     bot_event: &BotEvent,
     events: &broadcast::Sender<BotEvent>,
@@ -97,7 +97,7 @@ pub(crate) fn after_event(
 /// components once per game tick. Upstream fires these off the
 /// entity-metadata packets; a tick-aligned diff produces the same event
 /// sequence at ≤50ms latency.
-fn tick_diffs(client: &azalea::Client) -> Vec<BotEvent> {
+fn tick_diffs(client: &mineflayer_engine::Client) -> Vec<BotEvent> {
     let mut events = Vec::new();
     let mut ecs = client.ecs.write();
     let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
@@ -137,7 +137,7 @@ fn tick_diffs(client: &azalea::Client) -> Vec<BotEvent> {
 
 /// Decode a clientbound packet into misc-domain state changes + events.
 fn handle_packet(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     scoreboard: &parking_lot::Mutex<scoreboard::ScoreboardState>,
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
@@ -322,7 +322,7 @@ impl Instrument {
 }
 
 /// The `particle` event payload — the upstream `Particle` class fields plus
-/// the typed particle data azalea decoded.
+/// the typed particle data the engine decoded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Particle {
     /// `particle.id` — the particle kind's protocol id.
@@ -339,14 +339,14 @@ pub struct Particle {
     pub count: u32,
     /// `particle.movementSpeed` (the wire's `max_speed`).
     pub movement_speed: f32,
-    /// The typed particle kind + data azalea decoded.
-    pub data: azalea::entity::particle::Particle,
+    /// The typed particle kind + data the engine decoded.
+    pub data: mineflayer_engine::entity::particle::Particle,
 }
 
 impl Particle {
     /// `Particle.fromNetwork(packet)`.
     pub fn from_packet(
-        packet: &azalea::protocol::packets::game::c_level_particles::ClientboundLevelParticles,
+        packet: &mineflayer_engine::protocol::packets::game::c_level_particles::ClientboundLevelParticles,
     ) -> Self {
         let id = particle_kind_id(&packet.particle).unwrap_or(0);
         let name = ParticleKind::from_u32(id)
@@ -371,25 +371,28 @@ impl Particle {
 
 /// The wire `Particle` enum has no `kind()` accessor — the kind varint is
 /// the first field of its encoding, so serialize and read it back.
-fn particle_kind_id(particle: &azalea::entity::particle::Particle) -> Option<u32> {
-    use azalea::buf::{AzBuf, AzBufVar};
+fn particle_kind_id(particle: &mineflayer_engine::entity::particle::Particle) -> Option<u32> {
+    use mineflayer_engine::buf::{McBuf, McBufVar};
     let mut buf = Vec::new();
-    particle.azalea_write(&mut buf).ok()?;
-    u32::azalea_read_var(&mut std::io::Cursor::new(&buf[..])).ok()
+    particle.mc_write(&mut buf).ok()?;
+    u32::mc_read_var(&mut std::io::Cursor::new(&buf[..])).ok()
 }
 
 /// Upstream emits `soundEffectHeard` whenever a sound name is known. On the
-/// modern protocol azalea's registry `Holder` always resolves a name (an
+/// modern protocol the engine's registry `Holder` always resolves a name (an
 /// unresolvable id fails the packet read entirely), so
 /// `hardcodedSoundEffectHeard` is unreachable — the `BotEvent` variant exists
 /// for parity but is never emitted.
 fn sound_event(
-    sound: &azalea::registry::Holder<SoundEvent, azalea::core::sound::CustomSound>,
+    sound: &mineflayer_engine::registry::Holder<
+        SoundEvent,
+        mineflayer_engine::core::sound::CustomSound,
+    >,
     pos: Vec3,
     volume: f32,
     pitch: f32,
 ) -> BotEvent {
-    use azalea::registry::Holder;
+    use mineflayer_engine::registry::Holder;
     let name = match sound {
         Holder::Reference(event) => event.to_str().to_string(),
         Holder::Direct(custom) => custom.sound_id.to_string(),
@@ -402,15 +405,15 @@ fn sound_event(
     }
 }
 
-fn entity_position(client: &azalea::Client, id: MinecraftEntityId) -> Option<Vec3> {
+fn entity_position(client: &mineflayer_engine::Client, id: MinecraftEntityId) -> Option<Vec3> {
     let entity = crate::entity::entity_id_by_minecraft_id(client, id)?;
     client
         .try_query_entity::<&Position, _>(entity, |p| **p)
         .ok()
 }
 
-pub use azalea::entity::HumanoidArm;
-pub use azalea::protocol::common::client_information::{
+pub use mineflayer_engine::entity::HumanoidArm;
+pub use mineflayer_engine::protocol::common::client_information::{
     ChatVisibility, ModelCustomization, ParticleStatus,
 };
 
@@ -501,7 +504,7 @@ pub struct Settings {
     /// `bot.settings.skinParts` — the seven visibility flags.
     pub model_customization: ModelCustomization,
     /// `bot.settings.mainHand`.
-    pub main_hand: azalea::entity::HumanoidArm,
+    pub main_hand: mineflayer_engine::entity::HumanoidArm,
     /// `bot.settings.enableTextFiltering`.
     pub text_filtering_enabled: bool,
     /// `bot.settings.enableServerListing`.
@@ -513,9 +516,9 @@ pub struct Settings {
 }
 
 impl Default for Settings {
-    /// azalea's `ClientInformation` defaults plus upstream's `difficulty: 2`.
+    /// The engine's `ClientInformation` defaults plus upstream's `difficulty: 2`.
     ///
-    /// Divergence: azalea's own defaults differ from upstream's in two
+    /// Divergence: the engine's own defaults differ from upstream's in two
     /// fields (`view_distance` 8 vs `far`=12; `allows_listing` false vs
     /// upstream's unconditional true).
     fn default() -> Self {
@@ -557,7 +560,10 @@ impl From<&Settings> for ClientInformation {
 }
 
 /// Shared `MiscState` accessor — lazily inserts the component.
-fn misc_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut MiscState) -> R) -> Result<R> {
+fn misc_mut<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut MiscState) -> R,
+) -> Result<R> {
     let mut ecs = client.ecs.write();
     let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
         return Err(Error::NotConnected);
@@ -570,7 +576,7 @@ fn misc_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut MiscState) -> R) -> 
 }
 
 impl Bot {
-    /// `bot.settings` — reads back the `ClientInformation` component azalea
+    /// `bot.settings` — reads back the `ClientInformation` component the engine
     /// stores (so a builder `view_distance` and later `set_settings` calls
     /// are both reflected), plus `difficulty` from facade state.
     pub fn settings(&self) -> Settings {
@@ -609,7 +615,7 @@ impl Bot {
 
     /// `bot.acceptResourcePack()` — answers the latest game-phase resource
     /// pack push with `Accepted` then `SuccessfullyLoaded` (upstream's two
-    /// packet sequence). Config-phase pushes are auto-accepted by azalea's
+    /// packet sequence). Config-phase pushes are auto-accepted by the engine's
     /// `AcceptResourcePacksPlugin` (upstream does the same — the server
     /// holds the configuration phase open until they're answered).
     pub fn accept_resource_pack(&self) -> Result<()> {
@@ -635,7 +641,7 @@ impl Bot {
 
     /// `bot.denyResourcePack()` — answers the latest push with `Declined`.
     ///
-    /// Divergence: azalea's `AcceptResourcePacksPlugin` answers every
+    /// Divergence: the engine's `AcceptResourcePacksPlugin` answers every
     /// game-phase push with `Accepted` + `SuccessfullyLoaded` as it
     /// arrives, so a denial races a reply that already went out — the
     /// server will usually ignore it. See api-parity.md.
@@ -657,7 +663,7 @@ impl Bot {
 
     /// `bot.isABed(block)` — `true` when the block state is any of the 16
     /// colored beds (or the legacy `bed`).
-    pub fn is_a_bed(&self, state: azalea::block::BlockState) -> bool {
+    pub fn is_a_bed(&self, state: mineflayer_engine::block::BlockState) -> bool {
         let name = state.as_block_kind().to_str();
         name == "minecraft:bed" || name.ends_with("_bed")
     }
@@ -675,7 +681,7 @@ impl Bot {
     /// pose, like upstream (3s). Upstream's client-side night/monster/
     /// occupancy checks aren't reproduced — the server enforces them, and a
     /// refusal surfaces as `bot is not sleeping`.
-    pub async fn sleep(&self, bed: azalea::BlockPos) -> Result<()> {
+    pub async fn sleep(&self, bed: mineflayer_engine::BlockPos) -> Result<()> {
         if self.is_sleeping() {
             return Err(Error::InvalidState("already sleeping".into()));
         }
@@ -792,8 +798,8 @@ impl Bot {
                     let Some(id) = bobber else { continue };
                     let splash = matches!(
                         p.data,
-                        azalea::entity::particle::Particle::Fishing
-                            | azalea::entity::particle::Particle::Bubble
+                        mineflayer_engine::entity::particle::Particle::Fishing
+                            | mineflayer_engine::entity::particle::Particle::Bubble
                     );
                     if !(splash && p.count == 6) {
                         continue;
@@ -822,7 +828,7 @@ impl Bot {
 mod tests {
     use std::io::Cursor;
 
-    use azalea::{
+    use mineflayer_engine::{
         protocol::packets::game::{
             c_clear_titles::ClientboundClearTitles,
             c_game_event::{ClientboundGameEvent, EventType},
@@ -899,7 +905,7 @@ mod tests {
                 z_dist: 0.3,
                 max_speed: 0.5,
                 count: 6,
-                particle: azalea::entity::particle::Particle::Fishing,
+                particle: mineflayer_engine::entity::particle::Particle::Fishing,
             },
         ));
         let [BotEvent::ParticleSpawned(p)] = &e[..] else {
@@ -915,7 +921,10 @@ mod tests {
                 && (p.offset.y - 0.2).abs() < 1e-6
                 && (p.offset.z - 0.3).abs() < 1e-6
         );
-        assert_eq!(p.data, azalea::entity::particle::Particle::Fishing);
+        assert_eq!(
+            p.data,
+            mineflayer_engine::entity::particle::Particle::Fishing
+        );
         // the id round-trips through the wire encoding
         assert_eq!(p.id, ParticleKind::to_u32(&ParticleKind::Fishing));
     }
@@ -939,8 +948,8 @@ mod tests {
 
         // a direct custom sound carries its own identifier
         let (_, e) = run(ClientboundGamePacket::Sound(ClientboundSound {
-            sound: Holder::Direct(azalea::core::sound::CustomSound {
-                sound_id: azalea::Identifier::new("custom:thing"),
+            sound: Holder::Direct(mineflayer_engine::core::sound::CustomSound {
+                sound_id: mineflayer_engine::Identifier::new("custom:thing"),
                 range: None,
             }),
             source: SoundSource::Master,
@@ -958,8 +967,8 @@ mod tests {
     fn note_heard_instruments() {
         let packet = |instrument: u8| {
             ClientboundGamePacket::BlockEvent(
-                azalea::protocol::packets::game::c_block_event::ClientboundBlockEvent {
-                    pos: azalea::BlockPos::new(1, 2, 3),
+                mineflayer_engine::protocol::packets::game::c_block_event::ClientboundBlockEvent {
+                    pos: mineflayer_engine::BlockPos::new(1, 2, 3),
                     action_id: instrument,
                     action_parameter: 12,
                     block: BlockKind::NoteBlock,
@@ -986,8 +995,8 @@ mod tests {
         ));
         // non-note-block block events are not ours
         let (_, e) = run(ClientboundGamePacket::BlockEvent(
-            azalea::protocol::packets::game::c_block_event::ClientboundBlockEvent {
-                pos: azalea::BlockPos::new(0, 0, 0),
+            mineflayer_engine::protocol::packets::game::c_block_event::ClientboundBlockEvent {
+                pos: mineflayer_engine::BlockPos::new(0, 0, 0),
                 action_id: 0,
                 action_parameter: 0,
                 block: BlockKind::Piston,
@@ -1016,7 +1025,7 @@ mod tests {
     fn resource_pack_push_tracked() {
         let mut s = MiscState::default();
         let push = ClientboundResourcePackPush {
-            id: azalea::buf::AzBuf::azalea_read(&mut Cursor::new(&[0u8; 16][..])).unwrap(),
+            id: mineflayer_engine::buf::McBuf::mc_read(&mut Cursor::new(&[0u8; 16][..])).unwrap(),
             url: "https://packs.example/x.zip".into(),
             hash: "deadbeef".into(),
             required: true,
@@ -1035,7 +1044,7 @@ mod tests {
         let settings = Settings {
             view_distance: 5.into(),
             chat_visibility: ChatVisibility::System,
-            main_hand: azalea::entity::HumanoidArm::Left,
+            main_hand: mineflayer_engine::entity::HumanoidArm::Left,
             ..Default::default()
         };
         let info = ClientInformation::from(&settings);
@@ -1054,7 +1063,7 @@ mod tests {
         assert_eq!("12".parse::<ViewDistance>().unwrap().chunks(), 12);
         assert!("far-ish".parse::<ViewDistance>().is_err());
         assert_eq!(info.chat_visibility, ChatVisibility::System);
-        assert_eq!(info.main_hand, azalea::entity::HumanoidArm::Left);
+        assert_eq!(info.main_hand, mineflayer_engine::entity::HumanoidArm::Left);
         assert_eq!(info.language, "en_us");
         // the skin-parts bitfield keeps all seven flags on by default
         let skin = info.model_customization;
@@ -1128,7 +1137,9 @@ mod tests {
     #[tokio::test]
     async fn fish_follows_derived_bobber_events() {
         let client = crate::test_util::live_entity_client((
-            azalea::world::WorldName(azalea::Identifier::new("minecraft:overworld")),
+            mineflayer_engine::world::WorldName(mineflayer_engine::Identifier::new(
+                "minecraft:overworld",
+            )),
             Position::new(Vec3::new(0., 64., 0.)),
         ));
         let bobber = client
@@ -1165,7 +1176,9 @@ mod tests {
     #[tokio::test]
     async fn fish_exits_on_end() {
         let bot = Bot::new(crate::test_util::live_entity_client((
-            azalea::world::WorldName(azalea::Identifier::new("minecraft:overworld")),
+            mineflayer_engine::world::WorldName(mineflayer_engine::Identifier::new(
+                "minecraft:overworld",
+            )),
             Position::new(Vec3::new(0., 64., 0.)),
         )));
         let bot2 = bot.clone();

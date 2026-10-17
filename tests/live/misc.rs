@@ -14,8 +14,10 @@
 use std::time::Duration;
 
 use crate::common::wait_for;
-use azalea::{BlockPos, entity::HumanoidArm, inventory::ItemStack, registry::builtin::ItemKind};
 use mineflayer::{Bot, BotEvent};
+use mineflayer_engine::{
+    BlockPos, entity::HumanoidArm, inventory::ItemStack, registry::builtin::ItemKind,
+};
 use tokio::sync::broadcast::error::RecvError;
 
 #[tokio::test]
@@ -75,7 +77,7 @@ async fn misc_domains() {
     assert!(bot.accept_resource_pack().is_err());
     assert!(bot.deny_resource_pack().is_err());
 
-    // settings: defaults from azalea's ClientInformation…
+    // settings: defaults from the engine's ClientInformation…
     let settings = bot.settings();
     assert_eq!(settings.view_distance, 8);
     assert_eq!(settings.locale, "en_us");

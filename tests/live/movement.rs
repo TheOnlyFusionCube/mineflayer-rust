@@ -12,8 +12,8 @@
 use std::time::Duration;
 
 use crate::common::{collect_until, horizontal_distance};
-use azalea::physics::collision::BlockWithShape as _;
 use mineflayer::{BlockPos, Bot, BotEvent, Control, Vec3};
+use mineflayer_engine::physics::collision::BlockWithShape as _;
 
 #[tokio::test]
 #[ignore = "requires the live fixture server on localhost:25566"]
@@ -113,7 +113,7 @@ async fn movement() {
     bot.look_at(target, false).await.expect("look_at failed");
     let dir = bot.client().direction();
     // atan2(-5, 0) = -pi/2 upstream radians -> 270 notchian degrees
-    // (azalea stores it unwrapped, -90 == 270).
+    // (the engine stores it unwrapped, -90 == 270).
     let yaw_off = (dir.y_rot() - 270.0).rem_euclid(360.0);
     assert!(
         yaw_off < 3.0 || yaw_off > 357.0,

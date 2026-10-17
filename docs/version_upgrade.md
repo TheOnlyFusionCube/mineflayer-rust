@@ -1,52 +1,54 @@
-# Checklist: the next azalea and Minecraft version
+# Checklist: the next engine and Minecraft version
 
 Language: ASD-STE100 (Simplified Technical English).
 
-Use this checklist when you move the azalea pin to a new revision or to a
-new Minecraft version. Do the steps in this sequence. Do not continue to
-the next step until the current step passes.
+Use this checklist when you move the engine in `crates/` to a new Minecraft
+version. Do the steps in this sequence. Do not continue to the next step
+until the current step passes.
 
-**WARNING:** Do not remove the `[patch.crates-io]` table in `Cargo.toml`
-before you read `docs/decisions.md` (D-pin). If the new azalea release does
-not contain commit `ddef371`, each `bot.attack()` call causes a server kick.
+The engine is a renamed copy of an upstream project (`LICENSE`,
+"Third-party notices", gives the project and the base commit `ddef371`).
+`docs/decisions.md` (D-engine) gives the rename table.
 
 ## 1. Prepare
 
-1. Read the azalea `CHANGELOG.md` from the old revision to the new revision.
-2. Move `ref/azalea` to the new revision
-   (`git -C ref/azalea checkout <rev>`). Update the revision in the README
-   "Toolchain" section.
-3. Change the azalea revision in all 21 `[patch.crates-io]` entries, or
-   change `azalea = "…"` and remove the table (plan item H1).
-4. Run `cargo update -p azalea`. Make sure that `Cargo.lock` has exactly one
-   source for each `azalea*` crate.
+1. Clone the upstream project into `ref/` and check out the base commit.
+2. Read the upstream change log from the base commit to the new revision.
+3. Make a diff of the upstream source from the base commit to the new
+   revision.
+4. Apply the rename table in D-engine to the diff.
+5. Apply the renamed diff to `crates/`. Resolve each conflict by hand.
+   Keep the local changes (clippy fixes, the `McBuf` derive shorthand).
+6. Change the base commit in `LICENSE` and in D-engine.
+7. Change `[workspace.package] version` in `Cargo.toml` to the new engine
+   version (the `+mcX.Y` part gives the Minecraft version).
 
 ## 2. Compile
 
 1. Run `cargo build`.
 2. If the compiler stops with an internal compiler error, do the toolchain
    review in plan item H2 first.
-3. Correct each compile error. Record each renamed azalea path in the
+3. Correct each compile error. Record each renamed engine path in the
    commit message.
 
 ## 3. Bootstrap mirror
 
-1. Compare `src/client_app.rs` (`app()`) with azalea's
-   `azalea/src/client_impl/mod.rs` (`StartClientOpts::new`) at the new
+1. Compare `src/client_app.rs` (`app()`) with the engine's
+   `crates/mineflayer-engine/src/client_impl/mod.rs` (`StartClientOpts::new`) at the new
    revision. The default plugin groups and their sequence must be the same.
-2. Compare `join_azalea` in `src/bot/connection.rs` with azalea's
+2. Compare `join_engine` in `src/bot/connection.rs` with the engine's
    `Client::join` and `Client::start_client`.
 3. Run the schedule-level test:
    `cargo test --lib game_tick_cancels_an_aborted_dig_through_the_production_app`.
-4. Examine `reconcile_aborted_dig` in `src/interact/dig.rs` against azalea's
-   `azalea-client/src/plugins/mining.rs`. The reconciler must still run
+4. Examine `reconcile_aborted_dig` in `src/interact/dig.rs` against the engine's
+   `crates/mineflayer-client/src/plugins/mining.rs`. The reconciler must still run
    before `MiningSystems`.
 
 ## 4. Packet decode
 
-The bridge decodes these clientbound packets itself (azalea drops or
+The bridge decodes these clientbound packets itself (The engine drops or
 internalizes them). For each packet, compare the fields that the port reads
-with the new `azalea-protocol` definition:
+with the new `mineflayer-protocol` definition:
 
 | Owner | Packets |
 |---|---|
@@ -60,18 +62,18 @@ with the new `azalea-protocol` definition:
 | `movement.rs` | `PlayerPosition`, `PlayerAbilities` |
 | `craft.rs` | `RecipeBookAdd`, `RecipeBookRemove` |
 
-1. Search the new azalea for packets that azalea now handles itself. Remove
-   the port's decode where azalea now does the same work.
+1. Search the new the engine for packets that the engine now handles itself. Remove
+   the port's decode where the engine now does the same work.
 2. Search for new packets that a `diverges` row in `docs/api-parity.md`
    waits for.
-3. Examine `windows/tracker.rs` `patch_state_id`. Remove it if azalea now
+3. Examine `windows/tracker.rs` `patch_state_id`. Remove it if the engine now
    adopts `state_id` from `ContainerSetContent`.
 
 ## 5. Fixture server
 
-1. `scripts/live-server.sh` reads the Minecraft version from the azalea
+1. `scripts/live-server.sh` reads the Minecraft version from the engine
    version in `Cargo.lock` (`0.16.0+mc26.1` gives `26.1`) and downloads that
-   server jar. If the new azalea version string has a different form,
+   server jar. If the new the engine version string has a different form,
    correct the parse in the script.
 2. Run `bash scripts/live-server.sh reset`. Make sure that
    `.live/version.txt` shows the new version.

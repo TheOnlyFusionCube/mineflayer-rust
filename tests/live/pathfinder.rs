@@ -13,8 +13,8 @@
 use std::time::Duration;
 
 use crate::common::{collect_until, horizontal_distance};
-use azalea::{BlockPos, Vec3};
 use mineflayer::{Bot, BotEvent, Goal};
+use mineflayer_engine::{BlockPos, Vec3};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 /// Collect every event into a shared buffer on a background task. The
@@ -56,12 +56,12 @@ async fn wait_in_buf(
     }
 }
 
-/// A spot the bot can actually stand on, using azalea's own predicates
+/// A spot the bot can actually stand on, using the engine's own predicates
 /// (`is_block_state_standable`/`is_block_state_passable`) so foliage,
 /// water and thin shapes are classified exactly the way the pathfinder
 /// classifies them: solid/slab/stair ground below, passable feet + head.
 fn is_standable(bot: &Bot, feet: BlockPos) -> bool {
-    use azalea::pathfinder::world::{is_block_state_passable, is_block_state_standable};
+    use mineflayer_engine::pathfinder::world::{is_block_state_passable, is_block_state_standable};
     bot.block_at(feet.down(1))
         .is_some_and(|b| is_block_state_standable(b.state))
         && bot

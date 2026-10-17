@@ -25,15 +25,15 @@
 use std::time::Duration;
 
 use crate::common::wait_for;
-use azalea::{
+use mineflayer::{
+    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, entity::EntityExt,
+    interact::PlaceOpts,
+};
+use mineflayer_engine::{
     BlockPos, Vec3,
     entity::{EntityKindComponent, Position, inventory::Inventory},
     protocol::packets::game::s_interact::InteractionHand,
     registry::builtin::{BlockKind, EntityKind},
-};
-use mineflayer::{
-    Bot, BotEvent, Control, DigAbortReason, DigFace, FindBlocksOpts, ForceLook, entity::EntityExt,
-    interact::PlaceOpts,
 };
 
 /// Point the held item at the first non-empty hotbar slot; false while the
@@ -115,7 +115,7 @@ async fn collect_drop(bot: &Bot, timeout: Duration) -> bool {
         // off the edge drops into the hole; jumping or wiggling the aim
         // just bounces the bot on the rim of a one-wide hole
         let close = nearby.is_some_and(|p| (p.x - here.x).hypot(p.z - here.z) < 2.5);
-        let target = nearby.unwrap_or(azalea::Vec3::new(here.x, here.y - 2.0, here.z));
+        let target = nearby.unwrap_or(mineflayer_engine::Vec3::new(here.x, here.y - 2.0, here.z));
         if !walking {
             bot.set_control_state(Control::Forward, true);
             walking = true;

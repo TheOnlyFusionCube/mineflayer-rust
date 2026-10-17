@@ -1,5 +1,5 @@
 # nightly-2026-10-01 defaults to the next-gen trait solver for some
-# queries, which fails to infer azalea-core const generics
+# queries, which fails to infer mineflayer-core const generics
 # (`FixedBitSet<N>::{constant#0}`, E0284) and, on newer nightlies, ICEs.
 # Force the old solver until rustc fixes the regression.
 [build]

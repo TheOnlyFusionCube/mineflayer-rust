@@ -189,7 +189,7 @@ async fn options_surface() {
     )
     .await;
 
-    // The builder's ClientInformation fields landed on the packet azalea
+    // The builder's ClientInformation fields landed on the packet the engine
     // sent at login — bot.settings() reads that same component back, plus
     // the client-side difficulty store.
     let settings = bot.settings();
@@ -293,7 +293,7 @@ async fn keepalive_watchdog() {
     wait_for(
         &mut rx,
         Duration::from_secs(30),
-        |e| matches!(e, BotEvent::Packet(p) if matches!(&**p, azalea::protocol::packets::game::ClientboundGamePacket::KeepAlive(_))),
+        |e| matches!(e, BotEvent::Packet(p) if matches!(&**p, mineflayer_engine::protocol::packets::game::ClientboundGamePacket::KeepAlive(_))),
         "first keepalive",
     )
     .await;

@@ -15,8 +15,8 @@
 use std::time::Duration;
 
 use crate::common::wait_for;
-use azalea::registry::builtin::BlockKind;
 use mineflayer::{Bot, BotEvent, FindBlocksOpts};
+use mineflayer_engine::registry::builtin::BlockKind;
 
 #[tokio::test]
 #[ignore = "requires the live fixture server on localhost:25566"]
@@ -52,13 +52,13 @@ async fn world_blocks() {
     assert_eq!(game.height, Some(384));
     assert!(game.dimension.is_some());
     // `server_brand` stays `None` here: vanilla sends `minecraft:brand`
-    // during the *configuration* phase, which azalea's `Event::Packet`
+    // during the *configuration* phase, which the engine's `Event::Packet`
     // (game packets only) never exposes. The game-state decode arm stays
     // for servers that re-send it in-game.
 
     // `blockAt` — the block below the feet must resolve to a real block.
     let feet = bot.position().to_block_pos_floor();
-    let below_pos = azalea::BlockPos {
+    let below_pos = mineflayer_engine::BlockPos {
         x: feet.x,
         y: feet.y - 1,
         z: feet.z,
@@ -122,7 +122,7 @@ async fn world_blocks() {
     // Staring at the ground: no entity should be in the crosshair.
     assert!(bot.entity_at_cursor(3.5).is_none());
 
-    // `spawnPoint` — decoded from c_set_default_spawn_position (azalea
+    // `spawnPoint` — decoded from c_set_default_spawn_position (the engine
     // drops it). This fixture doesn't send the packet on join (verified
     // via a packet dump), so only the accessor is exercised.
     let _spawn = bot.spawn_point();

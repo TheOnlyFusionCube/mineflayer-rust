@@ -2,9 +2,9 @@
 
 /// Errors surfaced by `mineflayer` operations.
 ///
-/// Later units add one variant per domain as those methods land; azalea error
+/// Later units add one variant per domain as those methods land; the engine error
 /// types are wrapped rather than re-exported so the facade's `Error` stays
-/// stable when azalea's internals shift.
+/// stable when the engine's internals shift.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
@@ -17,9 +17,9 @@ pub enum Error {
     #[error("bot runtime failed: {0}")]
     Runtime(String),
     /// Microsoft authentication failed (device-code flow or token refresh).
-    /// Wraps [`azalea::auth::AuthError`].
+    /// Wraps [`mineflayer_engine::auth::AuthError`].
     #[error("authentication failed: {0}")]
-    Auth(#[from] azalea::auth::AuthError),
+    Auth(#[from] mineflayer_engine::auth::AuthError),
     /// The operation requires a connected bot.
     #[error("not connected")]
     NotConnected,
@@ -111,7 +111,7 @@ mod tests {
 
         let bot = crate::Bot::new(crate::test_util::despawned_client());
         let empty = Item {
-            stack: azalea::inventory::ItemStack::Empty,
+            stack: mineflayer_engine::inventory::ItemStack::Empty,
             slot: 0,
         };
         let cases: Vec<(Error, &str)> = vec![
@@ -136,7 +136,7 @@ mod tests {
             (bot.wake().unwrap_err(), "already awake"),
             (
                 bot.creative()
-                    .set_inventory_slot(45, azalea::inventory::ItemStack::Empty)
+                    .set_inventory_slot(45, mineflayer_engine::inventory::ItemStack::Empty)
                     .await
                     .unwrap_err(),
                 "slot must be <= 44",

@@ -3,19 +3,19 @@
 //! `mount`/`dismount`/`abilities` events, and the `bot.physics`/
 //! `bot.abilities` properties.
 //!
-//! Upstream keeps seven booleans in `bot.controlState`; azalea already keeps
+//! Upstream keeps seven booleans in `bot.controlState`; the engine already keeps
 //! the equivalent inputs on the local player's [`PhysicsState`] (walk
 //! direction, sprint/crouch intents) and `Jumping` components. We read and
 //! write those components directly — the ECS stays the single source of
-//! truth, so `control_states()` also reflects movement started by azalea's
+//! truth, so `control_states()` also reflects movement started by the engine's
 //! pathfinder. All access goes through `try_query_self`/`get_component`:
-//! azalea's `set_jumping`/`set_crouching`/`set_direction`/`jumping`
+//! The engine's `set_jumping`/`set_crouching`/`set_direction`/`jumping`
 //! convenience wrappers panic before the client entity exists, while
 //! upstream's plain booleans can be set any time.
 
 use std::f64::consts::PI;
 
-use azalea::{
+use mineflayer_engine::{
     Event, PhysicsState, Vec3, WalkDirection,
     entity::{Jumping, LookDirection, PlayerAbilities, Position, dimensions::EntityDimensions},
     protocol::packets::game::ClientboundGamePacket,
@@ -69,7 +69,7 @@ impl ControlState {
 ///
 /// Upstream returns the live prismarine-physics object: plugins read
 /// `bot.physics.gravity` and also mutate it (e.g. `gravity = 0` to fly).
-/// azalea simulates the same vanilla constants internally but offers no
+/// The engine simulates the same vanilla constants internally but offers no
 /// mutation seam, so this is a read-only snapshot of the vanilla values
 /// for the targeted version — a documented `diverges` (api-parity.md).
 /// Methods on upstream's physics object (`simulatePlayer`, …) have no
@@ -181,7 +181,7 @@ impl PhysicsSettings {
 }
 
 /// Decompose a [`WalkDirection`] into `(forward, back, left, right)` held
-/// keys — the same encoding azalea's `DirectionStates` uses in newer
+/// keys — the same encoding the engine's `DirectionStates` uses in newer
 /// versions (held pairs can't occur in a `WalkDirection`).
 fn direction_bools(d: WalkDirection) -> (bool, bool, bool, bool) {
     match d {
@@ -198,7 +198,7 @@ fn direction_bools(d: WalkDirection) -> (bool, bool, bool, bool) {
 }
 
 /// Compose four held directions into a [`WalkDirection`]. Opposing keys on
-/// an axis cancel (held W+S, held A+D), like vanilla and azalea's
+/// an axis cancel (held W+S, held A+D), like vanilla and the engine's
 /// `DirectionStates` conversion.
 fn walk_direction_of(forward: bool, back: bool, left: bool, right: bool) -> WalkDirection {
     match (
@@ -244,7 +244,7 @@ fn to_notchian_pitch(pitch: f64) -> f32 {
 }
 
 /// mineflayer `lookAt` trigonometry — the `(yaw, pitch)` in upstream radians
-/// that faces `target` from `eye`. The same formula azalea's
+/// that faces `target` from `eye`. The same formula the engine's
 /// `direction_looking_at` borrowed from upstream, kept in radians.
 fn yaw_pitch_of(eye: Vec3, target: Vec3) -> (f64, f64) {
     let delta = target - eye;
@@ -260,7 +260,7 @@ const DEFAULT_EYE_HEIGHT: f64 = 1.62;
 impl Bot {
     /// `bot.setControlState(control, state)` — hold or release one input.
     ///
-    /// Forward/back/left/right compose into azalea's `move_direction` (hold
+    /// Forward/back/left/right compose into the engine's `move_direction` (hold
     /// two for diagonals, opposing pairs cancel — same as upstream's key
     /// model). `Sprint` sets the sprint intent flag, not the direction —
     /// `Client::walk`/`Client::sprint` would clobber the other state, so
@@ -274,7 +274,7 @@ impl Bot {
                     s.move_direction = walk_direction_with(s.move_direction, control, state);
                 });
             }
-            // Upstream's jump is a held state like the others; azalea's
+            // Upstream's jump is a held state like the others; the engine's
             // `jump()` is the one-tick variant, `set_jumping` the held one.
             Control::Jump => {
                 let _ = self
@@ -337,7 +337,7 @@ impl Bot {
     /// convention: `yaw = atan2(-dx, -dz)` to a target, pitch ±π/2).
     ///
     /// Upstream eases toward the target at `yawSpeed`/`pitchSpeed` per tick
-    /// and resolves when the sent rotation catches up; azalea snaps the
+    /// and resolves when the sent rotation catches up; the engine snaps the
     /// direction immediately (sensitivity-quantized, like a vanilla mouse),
     /// so this resolves after the tick that carries it to the server.
     /// `force` skips that wait, matching upstream's early return.
@@ -374,7 +374,7 @@ impl Bot {
         PhysicsSettings::VANILLA
     }
 
-    /// `bot.physicsEnabled` — always `true`; azalea's physics runs
+    /// `bot.physicsEnabled` — always `true`; the engine's physics runs
     /// unconditionally, so upstream's toggle can't be offered (`diverges`).
     pub fn physics_enabled(&self) -> bool {
         true
@@ -392,7 +392,7 @@ impl Bot {
     /// `bot.jumpQueued` (undocumented upstream) — whether the bot will try
     /// to jump next tick. Upstream's flag is a queued one-shot cleared on
     /// the next physics step; ours reads the held jump input — the honest
-    /// azalea analog (`diverges`).
+    /// The engine analog (`diverges`).
     pub fn jump_queued(&self) -> bool {
         self.client
             .get_component::<Jumping>()
@@ -401,7 +401,7 @@ impl Bot {
     }
 }
 
-/// Bridge-side bookkeeping for the movement events azalea doesn't lift
+/// Bridge-side bookkeeping for the movement events the engine doesn't lift
 /// into `Event`s: `move`, `forcedMove`, `abilities`. (`mount`/`dismount`
 /// are decoded by the entity tracker — see `entity::EntityTracker`.)
 #[derive(Default)]
@@ -411,16 +411,16 @@ pub(crate) struct MovementTracker {
     last_pose: Option<(Vec3, LookDirection)>,
 }
 
-/// Called by the bridge for every azalea [`Event`], after `translate` —
-/// emits the movement `BotEvent`s azalea keeps internal.
+/// Called by the bridge for every engine [`Event`], after `translate` —
+/// emits the movement `BotEvent`s the engine keeps internal.
 pub(crate) fn bridge_events(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     tracker: &mut MovementTracker,
     event: &Event,
 ) -> Vec<BotEvent> {
     match event {
         // `move` — upstream fires whenever a movement/look packet is sent;
-        // azalea sends one when the tick's position or rotation changed,
+        // The engine sends one when the tick's position or rotation changed,
         // so a per-tick component diff is the honest equivalent.
         Event::Tick => {
             let Some(pos) = client.get_component::<Position>().map(|p| **p) else {
@@ -443,13 +443,13 @@ pub(crate) fn bridge_events(
     }
 }
 
-/// Movement-relevant clientbound packets → `BotEvent`s. azalea handles
+/// Movement-relevant clientbound packets → `BotEvent`s. The engine handles
 /// `PlayerPosition`/`PlayerAbilities` internally, keeping them opaque to
 /// `Event` consumers — decode them here like upstream's
 /// `position`/`abilities` handlers do. (`SetPassengers` is owned by the
 /// entity tracker.)
 fn packet_events(
-    _client: &azalea::Client,
+    _client: &mineflayer_engine::Client,
     _tracker: &mut MovementTracker,
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
@@ -464,7 +464,7 @@ fn packet_events(
 
 #[cfg(test)]
 mod tests {
-    use azalea::protocol::packets::game::c_player_abilities::{
+    use mineflayer_engine::protocol::packets::game::c_player_abilities::{
         ClientboundPlayerAbilities, PlayerAbilitiesFlags,
     };
 

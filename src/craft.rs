@@ -22,7 +22,7 @@
 //! Upstream `RecipeItem` is a single `{id, metadata, count}`; real
 //! vanilla ingredients are alternative *sets* (`#minecraft:planks` and
 //! friends), so ours is [`Ingredient`]`{ any_of: Vec<RecipeItem> }`.
-//! Tag alternatives resolve through azalea's static vanilla item tags
+//! Tag alternatives resolve through the engine's static vanilla item tags
 //! (`c_update_tags` arrives in the config phase, which `Event::Packet`
 //! never sees — the statics are the same data).
 
@@ -36,7 +36,7 @@ use crate::{
     windows::{Item, Window},
     world::Block,
 };
-use azalea::{
+use mineflayer_engine::{
     Event,
     protocol::{
         common::recipe::{Ingredient as WireIngredient, RecipeDisplayData, SlotDisplayData},
@@ -281,7 +281,7 @@ pub(crate) struct RecipeBook {
     pub entries: Vec<BookEntry>,
 }
 
-/// Record recipe-book packets from one azalea event — no `BotEvent`s
+/// Record recipe-book packets from one engine event — no `BotEvent`s
 /// (craft emits none upstream either). Called from the bridge loop.
 pub(crate) fn observe_event(book: &Arc<Mutex<RecipeBook>>, event: &Event) {
     let Event::Packet(packet) = event else {
@@ -416,21 +416,21 @@ fn slot_display_result(d: &SlotDisplayData) -> Option<RecipeResult> {
     }
 }
 
-/// azalea 0.16's `ItemStack` codec reads `count` then `kind`
-/// (`azalea-inventory/src/slot.rs:226-239`, `impl AzBuf for ItemStack`),
+/// The engine 0.16's `ItemStack` codec reads `count` then `kind`
+/// (`mineflayer-inventory/src/slot.rs:226-239`, `impl McBuf for ItemStack`),
 /// but mc26's `ItemStack` slot displays serialize `ItemStackTemplate`
 /// `(item, count, components)` item-first — the decoded pair arrives
 /// swapped (`Stone×333` for `crafting_table×1`). Recover by treating
 /// the decoded count as the real kind id.
 ///
 /// Removal condition: this is a confirmed upstream decode bug. When
-/// azalea fixes `ItemStackSlotDisplay` (a dedicated template codec
+/// The engine fixes `ItemStackSlotDisplay` (a dedicated template codec
 /// reading item-first), the pinning test
 /// `item_stack_slot_display_codec_order` fails — delete this un-swap
 /// and read `d.kind`/`d.count` directly. The `from_u32` fallback can
 /// never fire under a fixed codec (counts 1..=99 always map to a
 /// valid kind), so without the test this corrupts silently.
-fn displayed_stack(stack: &azalea::inventory::ItemStack) -> (ItemKind, i32) {
+fn displayed_stack(stack: &mineflayer_engine::inventory::ItemStack) -> (ItemKind, i32) {
     let Some(d) = stack.as_present() else {
         return (ItemKind::Air, 0);
     };
@@ -442,9 +442,9 @@ fn displayed_stack(stack: &azalea::inventory::ItemStack) -> (ItemKind, i32) {
 
 /// The `damage` component as upstream `metadata` (the patch decodes
 /// fine regardless of the kind/count swap).
-fn stack_metadata(stack: &azalea::inventory::ItemStack) -> Option<i32> {
+fn stack_metadata(stack: &mineflayer_engine::inventory::ItemStack) -> Option<i32> {
     stack
-        .get_component::<azalea::inventory::components::Damage>()
+        .get_component::<mineflayer_engine::inventory::components::Damage>()
         .map(|d| d.amount)
 }
 
@@ -486,7 +486,7 @@ fn tag_items(id: &Identifier) -> Vec<RecipeItem> {
         .unwrap_or_default()
 }
 
-/// The `minecraft` item tags azalea ships as generated statics —
+/// The `minecraft` item tags the engine ships as generated statics —
 /// vanilla `c_update_tags` carries the same contents but in the
 /// config phase, which never reaches `Event::Packet`.
 fn item_tag(id: &Identifier) -> Option<&'static RegistryTag<ItemKind>> {
@@ -988,8 +988,8 @@ fn unused_recipe_slots(recipe: &Recipe, w: usize, h: usize) -> Vec<i32> {
 mod tests {
     use std::io::Cursor;
 
-    use azalea::{
-        buf::AzBuf,
+    use mineflayer_engine::{
+        buf::McBuf,
         inventory::ItemStack,
         protocol::{
             common::recipe::{
@@ -1202,7 +1202,7 @@ mod tests {
         assert!(!pinned.accepts(&item(ItemKind::IronSword, 1, 12)));
         let damaged = Item::of(
             ItemStack::new(ItemKind::IronSword, 1)
-                .with_component(azalea::inventory::components::Damage { amount: 15 }),
+                .with_component(mineflayer_engine::inventory::components::Damage { amount: 15 }),
             13,
         )
         .unwrap();
@@ -1236,7 +1236,7 @@ mod tests {
     }
 
     /// The packet shape vanilla sent on join: 2x2 `Tag(planks)` grid,
-    /// `ItemStack` result decoded kind/count-swapped by azalea.
+    /// `ItemStack` result decoded kind/count-swapped by the engine.
     fn crafting_table_entry() -> Entry {
         book_entry(
             293,
@@ -1245,19 +1245,19 @@ mod tests {
                 height: 2,
                 ingredients: vec![
                     SlotDisplayData::Tag(
-                        azalea::protocol::common::recipe::TagSlotDisplay {
+                        mineflayer_engine::protocol::common::recipe::TagSlotDisplay {
                             tag: Identifier::new("minecraft:planks"),
                         },
                     );
                     4
                 ],
                 result: SlotDisplayData::ItemStack(
-                    azalea::protocol::common::recipe::ItemStackSlotDisplay {
+                    mineflayer_engine::protocol::common::recipe::ItemStackSlotDisplay {
                         stack: ItemStack::new(ItemKind::Stone, 333),
                     },
                 ),
                 crafting_station: SlotDisplayData::Item(
-                    azalea::protocol::common::recipe::ItemSlotDisplay {
+                    mineflayer_engine::protocol::common::recipe::ItemSlotDisplay {
                         item: ItemKind::CraftingTable,
                     },
                 ),
@@ -1266,23 +1266,23 @@ mod tests {
         )
     }
 
-    /// Pins the azalea codec order [`displayed_stack`] compensates for.
+    /// Pins the engine codec order [`displayed_stack`] compensates for.
     /// The mc26 `ItemStackSlotDisplay` wire carries `ItemStackTemplate`
-    /// item-first: `[kind VarInt][count VarInt][patch]`. azalea 0.16
+    /// item-first: `[kind VarInt][count VarInt][patch]`. The engine 0.16
     /// decodes through the container `ItemStack` codec (count-first) —
     /// a `crafting_table×1` template therefore decodes as `Stone×333`.
-    /// When azalea fixes the decode this test fails: delete the un-swap.
+    /// When the engine fixes the decode this test fails: delete the un-swap.
     #[test]
     fn item_stack_slot_display_codec_order() {
         // crafting_table kind id 333 → VarInt 0xCD 0x02; count 1;
         // empty DataComponentPatch (two VarInt zeros)
         let wire: &[u8] = &[0xCD, 0x02, 0x01, 0x00, 0x00];
-        let display = ItemStackSlotDisplay::azalea_read(&mut Cursor::new(wire)).unwrap();
+        let display = ItemStackSlotDisplay::mc_read(&mut Cursor::new(wire)).unwrap();
         let d = display.stack.as_present().expect("non-empty stack");
         assert_eq!(
             (d.count, d.kind),
             (333, ItemKind::Stone),
-            "azalea's ItemStackSlotDisplay decode changed — remove \
+            "engine's ItemStackSlotDisplay decode changed — remove \
              displayed_stack's un-swap and read kind/count directly"
         );
         // …and the un-swap it exists for still recovers the real pair
@@ -1301,7 +1301,7 @@ mod tests {
             requirements: e.contents.crafting_requirements.clone(),
         };
         let recipe = recipe_from_entry(&entry).expect("shaped converts");
-        // azalea decoded the result kind/count swapped — unswap restores it
+        // The engine decoded the result kind/count swapped — unswap restores it
         assert_eq!(recipe.result.kind, ItemKind::CraftingTable);
         assert_eq!(recipe.result.count, 1);
         // 2x2 shape of #planks cells — resolved through the static tag
@@ -1323,9 +1323,11 @@ mod tests {
             42,
             RecipeDisplayData::Shapeless(ShapelessCraftingRecipeDisplay {
                 ingredients: vec![SlotDisplayData::Empty; 2],
-                result: SlotDisplayData::Item(azalea::protocol::common::recipe::ItemSlotDisplay {
-                    item: ItemKind::Stick,
-                }),
+                result: SlotDisplayData::Item(
+                    mineflayer_engine::protocol::common::recipe::ItemSlotDisplay {
+                        item: ItemKind::Stick,
+                    },
+                ),
                 crafting_station: SlotDisplayData::Empty,
             }),
             Some(vec![

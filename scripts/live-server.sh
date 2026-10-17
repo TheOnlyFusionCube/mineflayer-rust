@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # live-server.sh — local offline-mode vanilla Minecraft server fixture.
 #
-# Resolves the MC version azalea targets from Cargo.lock
-# (`azalea 0.16.0+mc26.1` -> `26.1`), downloads that release's server jar
+# Resolves the MC version the engine targets from Cargo.lock
+# (`mineflayer-engine 0.16.0+mc26.1` -> `26.1`), downloads that release's server jar
 # from Mojang's piston-meta manifest into .live/, and boots it with
 # online-mode=false on port 25566. If the system java is older than the
 # release's required `javaVersion`, a matching JRE is vendored into
@@ -60,10 +60,10 @@ PYEOF
 }
 
 mc_target_version() {
-    # azalea version string in Cargo.lock, e.g. 0.16.0+mc26.1 -> 26.1
+    # engine version string in Cargo.lock, e.g. 0.16.0+mc26.1 -> 26.1
     # Cargo.lock line is `version = "0.16.0+mc26.1"` — fields: version = $3.
     awk '
-        /^name = "azalea"$/ { found = 1 }
+        /^name = "mineflayer-engine"$/ { found = 1 }
         found && /^version/ {
             v = $3
             gsub(/"/, "", v)
@@ -76,7 +76,7 @@ mc_target_version() {
 
 pick_version() {
     # Echoes the manifest release id to boot. Prefers an exact match for the
-    # azalea-targeted MC version; else the nearest same-major release; else
+    # engine-targeted MC version; else the nearest same-major release; else
     # (with a loud mismatch note) the newest release listed.
     local target="$1" manifest="$2" rels best=""
     rels="$(json_pick "$manifest" '[.versions[] | select(.type == "release") | .id] | .[]')"
@@ -100,7 +100,7 @@ pick_version() {
     fi
 
     best="$(json_pick "$manifest" '.latest.release')"
-    echo "warning: no ${target%%.*}.x release in piston-meta; falling back to latest release $best — PROTOCOL MISMATCH with azalea mc$target" >&2
+    echo "warning: no ${target%%.*}.x release in piston-meta; falling back to latest release $best — PROTOCOL MISMATCH with engine mc$target" >&2
     echo "$best"
 }
 
@@ -205,13 +205,13 @@ start_server() {
 
     local target version version_url version_json jar_url required_java java_bin
     target="$(mc_target_version)"
-    [ -n "$target" ] || { echo "error: could not parse azalea version from Cargo.lock" >&2; exit 1; }
+    [ -n "$target" ] || { echo "error: could not parse engine version from Cargo.lock" >&2; exit 1; }
 
     curl -fsSL --max-time 30 "$MANIFEST_URL" -o "$LIVE_DIR/version_manifest.json"
     version="$(pick_version "$target" "$LIVE_DIR/version_manifest.json")"
     PICKED_VERSION="$version"
     echo "$version" > "$LIVE_DIR/version.txt"
-    echo "azalea targets mc$target; booting server $version (port $PORT, offline mode)"
+    echo "engine targets mc$target; booting server $version (port $PORT, offline mode)"
 
     # version JSON: server jar url + required java major
     version_url="$(json_pick "$LIVE_DIR/version_manifest.json" ".versions[] | select(.id == \"$version\") | .url")"

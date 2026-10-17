@@ -1,0 +1,29 @@
+[package]
+name = "mineflayer-world"
+description = "The Minecraft world representation used in the engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+rand.workspace = true
+
+[dependencies]
+mineflayer-block.workspace = true
+mineflayer-buf.workspace = true
+mineflayer-core = { workspace = true, features = ["serde", "bevy_ecs"] }
+mineflayer-registry.workspace = true
+bevy_ecs.workspace = true
+derive_more = { workspace = true, features = ["deref", "deref_mut"] }
+nohash-hasher.workspace = true
+parking_lot.workspace = true
+rustc-hash.workspace = true
+serde = { workspace = true, optional = true }
+tracing.workspace = true
+
+[features]
+serde = ["dep:serde"]
+
+
+[lints]
+workspace = true

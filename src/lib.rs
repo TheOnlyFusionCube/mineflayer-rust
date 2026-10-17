@@ -1,9 +1,9 @@
 //! `mineflayer` is a Rust port of the [mineflayer](https://github.com/PrismarineJS/mineflayer)
 //! Minecraft bot API. It exposes mineflayer's familiar surface — a `Bot` handle,
 //! `bot.on(...)`-style events, and per-domain methods (`chat`, `world`,
-//! `inventory`, `pathfinder`, …) — on top of the [`azalea`] crate, which
-//! provides the protocol, ECS world state, physics, and pathfinding
-//! underneath. The unit of truth for API coverage is `docs/api-parity.md`;
+//! `inventory`, `pathfinder`, …) — on top of the in-tree `mineflayer-engine`
+//! crate ([`engine`]), which provides the protocol, ECS world state, physics,
+//! and pathfinding underneath. The unit of truth for API coverage is `docs/api-parity.md`;
 //! every public mineflayer API is tracked there as `pending`, `ported`,
 //! `diverges`, or `wontfix`.
 //!
@@ -52,20 +52,21 @@ pub use chat::{
     ChatMessage, ChatPattern, ChatPatternKey, ChatPatternMatch, ChatPatternOpts, MessageMatcher,
     MessagePosition, TabList,
 };
-// The azalea crate itself is re-exported so a dependent crate can name
-// azalea types through this crate (`mineflayer::azalea::...`) and always
-// get the same version and `[patch.crates-io]` table — a bare `azalea`
-// dependency would resolve the published 0.16 (see README, "Use as a
-// dependency").
-pub use azalea;
-// azalea value types that appear in this crate's public signatures —
-// users should not need their own azalea dependency to call them.
+/// The client engine under the port (protocol, ECS world, physics,
+/// pathfinding). Re-exported so a dependent crate names engine types through
+/// this crate (`mineflayer::engine::...`) and always gets the same version.
+pub use mineflayer_engine as engine;
+// Engine value types that appear in this crate's public signatures — users
+// should not need their own engine dependency to call them.
 // `ItemKind`/`MenuKind`/`DataComponentPatch` appear in the public
 // inventory API (toss/transfer/deposit/Window::menu_kind).
-pub use azalea::inventory::operations::ClickOperation;
-/// `BotBuilder::proxy` — azalea's SOCKS5 proxy type (`options.agent`-analog).
-pub use azalea::protocol::connect::Proxy;
-pub use azalea::{
+pub use craft::{DeltaEntry, Ingredient, Recipe, RecipeItem, RecipeResult};
+pub use entity::{Painting, Player, ProfileKeys};
+pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
+pub use mineflayer_engine::inventory::operations::ClickOperation;
+/// `BotBuilder::proxy` — the engine's SOCKS5 proxy type (`options.agent`-analog).
+pub use mineflayer_engine::protocol::connect::Proxy;
+pub use mineflayer_engine::{
     BlockPos, EntityRef, Vec3,
     inventory::{DataComponentPatch, ItemStack},
     registry::{
@@ -73,9 +74,6 @@ pub use azalea::{
         data::Biome,
     },
 };
-pub use craft::{DeltaEntry, Ingredient, Recipe, RecipeItem, RecipeResult};
-pub use entity::{Painting, Player, ProfileKeys};
-pub use inventory::{ContainerTarget, EquipDest, QUICK_BAR_START, TransferOpts};
 pub use misc::{
     ChatVisibility, Creative, HumanoidArm, Instrument, ModelCustomization, Particle,
     ParticleStatus, Settings, TitleKind, ViewDistance,
@@ -104,8 +102,8 @@ pub use pvp::{AttackRate, Pvp};
 pub use tool::{EquipOpts, Tool};
 
 /// The common imports for a bot: the handle, its events, the error type,
-/// and the azalea value types that appear in signatures — so examples and
-/// dependent crates never name the `azalea` crate themselves.
+/// and the engine value types that appear in signatures — so examples and
+/// dependent crates never name the `mineflayer-engine` crate themselves.
 pub mod prelude {
     pub use crate::bot::{Auth, Bot, BotBuilder, BotEvent};
     pub use crate::error::{Error, Result};
@@ -123,51 +121,57 @@ pub(crate) mod test_util {
 
     /// A `Client` whose own entity is already despawned — the state packets
     /// still in flight during teardown race into.
-    pub(crate) fn despawned_client() -> azalea::Client {
-        let mut app = azalea::app::App::new();
+    pub(crate) fn despawned_client() -> mineflayer_engine::Client {
+        let mut app = mineflayer_engine::app::App::new();
         // `Client::new` wants `Arc<RwLock<World>>`; `start_ecs_runner` hands
         // one back without naming the lock type.
-        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let (ecs, _run_systems, _exit_rx) = mineflayer_engine::start_ecs_runner(app.main_mut());
         let entity = {
             let mut ecs = ecs.write();
             let entity = ecs.spawn_empty().id();
             ecs.despawn(entity);
             entity
         };
-        azalea::Client::new(entity, ecs)
+        mineflayer_engine::Client::new(entity, ecs)
     }
 
     /// A `Client` whose own entity is alive and carries `bundle` — for
     /// tests that need components present (plugin state, pathfinder
     /// facade, inventory). No systems run, so ECS events are queued but
     /// never processed and tick broadcasters may not exist.
-    pub(crate) fn live_entity_client(bundle: impl azalea::ecs::bundle::Bundle) -> azalea::Client {
-        let mut app = azalea::app::App::new();
-        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+    pub(crate) fn live_entity_client(
+        bundle: impl mineflayer_engine::ecs::bundle::Bundle,
+    ) -> mineflayer_engine::Client {
+        let mut app = mineflayer_engine::app::App::new();
+        let (ecs, _run_systems, _exit_rx) = mineflayer_engine::start_ecs_runner(app.main_mut());
         let entity = ecs.write().spawn(bundle).id();
-        azalea::Client::new(entity, ecs)
+        mineflayer_engine::Client::new(entity, ecs)
     }
 
     /// A `Client` whose ECS carries a `TickBroadcast` — tick-driven waits
     /// park on `get_tick_broadcaster()` instead of panicking. No systems
     /// run, so ticks only arrive when the test sends them via
     /// [`tick_sender`].
-    pub(crate) fn tick_client(bundle: impl azalea::ecs::bundle::Bundle) -> azalea::Client {
-        let mut app = azalea::app::App::new();
-        app.add_plugins(azalea::tick_broadcast::TickBroadcastPlugin);
-        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+    pub(crate) fn tick_client(
+        bundle: impl mineflayer_engine::ecs::bundle::Bundle,
+    ) -> mineflayer_engine::Client {
+        let mut app = mineflayer_engine::app::App::new();
+        app.add_plugins(mineflayer_engine::tick_broadcast::TickBroadcastPlugin);
+        let (ecs, _run_systems, _exit_rx) = mineflayer_engine::start_ecs_runner(app.main_mut());
         let entity = ecs.write().spawn(bundle).id();
-        azalea::Client::new(entity, ecs)
+        mineflayer_engine::Client::new(entity, ecs)
     }
 
     /// The `TickBroadcast` sender — capacity 1, so two sends while a
     /// receiver is parked make its next `recv` report `Lagged(1)`, the
     /// routine scheduling stall the tick drivers must survive.
-    pub(crate) fn tick_sender(client: &azalea::Client) -> tokio::sync::broadcast::Sender<()> {
+    pub(crate) fn tick_sender(
+        client: &mineflayer_engine::Client,
+    ) -> tokio::sync::broadcast::Sender<()> {
         client
             .ecs
             .read()
-            .resource::<azalea::tick_broadcast::TickBroadcast>()
+            .resource::<mineflayer_engine::tick_broadcast::TickBroadcast>()
             .deref()
             .clone()
     }
@@ -176,7 +180,7 @@ pub(crate) mod test_util {
     /// drop the sender to play the bridge's exit (disconnect), like
     /// `bridge::spawn` does.
     pub(crate) fn bot_with_shutdown(
-        client: azalea::Client,
+        client: mineflayer_engine::Client,
     ) -> (crate::Bot, tokio::sync::watch::Sender<()>) {
         let mut bot = crate::Bot::new(client);
         let (tx, rx) = tokio::sync::watch::channel(());

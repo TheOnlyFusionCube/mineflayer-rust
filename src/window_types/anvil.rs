@@ -33,7 +33,7 @@ pub(super) fn check_anvil_name(name: &str) -> Result<()> {
 impl Anvil {
     /// The server's repair/rename level cost (`container_set_data` 0) —
     /// `None` until the first report. The upstream `Item.anvil` cost
-    /// preview has no azalea equivalent, so the checks below read this.
+    /// preview has no the engine equivalent, so the checks below read this.
     pub fn repair_cost(&self) -> Option<i32> {
         self.bot
             .shared

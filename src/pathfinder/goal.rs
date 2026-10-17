@@ -1,14 +1,14 @@
-//! The `goals.Goal*` family as one sum type, and the azalea goal adapters
+//! The `goals.Goal*` family as one sum type, and the engine goal adapters
 //! it maps to.
 
 use super::*;
 
 /// A `bot.pathfinder` goal — upstream's `goals.Goal*` family as one sum
-/// type. Each variant names the azalea goal it maps to.
+/// type. Each variant names the engine goal it maps to.
 #[derive(Clone, Debug)]
 pub enum Goal {
     /// `goals.GoalNear(x, y, z, range)` → [`goals::RadiusGoal`].
-    /// Distance is measured to block *centers* (azalea semantics — a
+    /// Distance is measured to block *centers* (the engine semantics — a
     /// half-block offset vs upstream's raw node coords, `diverges`).
     Near {
         /// The position to get near.
@@ -20,7 +20,7 @@ pub enum Goal {
     Block(BlockPos),
     /// `goals.GoalGetToBlock(x, y, z)` — stand directly adjacent to the
     /// block (upstream `isEnd`: `|dx| + |dz| + |dy<0?dy+1:dy| == 1`).
-    /// Custom `GetToBlockGoal` — azalea's `ReachBlockPosGoal` is the
+    /// Custom `GetToBlockGoal` — the engine's `ReachBlockPosGoal` is the
     /// *LookAtBlock* analog (reach/LOS, not adjacency).
     GetToBlock(BlockPos),
     /// `goals.GoalXZ(x, z)` → [`goals::XZGoal`].
@@ -30,7 +30,7 @@ pub enum Goal {
         /// Target z coordinate.
         z: i32,
     },
-    /// `goals.GoalNearXZ(x, z, range)` → `NearXZGoal` (azalea has no
+    /// `goals.GoalNearXZ(x, z, range)` → `NearXZGoal` (the engine has no
     /// xz-radius goal; ours mirrors upstream's octagonal heuristic and
     /// squared-range `isEnd`).
     NearXZ {
@@ -48,7 +48,7 @@ pub enum Goal {
     },
     /// `goals.GoalLookAtBlock(pos)` → [`goals::ReachBlockPosGoal`] at the
     /// default 4.5 reach — stand where a face of the block is visible.
-    /// `diverges`: azalea raycasts to the block *center* rather than
+    /// `diverges`: the engine raycasts to the block *center* rather than
     /// enumerating visible faces, and upstream's `options.reach`/
     /// `entityHeight` aren't plumbed.
     LookAtBlock(BlockPos),
@@ -57,7 +57,7 @@ pub enum Goal {
     /// does not break the block — `bot.dig` does that, same here).
     BreakBlock(BlockPos),
     /// `goals.GoalInvert(goal)` — succeeds exactly where the inner goal
-    /// fails. Negating the heuristic misleads A* the way azalea's
+    /// fails. Negating the heuristic misleads A* the way the engine's
     /// deprecated `InverseGoal` did (`diverges`).
     Invert(Box<Goal>),
     /// `goals.GoalFollow(entity, range)` — a watcher task re-issues a
@@ -81,7 +81,7 @@ pub enum Goal {
 }
 
 impl Goal {
-    /// The azalea goal for pathing, or `None` for a [`Goal::Follow`]
+    /// The engine goal for pathing, or `None` for a [`Goal::Follow`]
     /// whose entity isn't loaded. A `Follow` resolves to a
     /// [`goals::RadiusGoal`] at the entity's *current* position — inside
     /// composites that's upstream's snapshot semantics (a composite never
@@ -90,7 +90,7 @@ impl Goal {
     /// watcher that re-paths as the entity moves. `chunks` is the bot's
     /// live chunk storage, needed only by the `ReachBlockPosGoal`-backed
     /// variants' line-of-sight check.
-    pub(super) fn to_azalea(&self, chunks: &ChunkStorage) -> Option<Arc<dyn AzaleaGoal>> {
+    pub(super) fn to_engine(&self, chunks: &ChunkStorage) -> Option<Arc<dyn EngineGoal>> {
         match self {
             Goal::Near { pos, radius } => Some(Arc::new(goals::RadiusGoal::new(*pos, *radius))),
             Goal::Block(pos) => Some(Arc::new(goals::BlockPosGoal(*pos))),
@@ -106,25 +106,25 @@ impl Goal {
             })),
             Goal::Y { y } => Some(Arc::new(goals::YGoal { y: *y })),
             Goal::Invert(inner) => inner
-                .to_azalea(chunks)
-                .map(|goal| Arc::new(InvertedGoal(goal)) as Arc<dyn AzaleaGoal>),
+                .to_engine(chunks)
+                .map(|goal| Arc::new(InvertedGoal(goal)) as Arc<dyn EngineGoal>),
             Goal::Any(children) => children
                 .iter()
-                .map(|child| child.to_azalea(chunks))
+                .map(|child| child.to_engine(chunks))
                 .collect::<Option<Vec<_>>>()
-                .map(|goals| Arc::new(AnyGoal(goals)) as Arc<dyn AzaleaGoal>),
+                .map(|goals| Arc::new(AnyGoal(goals)) as Arc<dyn EngineGoal>),
             Goal::All(children) => children
                 .iter()
-                .map(|child| child.to_azalea(chunks))
+                .map(|child| child.to_engine(chunks))
                 .collect::<Option<Vec<_>>>()
-                .map(|goals| Arc::new(AllGoal(goals)) as Arc<dyn AzaleaGoal>),
+                .map(|goals| Arc::new(AllGoal(goals)) as Arc<dyn EngineGoal>),
             Goal::Follow { entity, range } => entity
                 .get_component::<Position>()
-                .map(|p| Arc::new(goals::RadiusGoal::new(**p, *range)) as Arc<dyn AzaleaGoal>),
+                .map(|p| Arc::new(goals::RadiusGoal::new(**p, *range)) as Arc<dyn EngineGoal>),
         }
     }
 
-    /// Whether [`Goal::to_azalea`] actually reads its `chunks`
+    /// Whether [`Goal::to_engine`] actually reads its `chunks`
     /// parameter — only the `ReachBlockPosGoal`-backed variants
     /// raycast into chunk storage. Lets [`Goal::is_end`] skip the
     /// `WorldHolder` lock for every other goal shape (and stay usable
@@ -139,14 +139,14 @@ impl Goal {
     }
 
     /// The goal's own success check at `pos` — upstream's `goal.isEnd`.
-    /// Evaluated through the azalea goal this maps to so semantics can't
+    /// Evaluated through the engine goal this maps to so semantics can't
     /// drift: for [`Goal::Follow`] that's the `RadiusGoal` at the
     /// entity's current position — its `success` measures from the
     /// block *center* like the installed goal does (a raw Vec3 distance
     /// here would disagree by ±0.5 per axis), and it needs no
     /// `ChunkStorage`, so this arm skips `client.world()` entirely and
     /// is `false` while the entity isn't loaded.
-    pub(super) fn is_end(&self, client: &azalea::Client, pos: Vec3) -> bool {
+    pub(super) fn is_end(&self, client: &mineflayer_engine::Client, pos: Vec3) -> bool {
         match self {
             Goal::Follow { entity, range } => entity.get_component::<Position>().is_some_and(|p| {
                 goals::RadiusGoal::new(**p, *range).success(player_pos_to_block_pos(pos))
@@ -157,7 +157,7 @@ impl Goal {
                 } else {
                     ChunkStorage::default()
                 };
-                self.to_azalea(&chunks)
+                self.to_engine(&chunks)
                     .is_some_and(|goal| goal.success(player_pos_to_block_pos(pos)))
             }
         }
@@ -223,12 +223,12 @@ pub(super) fn same_goal(a: &Goal, b: &Goal) -> bool {
     }
 }
 
-/// A shared handle on an azalea goal — the ECS stores `Arc<dyn Goal>` on
+/// A shared handle on an engine goal — the ECS stores `Arc<dyn Goal>` on
 /// the `Pathfinder` component, so wrapping the `Arc` is how the facade
 /// keeps an evaluable copy for `dynamic` re-pathing.
 #[derive(Debug)]
-pub(super) struct SharedGoal(pub(super) Arc<dyn AzaleaGoal>);
-impl AzaleaGoal for SharedGoal {
+pub(super) struct SharedGoal(pub(super) Arc<dyn EngineGoal>);
+impl EngineGoal for SharedGoal {
     fn heuristic(&self, n: BlockPos) -> f32 {
         self.0.heuristic(n)
     }
@@ -237,11 +237,11 @@ impl AzaleaGoal for SharedGoal {
     }
 }
 
-/// `GoalCompositeAny` — azalea's `OrGoals` needs homogeneous children;
+/// `GoalCompositeAny` — the engine's `OrGoals` needs homogeneous children;
 /// ours are boxed trait objects.
 #[derive(Debug)]
-pub(super) struct AnyGoal(pub(super) Vec<Arc<dyn AzaleaGoal>>);
-impl AzaleaGoal for AnyGoal {
+pub(super) struct AnyGoal(pub(super) Vec<Arc<dyn EngineGoal>>);
+impl EngineGoal for AnyGoal {
     fn heuristic(&self, n: BlockPos) -> f32 {
         self.0
             .iter()
@@ -256,8 +256,8 @@ impl AzaleaGoal for AnyGoal {
 
 /// `GoalCompositeAll` — the `AndGoals` analog.
 #[derive(Debug)]
-pub(super) struct AllGoal(pub(super) Vec<Arc<dyn AzaleaGoal>>);
-impl AzaleaGoal for AllGoal {
+pub(super) struct AllGoal(pub(super) Vec<Arc<dyn EngineGoal>>);
+impl EngineGoal for AllGoal {
     fn heuristic(&self, n: BlockPos) -> f32 {
         self.0
             .iter()
@@ -270,11 +270,11 @@ impl AzaleaGoal for AllGoal {
     }
 }
 
-/// `GoalInvert` — the semantics of azalea's deprecated `InverseGoal`:
+/// `GoalInvert` — the semantics of the engine's deprecated `InverseGoal`:
 /// negated heuristic, negated success.
 #[derive(Debug)]
-pub(super) struct InvertedGoal(pub(super) Arc<dyn AzaleaGoal>);
-impl AzaleaGoal for InvertedGoal {
+pub(super) struct InvertedGoal(pub(super) Arc<dyn EngineGoal>);
+impl EngineGoal for InvertedGoal {
     fn heuristic(&self, n: BlockPos) -> f32 {
         -self.0.heuristic(n)
     }
@@ -285,19 +285,19 @@ impl AzaleaGoal for InvertedGoal {
 
 /// `GoalGetToBlock` — upstream's strict-adjacency goal:
 /// `|dx| + |dz| + |dy<0?dy+1:dy| == 1` (a block below counts one step
-/// less because the feet block is inside it). Azalea's
+/// less because the feet block is inside it). The engine's
 /// `ReachBlockPosGoal` answers a different question (can a face be
 /// seen within reach), so this one is implemented by hand.
 #[derive(Debug)]
 pub(super) struct GetToBlockGoal(pub(super) BlockPos);
-impl AzaleaGoal for GetToBlockGoal {
+impl EngineGoal for GetToBlockGoal {
     fn heuristic(&self, n: BlockPos) -> f32 {
         let dx = (n.x - self.0.x).abs() as f32;
         let dy = (n.y - self.0.y) as f32;
         let dz = (n.z - self.0.z).abs() as f32;
         // upstream: distanceXZ(dx, dz) + Math.abs(dy < 0 ? dy + 1 : dy),
         // with distanceXZ the octagonal form and the whole thing scaled
-        // by azalea's COST_HEURISTIC like every azalea goal
+        // by the engine's COST_HEURISTIC like every engine goal
         let (straight, diagonal) = if dx < dz {
             (dz - dx, dx)
         } else {
@@ -315,8 +315,8 @@ impl AzaleaGoal for GetToBlockGoal {
     }
 }
 
-/// `GoalNearXZ` — azalea has no xz-radius goal. Heuristic is upstream's
-/// `distanceXZ` (octagonal: `|dx-dz| + min(dx,dz)·√2`), scaled by azalea's
+/// `GoalNearXZ` — the engine has no xz-radius goal. Heuristic is upstream's
+/// `distanceXZ` (octagonal: `|dx-dz| + min(dx,dz)·√2`), scaled by the engine's
 /// `COST_HEURISTIC` like `XZGoal`; `isEnd` is upstream's `dx²+dz² ≤
 /// range²`.
 #[derive(Debug)]
@@ -325,7 +325,7 @@ pub(super) struct NearXZGoal {
     z: i32,
     range_sq: f32,
 }
-impl AzaleaGoal for NearXZGoal {
+impl EngineGoal for NearXZGoal {
     fn heuristic(&self, n: BlockPos) -> f32 {
         let x = (self.x - n.x).unsigned_abs() as f32;
         let z = (self.z - n.z).unsigned_abs() as f32;
@@ -344,7 +344,7 @@ mod tests {
     use super::*;
     use crate::pathfinder::tests::*;
 
-    /// Each facade goal maps to an azalea goal whose `success`/`heuristic`
+    /// Each facade goal maps to an engine goal whose `success`/`heuristic`
     /// matches upstream semantics at probe positions. `LookAtBlock`/
     /// `BreakBlock` need a world for their LOS raycast, and `Follow`
     /// needs a live `EntityRef` — all covered by the live test instead.
@@ -353,7 +353,7 @@ mod tests {
         let chunks = ChunkStorage::default();
 
         // GoalXZ ignores y entirely.
-        let g = Goal::XZ { x: 5, z: 7 }.to_azalea(&chunks).unwrap();
+        let g = Goal::XZ { x: 5, z: 7 }.to_engine(&chunks).unwrap();
         assert!(g.success(BlockPos::new(5, -60, 7)));
         assert!(g.success(BlockPos::new(5, 300, 7)));
         assert!(!g.success(BlockPos::new(5, 64, 8)));
@@ -365,7 +365,7 @@ mod tests {
         // It needs no chunks — pure adjacency math, unlike the
         // ReachBlockPosGoal it replaced.
         let g = Goal::GetToBlock(BlockPos::new(4, 64, 4))
-            .to_azalea(&chunks)
+            .to_engine(&chunks)
             .unwrap();
         for pos in [
             BlockPos::new(5, 64, 4),
@@ -388,38 +388,38 @@ mod tests {
         assert!(g.success(BlockPos::new(4, 62, 4))); // dy_raw=-2 → 1
 
         // GoalY ignores x/z.
-        let g = Goal::Y { y: 70 }.to_azalea(&chunks).unwrap();
+        let g = Goal::Y { y: 70 }.to_engine(&chunks).unwrap();
         assert!(g.success(BlockPos::new(1000, 70, -1000)));
         assert!(!g.success(BlockPos::new(1000, 71, -1000)));
 
         // GoalBlock is exact.
         let g = Goal::Block(BlockPos::new(1, 2, 3))
-            .to_azalea(&chunks)
+            .to_engine(&chunks)
             .unwrap();
         assert!(g.success(BlockPos::new(1, 2, 3)));
         assert!(!g.success(BlockPos::new(1, 2, 4)));
 
         // GoalNear = euclidean radius — measured from block *centers*
-        // (azalea semantics; upstream compares raw node coords, a
+        // (the engine semantics; upstream compares raw node coords, a
         // half-block offset — noted as diverges in api-parity.md).
         let g = Goal::Near {
             pos: Vec3::new(0.5, 64.5, 0.5),
             radius: 2.0,
         }
-        .to_azalea(&chunks)
+        .to_engine(&chunks)
         .unwrap();
         assert!(g.success(BlockPos::new(1, 64, 1)));
         assert!(!g.success(BlockPos::new(2, 64, 2)));
 
         // Invert flips success and the heuristic's sign.
         let inner = Goal::XZ { x: 0, z: 0 };
-        let inner_azalea = inner.to_azalea(&chunks).unwrap();
-        let g = Goal::Invert(Box::new(inner)).to_azalea(&chunks).unwrap();
+        let inner_engine = inner.to_engine(&chunks).unwrap();
+        let g = Goal::Invert(Box::new(inner)).to_engine(&chunks).unwrap();
         assert!(g.success(BlockPos::new(10, 64, 10)));
         assert!(!g.success(BlockPos::new(0, 64, 0)));
         assert_eq!(
             g.heuristic(BlockPos::new(3, 64, 4)),
-            -inner_azalea.heuristic(BlockPos::new(3, 64, 4))
+            -inner_engine.heuristic(BlockPos::new(3, 64, 4))
         );
 
         // GoalNearXZ — upstream `distanceXZ` (octagonal: straight +
@@ -430,7 +430,7 @@ mod tests {
             z: 10,
             range: 5.,
         }
-        .to_azalea(&chunks)
+        .to_engine(&chunks)
         .unwrap();
         // dx=dz=10 → straight 0, diagonal 10 → 10·√2·COST_HEURISTIC
         assert_eq!(
@@ -453,14 +453,14 @@ mod tests {
 
         // Any = OR, All = AND.
         let any = Goal::Any(vec![Goal::XZ { x: 5, z: 5 }, Goal::Y { y: 70 }])
-            .to_azalea(&chunks)
+            .to_engine(&chunks)
             .unwrap();
         assert!(any.success(BlockPos::new(5, 64, 5)));
         assert!(any.success(BlockPos::new(9, 70, 9)));
         assert!(!any.success(BlockPos::new(9, 64, 9)));
 
         let all = Goal::All(vec![Goal::XZ { x: 5, z: 5 }, Goal::Y { y: 70 }])
-            .to_azalea(&chunks)
+            .to_engine(&chunks)
             .unwrap();
         assert!(all.success(BlockPos::new(5, 70, 5)));
         assert!(!all.success(BlockPos::new(5, 64, 5)));
@@ -577,19 +577,19 @@ mod tests {
             },
             Goal::Block(BlockPos::new(0, 64, 0)),
         ]);
-        let azalea_goal = goal
-            .to_azalea(&ChunkStorage::default())
+        let engine_goal = goal
+            .to_engine(&ChunkStorage::default())
             .expect("composite with a tracked Follow must convert");
-        assert!(azalea_goal.success(BlockPos::new(6, 64, 0))); // near the entity
-        assert!(azalea_goal.success(BlockPos::new(0, 64, 0))); // on the block
-        assert!(!azalea_goal.success(BlockPos::new(10, 64, 0))); // neither
+        assert!(engine_goal.success(BlockPos::new(6, 64, 0))); // near the entity
+        assert!(engine_goal.success(BlockPos::new(0, 64, 0))); // on the block
+        assert!(!engine_goal.success(BlockPos::new(10, 64, 0))); // neither
 
-        // `Invert(Follow)` resolves too — same `to_azalea` arm.
+        // `Invert(Follow)` resolves too — same `to_engine` arm.
         let inverted = Goal::Invert(Box::new(Goal::Follow {
             entity: target,
             range: 2.,
         }))
-        .to_azalea(&ChunkStorage::default())
+        .to_engine(&ChunkStorage::default())
         .unwrap();
         assert!(!inverted.success(BlockPos::new(5, 64, 0)));
 
@@ -601,7 +601,7 @@ mod tests {
                 entity: client.entity_ref_for(untracked),
                 range: 1.,
             }])
-            .to_azalea(&ChunkStorage::default())
+            .to_engine(&ChunkStorage::default())
             .is_none()
         );
     }

@@ -1,0 +1,24 @@
+[package]
+name = "mineflayer-chat"
+description = "Parse Minecraft chat messages."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+simdnbt = ["dep:simdnbt"]
+mineflayer-buf = ["dep:mineflayer-buf", "simdnbt"]
+numbers = ["dep:mineflayer-registry", "dep:simdnbt"]
+
+[dependencies]
+mineflayer-buf = { workspace = true, optional = true, features = ["serde_json"] }
+mineflayer-language.workspace = true
+mineflayer-registry = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+simdnbt = { workspace = true, optional = true }
+tracing.workspace = true
+
+[lints]
+workspace = true

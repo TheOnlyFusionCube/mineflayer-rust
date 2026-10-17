@@ -292,7 +292,7 @@ mod tests {
         let bot = Bot::new(crate::test_util::despawned_client());
         let opts = |count: i32| TransferOpts {
             window: Some(bot.inventory()),
-            kind: azalea::registry::builtin::ItemKind::Stone,
+            kind: mineflayer_engine::registry::builtin::ItemKind::Stone,
             metadata: None,
             nbt: None,
             count: Some(count),

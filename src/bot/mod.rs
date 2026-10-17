@@ -8,7 +8,7 @@
 
 use std::{sync::Arc, time::Duration};
 
-use azalea::{
+use mineflayer_engine::{
     core::{position::ChunkPos, registry_holder::RegistryHolder},
     world::WorldName,
 };
@@ -20,7 +20,7 @@ use crate::{Error, Result, chat::ChatShared, world::WorldState};
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
 ///
-/// `Bot` is a cheap cloneable handle wrapping [`azalea::Client`]. High-level
+/// `Bot` is a cheap cloneable handle wrapping [`mineflayer_engine::Client`]. High-level
 /// mineflayer methods (`bot.chat`, `bot.dig`, `bot.pathfinder`, …) are added
 /// to it as `impl Bot` blocks in the domain modules.
 ///
@@ -28,7 +28,7 @@ use crate::{Error, Result, chat::ChatShared, world::WorldState};
 /// underlying ECS runner is shut down.
 #[derive(Clone)]
 pub struct Bot {
-    pub(crate) client: azalea::Client,
+    pub(crate) client: mineflayer_engine::Client,
     /// The receiver the first [`Bot::events`] call hands out — subscribed
     /// before the bridge task started, so events that fired before
     /// `connect` returned (`Init`, `Login`, the spawn burst) are still on
@@ -63,21 +63,21 @@ pub struct Bot {
 ///
 /// One construction site: a new domain is added here and in
 /// [`BotShared::new`], instead of being threaded through `Bot`'s fields,
-/// `connect_azalea`, `Bot::new`, and the bridge's dependency bag. Each
+/// `connect_engine`, `Bot::new`, and the bridge's dependency bag. Each
 /// domain keeps its own lock; nothing here is a single global lock.
 ///
 /// Storage rule — where new per-bot state goes:
 ///
 /// 1. **ECS component on the client entity** when an ECS system reads it
 ///    (`interact::InteractShared`, read by the dig-abort plugin) or when
-///    it must be read in the same ECS access as azalea components
+///    it must be read in the same ECS access as the engine components
 ///    (`misc::MiscState` with `Pose`/`AirSupply`,
-///    `pathfinder::PathfinderFacade` with azalea's `Pathfinder`).
+///    `pathfinder::PathfinderFacade` with the engine's `Pathfinder`).
 /// 2. **ECS component, created on first use** for the plugin-analog state
 ///    (`tool`, `pvp`, `collect`, `auto_eat`): a plugin that is never used
 ///    allocates nothing, and the state goes away with the entity.
 /// 3. **Here** for everything else: state that the bridge writes from
-///    packets and `Bot` handles read, with no azalea component involved
+///    packets and `Bot` handles read, with no the engine component involved
 ///    (chat, world, entities, windows, typed windows, recipes,
 ///    scoreboard). A domain lock here never needs the ECS lock to read.
 #[derive(Clone)]
@@ -85,7 +85,7 @@ pub(crate) struct BotShared {
     /// The bot's event stream (see [`Bot::events`]).
     pub events: broadcast::Sender<BotEvent>,
     /// Reason passed to [`Bot::quit`]/[`Bot::end`]; the bridge consumes it
-    /// when azalea reports the disconnect so `BotEvent::End` can carry it
+    /// when the engine reports the disconnect so `BotEvent::End` can carry it
     /// (upstream: `client.end(reason)` -> `'end'` event).
     pub quit_reason: Arc<Mutex<Option<String>>>,
     /// The reason the last `BotEvent::End` carried — upstream chat.js's
@@ -97,7 +97,7 @@ pub(crate) struct BotShared {
     pub chat: Arc<Mutex<ChatShared>>,
     /// Facade-kept world/game state (spawn point, clocks, weather, login
     /// metadata) fed by [`crate::world::observe_event`] inside the bridge
-    /// task — azalea drops most of these packets upstream.
+    /// task — the engine drops most of these packets upstream.
     pub world_state: Arc<RwLock<WorldState>>,
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links) — see `entity::EntityTracker`.
@@ -116,7 +116,7 @@ pub(crate) struct BotShared {
 }
 
 /// Lock rule (see docs/PORT-PLAN.md, B9). Two lock families meet here:
-/// the domain locks in [`BotShared`] and azalea's ECS lock
+/// the domain locks in [`BotShared`] and the engine's ECS lock
 /// (`client.ecs.read()/write()`, `get_component`, `entity_mut`,
 /// `client.world()`).
 ///
@@ -168,13 +168,13 @@ impl Bot {
         BotBuilder::default()
     }
 
-    /// Wrap an already-connected [`azalea::Client`] in a `Bot` handle.
+    /// Wrap an already-connected [`mineflayer_engine::Client`] in a `Bot` handle.
     ///
-    /// Scaffolding: the resulting bot has no event bridge (no azalea event
+    /// Scaffolding: the resulting bot has no event bridge (no the engine event
     /// receiver exists for prebuilt clients), so [`Bot::events`] yields a
     /// silent stream. Prefer [`Bot::builder`].
     #[doc(hidden)]
-    pub fn new(client: azalea::Client) -> Self {
+    pub fn new(client: mineflayer_engine::Client) -> Self {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (alive, _) = watch::channel(());
         let (shutdown_tx, shutdown_rx) = watch::channel(());
@@ -189,9 +189,9 @@ impl Bot {
         }
     }
 
-    /// The underlying [`azalea::Client`] — the `bot._client` analog for when
+    /// The underlying [`mineflayer_engine::Client`] — the `bot._client` analog for when
     /// the facade doesn't cover something yet.
-    pub fn client(&self) -> &azalea::Client {
+    pub fn client(&self) -> &mineflayer_engine::Client {
         &self.client
     }
 
@@ -200,7 +200,7 @@ impl Bot {
     /// The first call returns a receiver that was subscribed before the
     /// event bridge started — upstream's `createBot` lets listeners attach
     /// before anything fires, and this preserves that for the earliest
-    /// events (`Init` is already queued in azalea's channel when `connect`
+    /// events (`Init` is already queued in the engine's channel when `connect`
     /// returns, so a plain subscribe would race and lose it). Later calls
     /// see only events sent after they subscribe.
     ///
@@ -281,11 +281,11 @@ impl Bot {
     }
 
     /// `bot.respawn()` — manual respawn; a no-op while alive (upstream
-    /// semantics). azalea auto-respawns on death (like mineflayer's default
+    /// semantics). The engine auto-respawns on death (like mineflayer's default
     /// `respawn: true`), so this mainly exists for parity.
     pub fn respawn(&self) {
         if !self.is_alive() {
-            use azalea::protocol::packets::game::s_client_command::{
+            use mineflayer_engine::protocol::packets::game::s_client_command::{
                 Action, ServerboundClientCommand,
             };
             self.client.write_packet(ServerboundClientCommand {
@@ -298,30 +298,30 @@ impl Bot {
     /// before the game profile arrives.
     pub fn username(&self) -> String {
         self.client
-            .get_component::<azalea::player::GameProfileComponent>()
+            .get_component::<mineflayer_engine::player::GameProfileComponent>()
             .map(|profile| profile.name.clone())
             .unwrap_or_default()
     }
 
-    /// `bot.version` — the Minecraft version azalea targets (single-version
+    /// `bot.version` — the Minecraft version the engine targets (single-version
     /// port; see api-parity.md).
     pub fn version(&self) -> &'static str {
-        azalea::protocol::packets::VERSION_NAME
+        mineflayer_engine::protocol::packets::VERSION_NAME
     }
 
     /// `bot.protocolVersion`.
     pub fn protocol_version(&self) -> i32 {
-        azalea::protocol::packets::PROTOCOL_VERSION
+        mineflayer_engine::protocol::packets::PROTOCOL_VERSION
     }
 
     /// `bot.majorVersion` — single-version port: same as [`Bot::version`].
     pub fn major_version(&self) -> &'static str {
-        azalea::protocol::packets::VERSION_NAME
+        mineflayer_engine::protocol::packets::VERSION_NAME
     }
 
     /// `bot.registry` — a snapshot of the server's dynamic registries
     /// (dimensions, enchantments, damage kinds, …). Static data
-    /// (blocks/items/entities) lives in `azalea::registry` / `azalea::block`.
+    /// (blocks/items/entities) lives in `mineflayer_engine::registry` / `mineflayer_engine::block`.
     pub fn registry(&self) -> RegistryHolder {
         self.client.with_registry_holder(|r| r.clone())
     }
@@ -337,7 +337,7 @@ impl Bot {
 
     /// `bot.waitForChunksToLoad()` — resolves once every chunk in the 5×5
     /// area centered on the bot's position is present in the client-loaded
-    /// slice of the world (azalea's `PartialWorld`). 10s timeout, same as
+    /// slice of the world (the engine's `PartialWorld`). 10s timeout, same as
     /// upstream.
     pub async fn wait_for_chunks_to_load(&self) -> Result<()> {
         const TIMEOUT: Duration = Duration::from_secs(10);
@@ -396,7 +396,7 @@ impl Bot {
     }
 
     /// Whether we've received the login packet and are in the game state.
-    /// Unlike `azalea::Client::logged_in` this never panics — it returns
+    /// Unlike `mineflayer_engine::Client::logged_in` this never panics — it returns
     /// `false` once the entity is gone.
     pub(crate) fn logged_in(&self) -> bool {
         self.client
@@ -430,7 +430,7 @@ mod tests {
         );
         let events = chat
             .lock()
-            .message_events(&azalea::client_chat::ChatPacket::new("probe"));
+            .message_events(&mineflayer_engine::client_chat::ChatPacket::new("probe"));
         assert!(
             events
                 .iter()
@@ -530,7 +530,7 @@ mod tests {
 
     #[test]
     fn first_events_call_gets_the_pre_bridge_subscription() {
-        // azalea can queue Init before `connect` returns; the first
+        // The engine can queue Init before `connect` returns; the first
         // `bot.events()` receiver was subscribed before the bridge started,
         // so those earliest events are still on it. Later subscribers only
         // see events sent after they attach.
@@ -564,9 +564,10 @@ mod tests {
         let _ = BotEvent::Error("boom".to_string());
         let _ = BotEvent::Tick;
         let _ = BotEvent::ChunkColumnLoad(ChunkPos::new(0, 0));
-        let _ = |p: azalea::client_chat::ChatPacket| BotEvent::Chat(p);
-        let _ =
-            |p: Arc<azalea::protocol::packets::game::ClientboundGamePacket>| BotEvent::Packet(p);
-        let _ = |i: azalea::player::PlayerInfo| BotEvent::PlayerJoined(i);
+        let _ = |p: mineflayer_engine::client_chat::ChatPacket| BotEvent::Chat(p);
+        let _ = |p: Arc<mineflayer_engine::protocol::packets::game::ClientboundGamePacket>| {
+            BotEvent::Packet(p)
+        };
+        let _ = |i: mineflayer_engine::player::PlayerInfo| BotEvent::PlayerJoined(i);
     }
 }

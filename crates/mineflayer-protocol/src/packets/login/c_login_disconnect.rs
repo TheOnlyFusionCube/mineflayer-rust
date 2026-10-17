@@ -1,0 +1,39 @@
+use std::io::{self, Cursor, Write};
+
+use mineflayer_buf::{McBuf, BufReadError};
+use mineflayer_chat::FormattedText;
+use mineflayer_protocol_macros::ClientboundLoginPacket;
+use serde::{Deserialize, Serialize};
+use tracing::trace;
+
+#[derive(ClientboundLoginPacket, Clone, Debug, PartialEq)]
+pub struct ClientboundLoginDisconnect {
+    pub reason: FormattedText,
+}
+
+impl McBuf for ClientboundLoginDisconnect {
+    fn mc_read(buf: &mut Cursor<&[u8]>) -> Result<ClientboundLoginDisconnect, BufReadError> {
+        let disconnect_string = String::mc_read(buf)?;
+        trace!("Got disconnect packet with string: {disconnect_string:?}");
+        let disconnect_json =
+            match serde_json::from_str::<serde_json::Value>(disconnect_string.as_str()) {
+                Ok(json) => json,
+                Err(err) => {
+                    return Err(BufReadError::Custom(format!(
+                        "Failed to deserialize disconnect JSON {disconnect_string:?}: {err}"
+                    )));
+                }
+            };
+
+        Ok(ClientboundLoginDisconnect {
+            reason: FormattedText::deserialize(disconnect_json)?,
+        })
+    }
+    fn mc_write(&self, buf: &mut impl Write) -> io::Result<()> {
+        let status_string = FormattedText::serialize(&self.reason, serde_json::value::Serializer)
+            .unwrap()
+            .to_string();
+        status_string.mc_write(buf)?;
+        Ok(())
+    }
+}

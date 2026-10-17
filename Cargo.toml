@@ -2,15 +2,18 @@
 name = "mineflayer"
 version = "0.2.0"
 edition = "2024"
-description = "The mineflayer bot API, ported to Rust on top of azalea"
+description = "The mineflayer bot API, ported to Rust"
 license = "MIT"
 readme = "README.md"
 # No `repository`: the port has no public remote yet. `rust-version` is the
 # pinned nightly's version (rust-toolchain.toml); a stable 1.101 cannot build
-# azalea, so the field is a floor, not a promise of stable support.
+# the engine crates, so the field is a floor, not a promise of stable support.
 rust-version = "1.101"
-keywords = ["minecraft", "bot", "mineflayer", "azalea"]
+keywords = ["minecraft", "bot", "mineflayer"]
 categories = ["games"]
+
+[lints]
+workspace = true
 
 [features]
 # Enables the tests in tests/live/ that talk to the local offline-mode
@@ -18,7 +21,9 @@ categories = ["games"]
 live = []
 
 [dependencies]
-azalea = "0.16"
+# The client engine: protocol, ECS world state, physics, pathfinding
+# (crates/, see docs/version_upgrade.md for its origin and upkeep).
+mineflayer-engine = { path = "crates/mineflayer-engine", version = "0.16.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 thiserror = "2"
 futures = "0.3"
@@ -27,10 +32,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = "1"
 # Every crate lock (see the lock policy in docs/PORT-PLAN.md): same no-
-# poison lock family azalea uses for the ECS, and the version azalea-
-# client compiles its `WorldHolder.shared` field with.
+# poison lock family the engine uses for the ECS, and the version
+# mineflayer-client compiles its `WorldHolder.shared` field with.
 parking_lot = "0.12"
-# Log facade (ruling in docs/PORT-PLAN.md, C1) — azalea already logs
+# Log facade (ruling in docs/PORT-PLAN.md, C1) — the engine already logs
 # through `tracing`, and a dependent crate installs the subscriber.
 tracing = "0.1"
 
@@ -44,35 +49,105 @@ name = "live"
 path = "tests/live/main.rs"
 required-features = ["live"]
 
-# NOTE: a crate that depends on this one must repeat this table in its
-# own workspace (Cargo applies patches per workspace) — see the README
-# section "Use as a dependency".
-#
-# The published azalea-protocol 0.16.0 serializes `ServerboundAttack`'s
-# entity id as a fixed i32 while release MC 26.1 servers read a VarInt, so
-# every `bot.attack()` gets the client kicked ("larger than I expected").
-# Upstream fixed it in commit ddef371 ("fix attack packet was serialized
-# incorrectly (#323)"), which is on the same 0.16.0+mc26.1 release line;
-# no fixed release is published yet.
-[patch.crates-io]
-azalea = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-auth = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-block = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-block-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-brigadier = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-buf = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-buf-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-chat = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-client = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-core = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-crypto = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-entity = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-inventory = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-inventory-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-language = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-physics = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-protocol = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-protocol-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-registry = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-registry-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-azalea-world = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.16.0+mc26.1"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+aes = "0.8.4"
+async-compat = "0.2.5"
+base64 = "0.22.1"
+bevy_app = "0.18.1"
+bevy_ecs = { version = "0.18.1", default-features = false, features = [
+    "multi_threaded",
+] }
+bevy_utils = { version = "0.18.1", default-features = false }
+bevy_log = "0.18.1"
+bevy_tasks = "0.18.1"
+bevy_time = "0.18.1"
+byteorder = "1.5.0"
+cfb8 = "0.8.1"
+chrono = { version = "0.4.44", default-features = false }
+compact_str = "0.9.0"
+crc32c = "0.6.8"
+derive_more = "2.1.1"
+enum-as-inner = "0.7.0"
+env_logger = "0.11.9"
+eyre = "0.6.12"
+flate2 = { version = "1.1.9", features = ["zlib-rs"] }
+futures = "0.3.32"
+futures-lite = "2.6.1"
+hickory-resolver = "0.25.2"
+indexmap = "2.13.0"
+md-5 = "0.10.6"
+minecraft_folder_path = "0.1.2"
+nohash-hasher = "0.2.0"
+num-bigint = "0.4.6"
+num-format = "0.4.4"
+num-traits = "0.2.19"
+parking_lot = "0.12.5"
+proc-macro2 = "1.0.106"
+quote = "1.0.45"
+rand = "0.10.0"
+rand_core = "0.10.0"
+regex = "1.12.3"
+reqwest = { version = "0.13.2", default-features = false }
+rsa = "0.10.0-rc.17"
+rsa_public_encrypt_pkcs1 = "0.4.0"
+rustc-hash = "2.1.1"
+serde = "1.0.228"
+serde_json = "1.0.149"
+sha1 = "0.11.0-rc.5"
+sha2 = "0.11.0-rc.5"
+simdnbt = "0.10.0"
+socks5-impl = "0.8.1"
+syn = "2.0.117"
+thiserror = "2.0.18"
+tokio = "1.50.0"
+tokio-util = "0.7.18"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+uuid = "1.22.0"
+radix-heap = "0.4.2"
+
+mineflayer-auth = { path = "crates/mineflayer-auth", version = "0.16.0", default-features = false }
+mineflayer-block = { path = "crates/mineflayer-block", version = "0.16.0", default-features = false }
+mineflayer-block-macros = { path = "crates/mineflayer-block-macros", version = "0.16.0", default-features = false }
+mineflayer-brigadier = { path = "crates/mineflayer-brigadier", version = "0.16.0", default-features = false }
+mineflayer-buf = { path = "crates/mineflayer-buf", version = "0.16.0", default-features = false }
+mineflayer-buf-macros = { path = "crates/mineflayer-buf-macros", version = "0.16.0", default-features = false }
+mineflayer-chat = { path = "crates/mineflayer-chat", version = "0.16.0", default-features = false }
+mineflayer-client = { path = "crates/mineflayer-client", version = "0.16.0", default-features = false }
+mineflayer-core = { path = "crates/mineflayer-core", version = "0.16.0", default-features = false }
+mineflayer-crypto = { path = "crates/mineflayer-crypto", version = "0.16.0", default-features = false }
+mineflayer-entity = { path = "crates/mineflayer-entity", version = "0.16.0", default-features = false }
+mineflayer-inventory = { path = "crates/mineflayer-inventory", version = "0.16.0", default-features = false }
+mineflayer-inventory-macros = { path = "crates/mineflayer-inventory-macros", version = "0.16.0", default-features = false }
+mineflayer-language = { path = "crates/mineflayer-language", version = "0.16.0", default-features = false }
+mineflayer-physics = { path = "crates/mineflayer-physics", version = "0.16.0", default-features = false }
+mineflayer-protocol = { path = "crates/mineflayer-protocol", version = "0.16.0", default-features = false }
+mineflayer-protocol-macros = { path = "crates/mineflayer-protocol-macros", version = "0.16.0", default-features = false }
+mineflayer-registry = { path = "crates/mineflayer-registry", version = "0.16.0", default-features = false }
+mineflayer-registry-macros = { path = "crates/mineflayer-registry-macros", version = "0.16.0", default-features = false }
+mineflayer-world = { path = "crates/mineflayer-world", version = "0.16.0", default-features = false }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs_dep)'] }
+
+[profile.release]
+debug = "line-tables-only"
+
+# Packet decryption and decompression are too slow at opt-level 0.
+[profile.dev.package.mineflayer-crypto]
+opt-level = 3
+[profile.dev.package.cfb8]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3

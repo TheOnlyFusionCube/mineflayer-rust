@@ -1,6 +1,6 @@
-//! world — `prismarine-world`/`prismarine-block` analog over azalea's world
+//! world — `prismarine-world`/`prismarine-block` analog over the engine's world
 //! storage, plus the facade-kept world/game state (time, weather, spawn
-//! point, difficulty) that azalea does not track and which is therefore
+//! point, difficulty) that the engine does not track and which is therefore
 //! recovered here from raw `ClientboundGamePacket`s.
 
 use std::{collections::HashMap, io::Cursor};
@@ -8,10 +8,10 @@ use std::{collections::HashMap, io::Cursor};
 use parking_lot::RwLock;
 use tracing::warn;
 
-use azalea::{
+use mineflayer_engine::{
     Event,
     block::{BlockState, BlockStates, BlockTrait},
-    buf::AzBuf,
+    buf::McBuf,
     core::{
         data_registry::DataRegistryWithKey,
         difficulty::Difficulty,
@@ -46,14 +46,14 @@ pub const DEFAULT_ENTITY_CURSOR_DISTANCE: f64 = 3.5;
 
 /// The minecraft world the bot is in — the `prismarine-world` analog.
 ///
-/// Wraps the azalea [`Client`](azalea::Client), which owns the shared
-/// `azalea_world::World`; reach the raw world handle through
+/// Wraps the engine [`Client`](mineflayer_engine::Client), which owns the shared
+/// `mineflayer_engine::world::World`; reach the raw world handle through
 /// [`WorldRef::client`] (`client.world()` / `client.partial_world()`).
 /// `None`-returning methods simply indicate the chunk (or world) isn't
 /// loaded.
 #[derive(Clone)]
 pub struct WorldRef {
-    client: azalea::Client,
+    client: mineflayer_engine::Client,
 }
 
 impl std::fmt::Debug for WorldRef {
@@ -63,12 +63,12 @@ impl std::fmt::Debug for WorldRef {
 }
 
 impl WorldRef {
-    pub(crate) fn new(client: azalea::Client) -> Self {
+    pub(crate) fn new(client: mineflayer_engine::Client) -> Self {
         Self { client }
     }
 
-    /// The azalea client that owns the underlying `azalea_world::World`.
-    pub fn client(&self) -> &azalea::Client {
+    /// The engine client that owns the underlying `mineflayer_engine::world::World`.
+    pub fn client(&self) -> &mineflayer_engine::Client {
         &self.client
     }
 
@@ -175,7 +175,11 @@ impl std::fmt::Debug for Block {
 }
 
 impl Block {
-    pub(crate) fn new(client: &azalea::Client, pos: BlockPos, state: BlockState) -> Self {
+    pub(crate) fn new(
+        client: &mineflayer_engine::Client,
+        pos: BlockPos,
+        state: BlockState,
+    ) -> Self {
         Self {
             pos,
             state,
@@ -238,10 +242,10 @@ impl Block {
         ) && self.behavior().destroy_time >= 0.
     }
 
-    /// `block.material`/`block.harvestTools` backing data — azalea's
+    /// `block.material`/`block.harvestTools` backing data — the engine's
     /// `BlockBehavior` (friction, destroy time, …). U6 uses `destroy_time`,
     /// `requires_correct_tool_for_drops` and friends for dig timing.
-    pub fn behavior(&self) -> azalea::block::BlockBehavior {
+    pub fn behavior(&self) -> mineflayer_engine::block::BlockBehavior {
         Box::<dyn BlockTrait>::from(self.state).behavior()
     }
 
@@ -502,7 +506,7 @@ fn euclidean(a: BlockPos, b: BlockPos) -> f64 {
 
 /// `world.getBlock` via the client's shared world, without naming the
 /// lock type.
-fn with_world<R>(client: &azalea::Client, f: impl FnOnce(&World) -> R) -> Option<R> {
+fn with_world<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&World) -> R) -> Option<R> {
     let Some(holder) = client.get_component::<WorldHolder>() else {
         warn!("the client's WorldHolder is gone (torn-down client) — block reads return None");
         return None;
@@ -511,7 +515,7 @@ fn with_world<R>(client: &azalea::Client, f: impl FnOnce(&World) -> R) -> Option
     Some(f(&world))
 }
 
-fn block_at(client: &azalea::Client, pos: BlockPos) -> Option<Block> {
+fn block_at(client: &mineflayer_engine::Client, pos: BlockPos) -> Option<Block> {
     with_world(client, |w| w.get_block_state(pos))
         .flatten()
         .map(|state| Block::new(client, pos, state))
@@ -602,7 +606,7 @@ fn collect_chunk_cells(
 /// otherwise deadlock. Results match the previous in-lock scan exactly:
 /// same scan order, same closest-first sort, same count truncation.
 fn find_matching_unlocked(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     point: BlockPos,
     matches: &dyn Fn(&Block) -> bool,
     max_distance: f64,
@@ -643,7 +647,7 @@ fn find_matching_unlocked(
 /// partial shapes the ray only grazes are reachable), faithful to upstream
 /// `WorldSync.raycast`.
 fn raycast_unlocked(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     from: Vec3,
     direction: Vec3,
     range: f64,
@@ -678,7 +682,7 @@ fn raycast_unlocked(
     })
 }
 
-/// `world.raycast` core — Amanatides & Woo DDA via azalea's
+/// `world.raycast` core — Amanatides & Woo DDA via the engine's
 /// `traverse_blocks`, faithful to upstream `WorldSync.raycast`: the first
 /// block whose *collision* shape is clipped wins (upstream's
 /// `iter.intersect(block.shapes)`). Matcher-mode rays go through
@@ -786,7 +790,7 @@ impl Bot {
         let (eye, look) = self.eye_and_look()?;
         self.world()?.raycast(
             eye,
-            azalea::entity::view_vector(look),
+            mineflayer_engine::entity::view_vector(look),
             max_distance,
             matcher.as_ref(),
         )
@@ -799,12 +803,12 @@ impl Bot {
         self.block_at_cursor(80., None)
     }
 
-    /// `bot.entityAtCursor(maxDistance)` — divergence: azalea only exposes
+    /// `bot.entityAtCursor(maxDistance)` — divergence: the engine only exposes
     /// the crosshair hit its own `pick` plugin computes (interaction +
     /// block ranges, not an arbitrary distance), so `max_distance` acts as
     /// a cap on that result rather than driving an independent raycast.
     /// Default upstream: 3.5.
-    pub fn entity_at_cursor(&self, max_distance: f64) -> Option<azalea::EntityRef> {
+    pub fn entity_at_cursor(&self, max_distance: f64) -> Option<mineflayer_engine::EntityRef> {
         // copy the hit out and drop the component guard — eye_pos /
         // entity_ref_for re-lock the ECS and nested reads deadlock behind
         // a queued writer
@@ -828,7 +832,7 @@ impl Bot {
     /// from.
     pub fn block_at_entity_cursor(
         &self,
-        entity: &azalea::EntityRef,
+        entity: &mineflayer_engine::EntityRef,
         max_distance: f64,
         matcher: Option<BlockMatcher>,
     ) -> Option<Block> {
@@ -839,7 +843,7 @@ impl Bot {
             .ok()?;
         self.world()?.raycast(
             eye,
-            azalea::entity::view_vector(look),
+            mineflayer_engine::entity::view_vector(look),
             max_distance,
             matcher.as_ref(),
         )
@@ -872,7 +876,7 @@ impl Bot {
     /// chars each (server-enforced; upstream trusts it and drops the
     /// packet after `end`).
     ///
-    /// Reading sign text is a known divergence: azalea doesn't store block
+    /// Reading sign text is a known divergence: the engine doesn't store block
     /// entities, so there is no `getSignText`-equivalent here.
     pub fn update_sign(&self, block: &Block, text: &str, back: bool) -> Result<()> {
         self.client.write_packet(ServerboundSignUpdate {
@@ -884,7 +888,7 @@ impl Bot {
     }
 
     /// `bot.spawnPoint` — decoded from `c_set_default_spawn_position`
-    /// (azalea drops it). `None` until the packet arrives (upstream reads
+    /// (the engine drops it). `None` until the packet arrives (upstream reads
     /// an unset spawn point as `undefined`, not the origin).
     pub fn spawn_point(&self) -> Option<BlockPos> {
         self.shared
@@ -953,7 +957,7 @@ impl Bot {
 
 #[cfg(test)]
 mod tests {
-    use azalea::{
+    use mineflayer_engine::{
         block::BlockState,
         registry::builtin::BlockKind,
         world::{Chunk, PartialChunkStorage},

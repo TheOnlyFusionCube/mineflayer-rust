@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 
-use azalea::{
+use mineflayer_engine::{
     ecs::{self as bevy_ecs, prelude::Component},
     inventory::{components::Food, default_components::get_default_component},
     registry::builtin::ItemKind,
@@ -43,7 +43,7 @@ const DEFAULT_BANNED: &[&str] = &[
     "spider_eye",
 ];
 
-/// `bot.autoEat.foodsByName[name]` analog — the food component azalea
+/// `bot.autoEat.foodsByName[name]` analog — the food component the engine
 /// registers per [`ItemKind`]. `nutrition` is upstream's `foodPoints`;
 /// `saturation` is in points, so `effectiveQuality` is
 /// `nutrition + saturation` and `saturationRatio` is
@@ -129,7 +129,7 @@ impl Default for AutoEatOpts {
 }
 
 /// Upstream `FoodSelection` — what [`EatOpts::food`] accepts. Upstream's
-/// numeric (item id) form has no azalea analog; [`ItemKind`] covers it.
+/// numeric (item id) form has no the engine analog; [`ItemKind`] covers it.
 #[derive(Clone, Debug)]
 pub enum FoodSelection {
     /// A specific inventory stack (an [`Item`] read from
@@ -179,7 +179,7 @@ pub struct EatOpts {
     pub priority: Option<FoodPriority>,
 }
 
-/// Facade state azalea has no slot for: the opts, the enabled/eating
+/// Facade state the engine has no slot for: the opts, the enabled/eating
 /// flags, the in-flight eat's cancel flag, and the monitor driver's
 /// cancel flag — the same shape [`crate::pvp`] uses for its driver.
 /// Stored as an ECS component created on first use — rule 2 of the
@@ -200,7 +200,10 @@ struct AutoEatState {
 
 /// Read from the [`AutoEatState`] component. `None` when it or the
 /// entity doesn't exist.
-fn auto_eat_state<R>(client: &azalea::Client, f: impl FnOnce(&AutoEatState) -> R) -> Option<R> {
+fn auto_eat_state<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&AutoEatState) -> R,
+) -> Option<R> {
     let ecs = client.ecs.read();
     let entity = ecs.get_entity(client.entity).ok()?;
     entity.get::<AutoEatState>().map(f)
@@ -209,7 +212,7 @@ fn auto_eat_state<R>(client: &azalea::Client, f: impl FnOnce(&AutoEatState) -> R
 /// Run `f` against [`AutoEatState`], inserting a default one first.
 /// `None` when the client entity is gone.
 fn auto_eat_state_mut<R>(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     f: impl FnOnce(&mut AutoEatState) -> R,
 ) -> Option<R> {
     let mut ecs = client.ecs.write();
@@ -611,7 +614,7 @@ async fn drive(bot: Bot, cancel: Arc<AtomicBool>, mut shutdown: tokio::sync::wat
 
 #[cfg(test)]
 mod tests {
-    use azalea::{
+    use mineflayer_engine::{
         entity::{inventory::Inventory, metadata::Health},
         inventory::ItemStack,
         local_player::Hunger,
@@ -675,7 +678,7 @@ mod tests {
     /// Send one tick once a receiver exists — `enable_auto`/spawned
     /// drivers subscribe to the broadcast asynchronously, so a send
     /// fired immediately can hit `SendError` before any `recv` is armed.
-    async fn send_tick(client: &azalea::Client) {
+    async fn send_tick(client: &mineflayer_engine::Client) {
         for _ in 0..200 {
             if tick_sender(client).send(()).is_ok() {
                 return;

@@ -1,9 +1,9 @@
 //! `createBot(options)`: the builder, the auth choice, and the bot-thread
-//! connection bootstrap (`join_azalea` mirrors azalea's own
+//! connection bootstrap (`join_engine` mirrors the engine's own
 //! `StartClientOpts::new` so the client app can carry the port's plugins —
 //! see `crate::client_app`).
 
-use azalea::{
+use mineflayer_engine::{
     ClientInformation, auto_reconnect::AutoReconnectDelay, entity::HumanoidArm,
     protocol::connect::Proxy,
 };
@@ -41,11 +41,11 @@ pub struct BotBuilder {
     /// The `options.*` client-information fields (`dialogDistance`/
     /// `viewDistance`, `chat`, `colorsEnabled`, `skinParts`, `mainHand`,
     /// `enableTextFiltering`, `enableServerListing`, `particleStatus`) —
-    /// merged over azalea's [`ClientInformation`] defaults and sent on
+    /// merged over the engine's [`ClientInformation`] defaults and sent on
     /// `Event::Init`; `None` until one of them is set.
     client_information: Option<ClientInformation>,
     /// `options.brand` — sent as the `minecraft:brand` custom payload on
-    /// `Event::Login`, overwriting the `"vanilla"` azalea already sent
+    /// `Event::Login`, overwriting the `"vanilla"` the engine already sent
     /// during the config phase (upstream writes it on the login packet;
     /// the server keeps the last brand it received).
     brand: Option<String>,
@@ -68,14 +68,14 @@ pub struct BotBuilder {
     /// Whether the bridge broadcasts [`BotEvent::Packet`] (default `true`).
     /// See [`BotBuilder::packet_events`].
     packet_events: bool,
-    /// `options.agent`-analog — azalea's SOCKS5 proxy support
+    /// `options.agent`-analog — the engine's SOCKS5 proxy support
     /// (`Client::join_with_proxy`); also covers the `connect` proxy use case.
-    proxy: Option<azalea::protocol::connect::Proxy>,
+    proxy: Option<mineflayer_engine::protocol::connect::Proxy>,
 }
 
 /// How the bot authenticates — covers `auth`, `accessToken`, and prebuilt
 /// accounts. (No password auth: Mojang password login is dead upstream too;
-/// azalea uses the Microsoft device-code flow or access tokens.)
+/// The engine uses the Microsoft device-code flow or access tokens.)
 #[derive(Clone)]
 pub enum Auth {
     /// `auth: 'offline'` — no Mojang login; `username` is sent as-is.
@@ -83,16 +83,16 @@ pub enum Auth {
         /// The username presented to the server.
         username: String,
     },
-    /// `auth: 'microsoft'` — azalea's interactive device-code flow (prints a
-    /// link code; caches tokens in `~/.minecraft/azalea-auth-cache.json`).
+    /// `auth: 'microsoft'` — the engine's interactive device-code flow (prints a
+    /// link code; caches tokens in `~/.minecraft/mineflayer-auth-cache.json`).
     Microsoft {
         /// Microsoft account email — the token cache key.
         email: String,
     },
-    /// A prebuilt [`azalea::account::Account`] — e.g.
+    /// A prebuilt [`mineflayer_engine::account::Account`] — e.g.
     /// `Account::with_microsoft_access_token(token)` (the `accessToken`
     /// option) or a custom `AccountTrait` impl.
-    Account(azalea::account::Account),
+    Account(mineflayer_engine::account::Account),
 }
 
 impl std::fmt::Debug for Auth {
@@ -189,7 +189,7 @@ impl BotBuilder {
     /// `options.enableServerListing`. Divergence: upstream's initializer is
     /// `options.enableServerListing || true`, so the flag is dead and the
     /// packet always sends `true`; here the flag actually applies, over
-    /// azalea's default `false`.
+    /// The engine's default `false`.
     pub fn enable_server_listing(mut self, enabled: bool) -> Self {
         self.client_information_mut().allows_listing = enabled;
         self
@@ -203,7 +203,7 @@ impl BotBuilder {
     }
     /// `options.brand` (upstream default `'vanilla'`) — the client brand the
     /// server records, sent as the `minecraft:brand` custom payload once the
-    /// login packet arrives. azalea also sends `"vanilla"` earlier during
+    /// login packet arrives. The engine also sends `"vanilla"` earlier during
     /// the config phase; the server keeps the last brand received, so this
     /// wins.
     pub fn brand(mut self, brand: impl Into<String>) -> Self {
@@ -260,7 +260,7 @@ impl BotBuilder {
         self
     }
     /// `options.agent`-analog — connect through a SOCKS5 proxy
-    /// (azalea's `Client::join_with_proxy`; covers the server connection,
+    /// (the engine's `Client::join_with_proxy`; covers the server connection,
     /// not Mojang session auth).
     pub fn proxy(mut self, proxy: Proxy) -> Self {
         self.proxy = Some(proxy);
@@ -280,7 +280,7 @@ impl BotBuilder {
     /// [`Bot::events`] rather than from this call (only address-resolution
     /// failures are returned directly).
     ///
-    /// The connection and ECS run on a dedicated thread — azalea's ECS runner
+    /// The connection and ECS run on a dedicated thread — the engine's ECS runner
     /// uses `tokio::task::spawn_local`, which requires a `LocalSet` context —
     /// so `connect` works from any async context, including the default
     /// `#[tokio::main]`. The thread exits when the client does.
@@ -297,9 +297,9 @@ impl BotBuilder {
                 rt.block_on(async {
                     let local = tokio::task::LocalSet::new();
                     local.spawn_local(async move {
-                        let _ = init_tx.send(Self::connect_azalea(self).await);
+                        let _ = init_tx.send(Self::connect_engine(self).await);
                     });
-                    // Drive the LocalSet until all local tasks finish. azalea's
+                    // Drive the LocalSet until all local tasks finish. The engine's
                     // ECS runner is a local task; it exits when the client does
                     // (last `Bot` dropped → `client.exit()`, or fatal error).
                     local.await;
@@ -313,29 +313,33 @@ impl BotBuilder {
     }
 
     /// Join the server and wire up the event bridge. Runs inside the bot
-    /// thread's `LocalSet` (azalea requires it for `Client::join`).
+    /// thread's `LocalSet` (the engine requires it for `Client::join`).
     ///
-    /// This mirrors azalea's own `StartClientOpts::new` + `Client::join`
+    /// This mirrors the engine's own `StartClientOpts::new` + `Client::join`
     /// bootstrap (same default plugins, same runner start) so the client app
     /// can also carry the port's [`crate::interact::DigAbortPlugin`], which
     /// cancels engine mining for aborted digs inside the tick that a pending
-    /// start materializes — azalea gives no hook for that otherwise.
-    async fn connect_azalea(builder: BotBuilder) -> Result<Bot> {
+    /// start materializes — the engine gives no hook for that otherwise.
+    async fn connect_engine(builder: BotBuilder) -> Result<Bot> {
         let account = match builder.auth {
-            Some(Auth::Offline { username }) => azalea::account::Account::offline(&username),
-            Some(Auth::Microsoft { email }) => azalea::account::Account::microsoft(&email)
-                .await
-                .map_err(Error::Auth)?,
+            Some(Auth::Offline { username }) => {
+                mineflayer_engine::account::Account::offline(&username)
+            }
+            Some(Auth::Microsoft { email }) => {
+                mineflayer_engine::account::Account::microsoft(&email)
+                    .await
+                    .map_err(Error::Auth)?
+            }
             Some(Auth::Account(account)) => account,
-            None => azalea::account::Account::offline(&builder.username),
+            None => mineflayer_engine::account::Account::offline(&builder.username),
         };
         let address = format!("{}:{}", builder.host, builder.port);
-        let (client, rx) = join_azalea(account, &address, builder.proxy.clone()).await?;
+        let (client, rx) = join_engine(account, &address, builder.proxy.clone()).await?;
 
-        // azalea's default plugins auto-reconnect 5s after any disconnect —
+        // The engine's default plugins auto-reconnect 5s after any disconnect —
         // including our own `disconnect()`. That would silently break
         // `end`/`quit`/`kicked` semantics, so opt out for this client
-        // (Duration::MAX is azalea's documented "disabled" value).
+        // (Duration::MAX is the engine's documented "disabled" value).
         client
             .ecs
             .write()
@@ -366,7 +370,7 @@ impl BotBuilder {
         let (alive, alive_rx) = watch::channel(());
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         // subscribed before the bridge starts, so `Event::Init` — which
-        // azalea queues before `join` returns — and everything since is on
+        // The engine queues before `join` returns — and everything since is on
         // the receiver the first `Bot::events()` call hands out.
         let bootstrap_events = shared.events.subscribe();
         bridge::spawn(
@@ -395,21 +399,21 @@ impl BotBuilder {
     }
 }
 
-/// Join a server through azalea's own bootstrap, plus the port's plugins.
+/// Join a server through the engine's own bootstrap, plus the port's plugins.
 ///
 /// Mirrors `StartClientOpts::new` (`DefaultPlugins`, `DefaultBotPlugins`,
 /// `DefaultSwarmPlugins`, then the ECS runner) so the client app can carry
 /// [`crate::interact::DigAbortPlugin`] — `Client::join`/`join_with_proxy`
 /// build the same app, but offer no plugin hook.
-async fn join_azalea(
-    account: azalea::account::Account,
+async fn join_engine(
+    account: mineflayer_engine::account::Account,
     address: &str,
-    proxy: Option<azalea::protocol::connect::Proxy>,
+    proxy: Option<mineflayer_engine::protocol::connect::Proxy>,
 ) -> Result<(
-    azalea::Client,
-    tokio::sync::mpsc::UnboundedReceiver<azalea::Event>,
+    mineflayer_engine::Client,
+    tokio::sync::mpsc::UnboundedReceiver<mineflayer_engine::Event>,
 )> {
-    use azalea::protocol::address::ResolvableAddr as _;
+    use mineflayer_engine::protocol::address::ResolvableAddr as _;
 
     let address = address
         .resolve()
@@ -419,12 +423,13 @@ async fn join_azalea(
     // app construction (default plugins + the dig-abort reconciler) lives
     // in `client_app` so tests run the production wiring — see its contract
     let mut app = crate::client_app::app();
-    let (ecs_lock, start_running_systems, _appexit_rx) = azalea::start_ecs_runner(app.main_mut());
+    let (ecs_lock, start_running_systems, _appexit_rx) =
+        mineflayer_engine::start_ecs_runner(app.main_mut());
     start_running_systems();
-    let client = azalea::Client::start_client(azalea::StartClientOpts {
+    let client = mineflayer_engine::Client::start_client(mineflayer_engine::StartClientOpts {
         ecs_lock,
         account,
-        connect_opts: azalea::join::ConnectOpts {
+        connect_opts: mineflayer_engine::join::ConnectOpts {
             address,
             server_proxy: proxy.clone(),
             sessionserver_proxy: proxy,
@@ -502,7 +507,7 @@ mod tests {
         assert_eq!(info.particle_status, ParticleStatus::Minimal);
         assert!(!info.model_customization.cape);
         assert!(info.model_customization.jacket);
-        // untouched fields keep azalea's defaults (documented divergence
+        // untouched fields keep the engine's defaults (documented divergence
         // from upstream for view_distance)
         assert_eq!(info.view_distance, 8);
         assert_eq!(info.language, "en_us");

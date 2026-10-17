@@ -1,13 +1,13 @@
-//! The azalea [`Event`] → [`BotEvent`] translation task.
+//! The engine [`Event`] → [`BotEvent`] translation task.
 //!
 //! Spawned once per `Bot` by [`BotBuilder::connect`]. This is the pattern
-//! every later event source follows: take an azalea event stream, translate
+//! every later event source follows: take an engine event stream, translate
 //! to `BotEvent`s, forward over the broadcast channel, and shut the client
 //! down when every `Bot` handle is gone.
 
 use std::{collections::HashSet, sync::Arc};
 
-use azalea::{
+use mineflayer_engine::{
     ClientInformation, Event,
     client_chat::ChatPacket,
     player::GameProfileComponent,
@@ -29,11 +29,11 @@ use crate::{
 pub(crate) struct BridgeOptions {
     /// `options.*` client-information fields from the builder, sent as
     /// built via `set_client_information` on `Event::Init` so the login
-    /// packet carries them. `None` sends nothing, leaving azalea's
+    /// packet carries them. `None` sends nothing, leaving the engine's
     /// defaults on the wire.
     pub client_information: Option<ClientInformation>,
     /// `options.brand` — sent as the `minecraft:brand` custom payload on
-    /// `Event::Login`; overwrites the `"vanilla"` azalea already sent during
+    /// `Event::Login`; overwrites the `"vanilla"` the engine already sent during
     /// the config phase (the server keeps the last brand received).
     pub brand: Option<String>,
     /// `options.checkTimeoutInterval` — the server keepalive watchdog
@@ -46,13 +46,13 @@ pub(crate) struct BridgeOptions {
 }
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
-/// azalea's event channel closes (disconnect/shutdown) or when the last
+/// The engine's event channel closes (disconnect/shutdown) or when the last
 /// `Bot` handle drops (all `alive` senders gone → `changed()` errors).
 /// `shutdown` is held for its drop: the task's end resolves `changed()`
 /// on every `Bot::shutdown` receiver, retiring the tick-driven driver
 /// tasks whose `TickBroadcast` sender outlives the connection.
 pub(crate) fn spawn(
-    client: azalea::Client,
+    client: mineflayer_engine::Client,
     mut rx: UnboundedReceiver<Event>,
     shared: crate::bot::BotShared,
     options: BridgeOptions,
@@ -93,33 +93,33 @@ pub(crate) fn spawn(
             tokio::select! {
                 event = rx.recv() => {
                     let Some(event) = event else {
-                        break "azalea event channel closed";
+                        break "engine event channel closed";
                     };
                     // Client information must be set on Init so the login
-                    // packet already carries it (azalea docs).
+                    // packet already carries it (the engine docs).
                     if let Event::Init = &event
                         && let Some(info) = &client_information
                     {
                         client.set_client_information(info.clone());
                     }
                     // `options.brand` — upstream writes it on the login
-                    // packet; ours overwrites azalea's config-phase
+                    // packet; ours overwrites the engine's config-phase
                     // "vanilla".
                     if let (Event::Login, Some(brand)) = (&event, &brand) {
-                        use azalea::buf::AzBuf;
+                        use mineflayer_engine::buf::McBuf;
                         let mut data = Vec::new();
-                        if let Err(error) = brand.clone().azalea_write(&mut data) {
+                        if let Err(error) = brand.clone().mc_write(&mut data) {
                             debug!(?error, "brand payload failed to encode — sending none");
                         }
                         client.write_packet(
-                            azalea::protocol::packets::game::s_custom_payload::ServerboundCustomPayload {
+                            mineflayer_engine::protocol::packets::game::s_custom_payload::ServerboundCustomPayload {
                                 identifier: "brand".into(),
                                 data: data.into(),
                             },
                         );
                     }
                     let keepalive_seen = matches!(&event, Event::KeepAlive(_));
-                    // Domain decodes azalea doesn't lift into `Event`s
+                    // Domain decodes the engine doesn't lift into `Event`s
                     // (movement: move diff/forcedMove/abilities; entities:
                     // the whole entity event family). Both run before
                     // translate borrows the event; their events are emitted
@@ -133,7 +133,7 @@ pub(crate) fn spawn(
                     );
                     let derived = entity::observe_event(&entities, &client, &event);
                     // window domain: open/close/slot/held bookkeeping and
-                    // the ECS patches for pieces azalea drops (its
+                    // the ECS patches for pieces the engine drops (its
                     // observer must run *inside* this event loop so ECS
                     // writes land between ticks).
                     let window_events =
@@ -147,7 +147,7 @@ pub(crate) fn spawn(
                     // shared state; emits no events (craft has none)
                     crate::craft::observe_event(&recipes, &event);
                     // world domain: blocks/time/weather/game decode off the
-                    // packets azalea drops. Runs here — not in a second task
+                    // packets the engine drops. Runs here — not in a second task
                     // — so derived events keep packet order and a lagging
                     // broadcast consumer can't drop them.
                     let world_events =
@@ -218,7 +218,7 @@ pub(crate) fn spawn(
             }
         };
         debug!(reason = exit_reason, ended = state.ended, "bridge exit");
-        // azalea stopped feeding events or all `Bot` handles are gone —
+        // The engine stopped feeding events or all `Bot` handles are gone —
         // shut the client down so the ECS runner doesn't leak. Dropping
         // the shutdown sender retires driver tasks parked on
         // `ticks.recv()` — that broadcast's sender lives in the World,
@@ -226,7 +226,7 @@ pub(crate) fn spawn(
         // never closes on its own.
         //
         // The channel can close without a `Disconnect`/`ConnectionFailed`
-        // event (azalea's runner just stops), so emit the same `End` a
+        // event (the engine's runner just stops), so emit the same `End` a
         // local close would ("socketClosed", or the stored quit reason)
         // before retiring the drivers — an `end` wait must never hang on
         // a signal that never comes.
@@ -246,7 +246,7 @@ pub(crate) fn spawn(
 /// Bridge bookkeeping that doesn't fit in the events themselves.
 #[derive(Default)]
 struct BridgeState {
-    /// Whether `Spawn` has been emitted — azalea 0.16 fires `Event::Spawn`
+    /// Whether `Spawn` has been emitted — the engine (0.16) fires `Event::Spawn`
     /// exactly once per entity lifetime (`SentSpawnEvent` is never
     /// removed — verified against events.rs and a live `Simulation`), so
     /// this only dedupes the initial emit. Post-respawn `spawn`s come
@@ -256,11 +256,11 @@ struct BridgeState {
     /// fires exactly once, like upstream.
     ended: bool,
     /// Whether `Connected` has been emitted — it precedes the *first*
-    /// `Login` only (upstream `connect` is once per socket; azalea
+    /// `Login` only (upstream `connect` is once per socket; the engine
     /// `Event::Login` also fires exactly once per entity lifetime, so the
     /// gate is belt-and-braces).
     connected: bool,
-    /// Upstream's `!isAlive`: set by `Event::Death` (azalea raises it from
+    /// Upstream's `!isAlive`: set by `Event::Death` (the engine raises it from
     /// two sources for one vanilla death — `player_combat_kill` and
     /// `Changed<Health> == 0`) and by `c_respawn`, cleared by
     /// `c_set_health` with health > 0 (health.js's exact re-arm).
@@ -283,22 +283,22 @@ struct BridgeState {
     pathfinder: crate::pathfinder::PathTracker,
 }
 
-/// Translate one azalea event into zero or more `BotEvent`s, in emission
+/// Translate one engine event into zero or more `BotEvent`s, in emission
 /// order.
 fn translate(
     state: &mut BridgeState,
     quit_reason: &Mutex<Option<String>>,
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     event: Event,
 ) -> Vec<BotEvent> {
     match event {
         Event::Init => vec![BotEvent::Init],
         Event::Login => {
-            // upstream order: 'connect' (socket up) then 'login'. azalea has
+            // upstream order: 'connect' (socket up) then 'login'. The engine has
             // no socket-level event; Event::Login is the earliest
             // connection-live signal, so Connected rides ahead of it once.
             // (The bot.players resync lives in the packet arm — Event::Login
-            // never refires in azalea 0.16.)
+            // never refires in the engine (0.16).)
             if state.connected {
                 vec![BotEvent::Login]
             } else {
@@ -327,7 +327,7 @@ fn translate(
             }
             state.ended = true;
             match reason {
-                // azalea attaches a reason iff the server kicked us
+                // The engine attaches a reason iff the server kicked us
                 // (`DisconnectEvent` docs); `None` means local/socket close.
                 Some(reason) => {
                     let reason = reason.to_string();
@@ -375,7 +375,7 @@ fn translate(
         }
         Event::AddPlayer(info) => {
             // upstream keys on whether the uuid was already in bot.players:
-            // a re-add (azalea emits AddPlayerEvent unconditionally on the
+            // a re-add (the engine emits AddPlayerEvent unconditionally on the
             // add_player action) is `playerUpdated`, not `playerJoined`.
             if state.players.insert(info.uuid) {
                 vec![BotEvent::PlayerJoined(info)]
@@ -409,16 +409,16 @@ fn translate(
             vec![BotEvent::PlayerLeft(info)]
         }
         Event::ReceiveChunk(pos) => vec![BotEvent::ChunkColumnLoad(pos)],
-        // KeepAlive has no mineflayer analog — azalea answers keepalives
+        // KeepAlive has no mineflayer analog — the engine answers keepalives
         // itself. Dropped by design (see api-parity.md `options.keepAlive`).
         Event::KeepAlive(_) => vec![],
-        // azalea's Event is #[non_exhaustive]: anything it adds upstream in
+        // The engine's Event is #[non_exhaustive]: anything it adds upstream in
         // the future is dropped rather than crashing the bridge — with a
         // debug log so a new upstream event does not vanish silently.
         _ => {
             debug!(
                 ?event,
-                "dropping an azalea event the bridge does not translate"
+                "dropping an engine event the bridge does not translate"
             );
             vec![]
         }
@@ -444,7 +444,7 @@ fn lifecycle_packet_events(
         }
         // upstream's isAlive re-arm: the first set_health with health > 0
         // while dead emits 'spawn' — this carries every post-respawn
-        // spawn, since azalea's Event::Spawn only ever fires once
+        // spawn, since the engine's Event::Spawn only ever fires once
         ClientboundGamePacket::SetHealth(p) if p.health > 0.0 && state.dead => {
             state.dead = false;
             vec![BotEvent::Spawn]
@@ -453,7 +453,7 @@ fn lifecycle_packet_events(
     }
 }
 
-/// Extra `BotEvent`s decoded from raw clientbound packets azalea's own
+/// Extra `BotEvent`s decoded from raw clientbound packets the engine's own
 /// handlers drop (chat domain): the dedicated action-bar packet feeds the
 /// same message family as a chat packet, `c_tab_list` updates the stored
 /// header/footer, and `c_command_suggestions` resolves a `tab_complete` call.
@@ -490,14 +490,14 @@ fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) 
 mod tests {
     use std::io;
 
-    use azalea::{
+    use mineflayer_engine::{
         auth::game_profile::GameProfile, core::game_type::GameMode, player::PlayerInfo,
         protocol::connect::ConnectionError,
     };
 
     use super::*;
 
-    fn despawned() -> azalea::Client {
+    fn despawned() -> mineflayer_engine::Client {
         crate::test_util::despawned_client()
     }
 
@@ -516,11 +516,11 @@ mod tests {
     }
 
     /// Upstream's lifecycle hooks are per-packet (`respawn`, `login`,
-    /// `update_health`) — azalea `Event::Spawn`/`Event::Login` fire only
+    /// `update_health`) — the engine `Event::Spawn`/`Event::Login` fire only
     /// once per entity lifetime, so the tests drive the packet arm the
     /// same way the wire does.
     fn set_health(health: f32) -> Event {
-        use azalea::protocol::packets::game::c_set_health::ClientboundSetHealth;
+        use mineflayer_engine::protocol::packets::game::c_set_health::ClientboundSetHealth;
         packet_event(ClientboundGamePacket::SetHealth(ClientboundSetHealth {
             health,
             food: 20,
@@ -528,14 +528,14 @@ mod tests {
         }))
     }
 
-    fn spawn_info() -> azalea::protocol::packets::common::CommonPlayerSpawnInfo {
-        use azalea::{
+    fn spawn_info() -> mineflayer_engine::protocol::packets::common::CommonPlayerSpawnInfo {
+        use mineflayer_engine::{
             core::game_type::OptionalGameType,
             registry::{DataRegistry as _, data::DimensionKind},
         };
-        azalea::protocol::packets::common::CommonPlayerSpawnInfo {
+        mineflayer_engine::protocol::packets::common::CommonPlayerSpawnInfo {
             dimension_type: DimensionKind::new_raw(0),
-            dimension: azalea::Identifier::new("minecraft:overworld"),
+            dimension: mineflayer_engine::Identifier::new("minecraft:overworld"),
             seed: 0,
             game_type: GameMode::Survival,
             previous_game_type: OptionalGameType(None),
@@ -548,7 +548,7 @@ mod tests {
     }
 
     fn respawn_packet() -> Event {
-        use azalea::protocol::packets::game::c_respawn::ClientboundRespawn;
+        use mineflayer_engine::protocol::packets::game::c_respawn::ClientboundRespawn;
         packet_event(ClientboundGamePacket::Respawn(ClientboundRespawn {
             common: spawn_info(),
             data_to_keep: 0,
@@ -556,9 +556,9 @@ mod tests {
     }
 
     fn login_packet() -> Event {
-        use azalea::protocol::packets::game::c_login::ClientboundLogin;
+        use mineflayer_engine::protocol::packets::game::c_login::ClientboundLogin;
         packet_event(ClientboundGamePacket::Login(ClientboundLogin {
-            player_id: azalea::core::entity_id::MinecraftEntityId(0),
+            player_id: mineflayer_engine::core::entity_id::MinecraftEntityId(0),
             hardcore: false,
             levels: vec![],
             max_players: 20,
@@ -598,7 +598,7 @@ mod tests {
                 &mut s,
                 &qr,
                 &client,
-                Event::ReceiveChunk(azalea::core::position::ChunkPos::new(1, 2))
+                Event::ReceiveChunk(mineflayer_engine::core::position::ChunkPos::new(1, 2))
             )[..],
             [BotEvent::ChunkColumnLoad(_)]
         ));
@@ -609,7 +609,7 @@ mod tests {
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        // a vanilla death reaches azalea twice — player_combat_kill and the
+        // a vanilla death reaches the engine twice — player_combat_kill and the
         // Changed<Health>==0 listener — but upstream's isAlive edge makes
         // `death` strictly once per life
         assert!(matches!(
@@ -655,7 +655,7 @@ mod tests {
             translate(&mut s, &qr, &client, Event::AddPlayer(player_info(uuid)))[..],
             [BotEvent::PlayerJoined(_)]
         ));
-        // a re-add (azalea fires AddPlayerEvent unconditionally) -> playerUpdated
+        // a re-add (the engine fires AddPlayerEvent unconditionally) -> playerUpdated
         assert!(matches!(
             translate(&mut s, &qr, &client, Event::AddPlayer(player_info(uuid)))[..],
             [BotEvent::PlayerUpdated(_)]
@@ -777,7 +777,7 @@ mod tests {
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        // Event::Spawn fires once per entity lifetime in azalea 0.16 —
+        // Event::Spawn fires once per entity lifetime in the engine (0.16) —
         // the dedup guard covers the hypothetical refire
         assert!(matches!(
             translate(&mut s, &qr, &client, Event::Spawn)[..],
@@ -828,7 +828,7 @@ mod tests {
                 &mut s,
                 &qr,
                 &client,
-                Event::Disconnect(Some(azalea::FormattedText::from("banned")))
+                Event::Disconnect(Some(mineflayer_engine::FormattedText::from("banned")))
             )[..],
             [BotEvent::Kicked(k, false), BotEvent::End(r)] if k == "banned" && r == "banned"
         ));
@@ -845,7 +845,7 @@ mod tests {
                 &mut s,
                 &qr,
                 &client,
-                Event::Disconnect(Some(azalea::FormattedText::from("banned")))
+                Event::Disconnect(Some(mineflayer_engine::FormattedText::from("banned")))
             )[..],
             [BotEvent::Kicked(k, true), BotEvent::End(r)] if k == "banned" && r == "banned"
         ));
@@ -892,7 +892,7 @@ mod tests {
             &mut s,
             &qr,
             &client,
-            Event::Chat(azalea::client_chat::ChatPacket::new("<a> hi")),
+            Event::Chat(mineflayer_engine::client_chat::ChatPacket::new("<a> hi")),
         );
         assert!(
             matches!(&out[..],
@@ -907,13 +907,13 @@ mod tests {
 
     #[test]
     fn translate_action_bar_packet_feeds_message_family() {
-        use azalea::protocol::packets::game::c_set_action_bar_text::ClientboundSetActionBarText;
+        use mineflayer_engine::protocol::packets::game::c_set_action_bar_text::ClientboundSetActionBarText;
 
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let packet = ClientboundGamePacket::SetActionBarText(ClientboundSetActionBarText {
-            text: azalea::FormattedText::from("bar!"),
+            text: mineflayer_engine::FormattedText::from("bar!"),
         });
         let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(
@@ -930,14 +930,14 @@ mod tests {
 
     #[test]
     fn translate_tab_list_packet_updates_shared() {
-        use azalea::protocol::packets::game::c_tab_list::ClientboundTabList;
+        use mineflayer_engine::protocol::packets::game::c_tab_list::ClientboundTabList;
 
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
         let packet = ClientboundGamePacket::TabList(ClientboundTabList {
-            header: azalea::FormattedText::from("h"),
-            footer: azalea::FormattedText::from("f"),
+            header: mineflayer_engine::FormattedText::from("h"),
+            footer: mineflayer_engine::FormattedText::from("f"),
         });
         let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(matches!(&out[..], [BotEvent::Packet(_)]));
@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn translate_command_suggestions_resolves_pending() {
-        use azalea::{
+        use mineflayer_engine::{
             brigadier::{
                 context::StringRange,
                 suggestion::{Suggestion, Suggestions},
@@ -986,7 +986,7 @@ mod tests {
             &mut s,
             &qr,
             &client,
-            Event::Chat(azalea::client_chat::ChatPacket::new("it worked")),
+            Event::Chat(mineflayer_engine::client_chat::ChatPacket::new("it worked")),
         );
         assert!(
             out.iter()
@@ -1043,7 +1043,7 @@ mod tests {
         );
     }
 
-    /// The azalea channel can close without a `Disconnect` event (its
+    /// The engine channel can close without a `Disconnect` event (its
     /// runner stops). The bridge must still emit `End` — upstream's socket
     /// close — or a wait on `End` never resolves.
     #[tokio::test]
@@ -1067,7 +1067,7 @@ mod tests {
             alive_rx,
             shutdown_tx,
         );
-        // close the azalea event channel without a Disconnect event
+        // close the engine event channel without a Disconnect event
         drop(input_tx);
         let event = tokio::time::timeout(std::time::Duration::from_secs(2), end_rx.recv())
             .await

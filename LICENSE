@@ -4,10 +4,8 @@ Copyright (c) 2026 the mineflayer-rs contributors
 
 This crate is a Rust port of the mineflayer API
 (https://github.com/PrismarineJS/mineflayer, MIT, © PrismarineJS
-contributors) and builds on azalea (https://github.com/azalea-rs/azalea,
-MIT, © azalea contributors). The API surface and behavior are derived
-from mineflayer; the implementation builds on azalea. The MIT texts of
-both projects are reproduced below for attribution.
+contributors). The API surface and behavior are derived from mineflayer.
+The MIT texts that apply are reproduced below.
 
 ---
 
@@ -35,7 +33,13 @@ SOFTWARE.
 
 ---
 
-MIT License (azalea)
+Third-party notices
+
+The crates in crates/ are a modified copy of azalea
+(https://github.com/azalea-rs/azalea, commit
+ddef37118448b639ff56b86ae339e8913cb4ed11), distributed under this license:
+
+MIT License
 
 Copyright (c) 2023 azalea contributors
 

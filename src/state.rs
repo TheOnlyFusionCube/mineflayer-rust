@@ -1,11 +1,11 @@
 //! Bot state reads — the "Health / food / experience / oxygen" and
 //! `bot.game.*` properties.
 //!
-//! All of these read ECS components that azalea removes on disconnect, so
+//! All of these read ECS components that the engine removes on disconnect, so
 //! they degrade to defaults/None instead of panicking like the raw
-//! `azalea::Client` accessors do.
+//! `mineflayer_engine::Client` accessors do.
 
-use azalea::{
+use mineflayer_engine::{
     core::game_type::GameMode,
     entity::metadata::{AirSupply, Health},
     local_player::{Experience, Hunger, LocalGameMode},
@@ -15,7 +15,7 @@ use azalea::{
 use crate::Bot;
 
 impl Bot {
-    /// `bot.isAlive` — alive and in the world. With azalea's always-on
+    /// `bot.isAlive` — alive and in the world. With the engine's always-on
     /// auto-respawn this is rarely `false` for long; watch
     /// [`crate::BotEvent::Death`] if you need the moment itself.
     pub fn is_alive(&self) -> bool {
@@ -42,7 +42,7 @@ impl Bot {
         self.hunger().saturation
     }
 
-    /// `bot.oxygenLevel` — `0..=20`. azalea tracks air in ticks (`0..=300`),
+    /// `bot.oxygenLevel` — `0..=20`. The engine tracks air in ticks (`0..=300`),
     /// converted with `round(air / 15)` exactly like upstream.
     pub fn oxygen_level(&self) -> u8 {
         let air = self
@@ -53,7 +53,7 @@ impl Bot {
         (air.clamp(0, 300) as f32 / 15.0).round() as u8
     }
 
-    /// `bot.experience` — azalea's `{ progress, level, total }`; upstream's
+    /// `bot.experience` — the engine's `{ progress, level, total }`; upstream's
     /// `experience.points` is `total` here.
     pub fn experience(&self) -> Experience {
         self.client

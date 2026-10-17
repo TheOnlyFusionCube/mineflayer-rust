@@ -6,7 +6,7 @@ use super::*;
 /// Upstream `getAttributeValue` — fold an attribute snapshot's base and
 /// modifiers: op0 adds to base, op1 scales by base, op2 compounds.
 pub(super) fn attribute_value(snapshot: &AttributeSnapshot) -> f64 {
-    use azalea::core::attribute_modifier_operation::AttributeModifierOperation::*;
+    use mineflayer_engine::core::attribute_modifier_operation::AttributeModifierOperation::*;
     let mut base = snapshot.base;
     for m in &snapshot.modifiers {
         if m.operation == AddValue {
@@ -39,7 +39,7 @@ impl Bot {
     /// estimate the damage an explosion of `power` at `source_pos` would deal
     /// to `entity`. Port of upstream's formula: exposure is raycast against
     /// loaded chunks; armor comes from attributes tracked off
-    /// `c_update_attributes` (azalea doesn't store armor attributes).
+    /// `c_update_attributes` (the engine doesn't store armor attributes).
     /// Returns `None` when the entity's position or armor data is unknown
     /// (upstream: `null`).
     pub fn get_explosion_damages(
@@ -141,7 +141,7 @@ impl Bot {
 
 #[cfg(test)]
 mod tests {
-    use azalea::{
+    use mineflayer_engine::{
         core::attribute_modifier_operation::AttributeModifierOperation,
         inventory::components::AttributeModifier,
     };
@@ -158,7 +158,7 @@ mod tests {
 
     fn modifier(amount: f64, operation: AttributeModifierOperation) -> AttributeModifier {
         AttributeModifier {
-            id: azalea::Identifier::new("test"),
+            id: mineflayer_engine::Identifier::new("test"),
             amount,
             operation,
         }

@@ -1,7 +1,7 @@
 //! `mcdata.*` — the minecraft-data lookups upstream exposes via `bot.registry`
 //! (`mcdata.blocks`, `items`, `biomes`, `entities`, …).
 //!
-//! azalea compiles the built-in registries into closed enums and carries the
+//! The engine compiles the built-in registries into closed enums and carries the
 //! dynamic ones in from the server's `registry_data` login payload, so the
 //! honest equivalents are typed handles rather than lookup tables.
 //!
@@ -10,8 +10,8 @@
 //!   id index; `to_str`/`Display`/`FromStr`/`TryFrom<&Identifier>` the name
 //!   lookups. Per-kind data upstream stores on each record (hardness,
 //!   diggable, stack size, …) lives elsewhere: block behavior on
-//!   `azalea::block::BlockTrait::behavior` (see [`crate::world::Block`]), item
-//!   data on `azalea::inventory::ItemStack` data components.
+//!   `mineflayer_engine::block::BlockTrait::behavior` (see [`crate::world::Block`]), item
+//!   data on `mineflayer_engine::inventory::ItemStack` data components.
 //! - `mcdata.biomes` → [`Biome`], a protocol-id handle into the server's
 //!   `worldgen/biome` registry (biomes are data-driven since 1.18 — the
 //!   server sends them, so no compile-time table exists). Resolve the name
@@ -21,12 +21,12 @@
 //! - `mcdata.materials` — not ported. minecraft-data's material →
 //!   item-id → multiplier table models a pre-1.20.5 protocol era; in mc26
 //!   dig speed is per-item `minecraft:tool` data-component rules over block
-//!   tag sets, which `azalea::entity::mining::get_mine_progress` already
+//!   tag sets, which `mineflayer_engine::entity::mining::get_mine_progress` already
 //!   reads.
 //! - `mcdata.recipes` / `mcdata.instruments` — see [`crate::craft`] and
 //!   [`crate::misc::Instrument`]; both are tracked in `docs/api-parity.md`.
 
-pub use azalea::registry::{
+pub use mineflayer_engine::registry::{
     DataRegistry, Registry,
     builtin::{BlockKind, EntityKind, ItemKind},
     data::{Biome, BiomeKey},
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn biome_is_a_server_registry_handle() {
-        // `mcdata.biomes`/`Biome` upstream: biome records by id. azalea's
+        // `mcdata.biomes`/`Biome` upstream: biome records by id. The engine's
         // `Biome` is the protocol-id handle; `BiomeKey` is the known-key
         // enum resolved through the server's registry.
         let biome = Biome::new_raw(3);

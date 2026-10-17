@@ -1,24 +1,24 @@
 //! The client app the port joins through.
 //!
-//! [`app`] mirrors azalea's own `StartClientOpts::new` bootstrap — the same
+//! [`app`] mirrors the engine's own `StartClientOpts::new` bootstrap — the same
 //! default plugin groups, in the same order — plus the port's
 //! [`crate::interact::DigAbortPlugin`]. It exists because `Client::join` /
 //! `join_with_proxy` build the app internally and offer no plugin hook, and
 //! the dig-abort reconciler must be inside the tick that materializes a
 //! pending mining start.
 //!
-//! Contract (re-check when the azalea pin moves): the upstream source is
-//! `azalea/src/client_impl/mod.rs::StartClientOpts::new` at rev `ddef371`
+//! Contract (re-check when the engine changes): the source is
+//! `crates/mineflayer-engine/src/client_impl/mod.rs::StartClientOpts::new`
 //! (`DefaultPlugins`, `DefaultBotPlugins`, `DefaultSwarmPlugins`, then
 //! `start_ecs_runner`). The runner start, proxy pairing, and event-channel
 //! wiring stay in `bot.rs`; this function owns app construction only.
 
-pub(crate) fn app() -> azalea::app::App {
-    let mut app = azalea::app::App::new();
+pub(crate) fn app() -> mineflayer_engine::app::App {
+    let mut app = mineflayer_engine::app::App::new();
     app.add_plugins((
-        azalea::DefaultPlugins,
-        azalea::bot::DefaultBotPlugins,
-        azalea::swarm::DefaultSwarmPlugins,
+        mineflayer_engine::DefaultPlugins,
+        mineflayer_engine::bot::DefaultBotPlugins,
+        mineflayer_engine::swarm::DefaultSwarmPlugins,
     ));
     app.add_plugins(crate::interact::DigAbortPlugin);
     app
@@ -26,7 +26,7 @@ pub(crate) fn app() -> azalea::app::App {
 
 #[cfg(test)]
 mod tests {
-    use azalea::{BlockPos, core::direction::Direction, mining::MiningQueued};
+    use mineflayer_engine::{BlockPos, core::direction::Direction, mining::MiningQueued};
 
     /// The integration guarantee the dig-abort design rests on: a pending
     /// start materialized in `Update` is cancelled by the reconciler inside
@@ -52,7 +52,7 @@ mod tests {
                 },
             ))
             .id();
-        world.run_schedule(azalea::core::tick::GameTick);
+        world.run_schedule(mineflayer_engine::core::tick::GameTick);
         assert!(
             world.get::<MiningQueued>(entity).is_none(),
             "the production GameTick must cancel an aborted dig's queued mine"

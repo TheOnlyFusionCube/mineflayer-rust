@@ -1,10 +1,10 @@
 //! The entity-event reducer: packet decode into [`EntityTracker`] state
-//! and the entity `BotEvent`s azalea does not raise itself.
+//! and the entity `BotEvent`s the engine does not raise itself.
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// Event bridging (bridge.rs calls `observe_event` for every azalea `Event`)
+// Event bridging (bridge.rs calls `observe_event` for every engine `Event`)
 // ---------------------------------------------------------------------------
 
 /// Entity-domain state the ECS doesn't keep, shared between the bridge task
@@ -12,7 +12,7 @@ use super::*;
 ///
 /// Keyed by [`MinecraftEntityId`] rather than ECS `Entity` so entries stay
 /// meaningful for just-removed entities — the ECS side of a removed entity is
-/// dropped by azalea before our packet events are even read.
+/// dropped by the engine before our packet events are even read.
 #[derive(Default)]
 pub(crate) struct EntityTracker {
     /// Entity ids we've resolved to an ECS `Entity`, kept after despawn so
@@ -21,10 +21,10 @@ pub(crate) struct EntityTracker {
     /// Last flag-carried metadata state per entity, for edge detection on
     /// `entity_metadata` packets (crouch release, elytra start).
     pub(super) meta: HashMap<MinecraftEntityId, EntityMeta>,
-    /// `c_set_equipment` contents per entity. azalea drops this packet
+    /// `c_set_equipment` contents per entity. The engine drops this packet
     /// (`debug!`-only handler), so equipment lives here.
     pub(super) equipment: HashMap<MinecraftEntityId, HashMap<EquipmentSlot, ItemStack>>,
-    /// `c_update_attributes` contents per entity — azalea only stores the
+    /// `c_update_attributes` contents per entity — the engine only stores the
     /// subset of attributes it uses (no armor), so the raw snapshots are
     /// tracked for [`Bot::get_explosion_damages`].
     pub(super) attributes: HashMap<MinecraftEntityId, HashMap<Attribute, AttributeSnapshot>>,
@@ -45,7 +45,7 @@ pub(crate) struct EntityTracker {
     /// `bot.game.difficulty` is likewise only set after the game packet).
     pub(super) difficulty: Option<Difficulty>,
     /// Chat-signing keys per player uuid, from `c_player_info_update`'s
-    /// `initialize_chat` action — azalea's [`PlayerInfo`] drops the field
+    /// `initialize_chat` action — the engine's [`PlayerInfo`] drops the field
     /// (`profileKeys` upstream).
     pub(super) chat_sessions: HashMap<uuid::Uuid, ProfileKeys>,
 }
@@ -60,13 +60,13 @@ pub(super) struct EntityMeta {
     fall_flying: bool,
 }
 
-/// Feed one azalea [`Event`] into the entity domain, returning the
+/// Feed one engine [`Event`] into the entity domain, returning the
 /// [`BotEvent`]s it produced. Called by the bridge for *every* event, before
 /// `translate` runs, so the returned events are emitted right after the
 /// corresponding raw `BotEvent::Packet`/`Spawn`.
 pub(crate) fn observe_event(
     tracker: &RwLock<EntityTracker>,
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     event: &Event,
 ) -> Vec<BotEvent> {
     match event {
@@ -84,12 +84,12 @@ pub(crate) fn observe_event(
     }
 }
 
-/// [`Client::entity_id_by_minecraft_id`](azalea::Client::entity_id_by_minecraft_id)
-/// without the panic — azalea resolves the id by `query_self`-ing our own
+/// [`Client::entity_id_by_minecraft_id`](mineflayer_engine::Client::entity_id_by_minecraft_id)
+/// without the panic — the engine resolves the id by `query_self`-ing our own
 /// entity for `EntityIdIndex`, but teardown packets race the despawn of
 /// that entity.
 pub(crate) fn entity_id_by_minecraft_id(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     id: MinecraftEntityId,
 ) -> Option<Entity> {
     client
@@ -98,10 +98,10 @@ pub(crate) fn entity_id_by_minecraft_id(
         .flatten()
 }
 
-/// [`Client::entity_by_minecraft_id`](azalea::Client::entity_by_minecraft_id)
+/// [`Client::entity_by_minecraft_id`](mineflayer_engine::Client::entity_by_minecraft_id)
 /// without the panic — same despawn race as above.
 pub(crate) fn entity_by_minecraft_id(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     id: MinecraftEntityId,
 ) -> Option<EntityRef> {
     entity_id_by_minecraft_id(client, id).map(|e| client.entity_ref_for(e))
@@ -134,7 +134,7 @@ impl EntityTracker {
     /// ECS index and falling back to ids remembered before despawn.
     pub(super) fn resolve(
         &mut self,
-        client: &azalea::Client,
+        client: &mineflayer_engine::Client,
         id: MinecraftEntityId,
     ) -> Option<EntityRef> {
         if let Some(entity) = entity_id_by_minecraft_id(client, id) {
@@ -180,11 +180,11 @@ impl EntityTracker {
     }
 
     /// Decode one clientbound packet into entity-domain [`BotEvent`]s. Runs
-    /// after azalea's own packet handler, so the ECS already reflects the
+    /// after the engine's own packet handler, so the ECS already reflects the
     /// packet (indexes are populated for spawns, cleared for removals).
     pub(super) fn handle_packet(
         &mut self,
-        client: &azalea::Client,
+        client: &mineflayer_engine::Client,
         packet: &ClientboundGamePacket,
     ) -> Vec<BotEvent> {
         use ClientboundGamePacket::*;
@@ -402,7 +402,7 @@ impl EntityTracker {
 
     pub(super) fn moved(
         &mut self,
-        client: &azalea::Client,
+        client: &mineflayer_engine::Client,
         id: MinecraftEntityId,
     ) -> Vec<BotEvent> {
         self.resolve(client, id)
@@ -416,7 +416,7 @@ impl EntityTracker {
     /// self-targeted firework).
     pub(super) fn metadata_update(
         &mut self,
-        client: &azalea::Client,
+        client: &mineflayer_engine::Client,
         id: MinecraftEntityId,
         packed_items: &[EntityDataItem],
         self_id: Option<MinecraftEntityId>,
@@ -519,7 +519,7 @@ impl EntityTracker {
     /// for leashes, see `SetEntityLink`).
     pub(super) fn set_passengers(
         &mut self,
-        client: &azalea::Client,
+        client: &mineflayer_engine::Client,
         vehicle: MinecraftEntityId,
         passengers: &[MinecraftEntityId],
         self_id: Option<MinecraftEntityId>,
@@ -577,7 +577,7 @@ pub(super) fn entity_status_kind(event_id: u8) -> Option<StatusKind> {
 mod tests {
     use std::sync::Arc;
 
-    use azalea::protocol::packets::game::c_animate::ClientboundAnimate;
+    use mineflayer_engine::protocol::packets::game::c_animate::ClientboundAnimate;
 
     use super::*;
 
@@ -620,7 +620,7 @@ mod tests {
     /// A dimension change keeps only the bot's own entries (A9).
     #[test]
     fn respawn_forgets_other_dimension_entities() {
-        use azalea::{
+        use mineflayer_engine::{
             core::game_type::{GameMode, OptionalGameType},
             protocol::packets::{
                 common::CommonPlayerSpawnInfo, game::c_respawn::ClientboundRespawn,
@@ -645,7 +645,7 @@ mod tests {
         let respawn = ClientboundGamePacket::Respawn(ClientboundRespawn {
             common: CommonPlayerSpawnInfo {
                 dimension_type: DimensionKind::new_raw(0),
-                dimension: azalea::Identifier::new("minecraft:the_nether"),
+                dimension: mineflayer_engine::Identifier::new("minecraft:the_nether"),
                 seed: 0,
                 game_type: GameMode::Survival,
                 previous_game_type: OptionalGameType(None),
@@ -688,7 +688,7 @@ mod tests {
 
     #[test]
     fn crouch_and_sleep_require_the_metadata_item() {
-        use azalea::{
+        use mineflayer_engine::{
             BlockPos,
             entity::{EntityMetadataItems, metadata::AbstractEntityShiftKeyDown},
             protocol::packets::game::c_set_entity_data::ClientboundSetEntityData,
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn elytra_flew_is_flag_packet_gated_and_edged() {
-        use azalea::{
+        use mineflayer_engine::{
             entity::EntityMetadataItems,
             protocol::packets::game::c_set_entity_data::ClientboundSetEntityData,
         };
@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn profile_keys_tracked_from_player_info_update() {
-        use azalea::{
+        use mineflayer_engine::{
             auth::game_profile::GameProfile,
             protocol::packets::game::{
                 c_player_info_remove::ClientboundPlayerInfoRemove,

@@ -45,10 +45,10 @@ MODEL = "gemini-4-argon@effort=high"
 WRITABLE_RE = re.compile(r"^(src/|docs/|tests/)[A-Za-z0-9_./-]+$")
 
 CONVENTIONS = """You are a senior Rust engineer working on mineflayer-rs: a Rust port of
-the Node.js mineflayer Minecraft bot API built on azalea. The port keeps mineflayer's
+the Node.js mineflayer Minecraft bot API on an in-tree engine (crates/). The port keeps mineflayer's
 names and semantics. Hard rules:
 - Public API signatures must not change unless the task explicitly asks for it.
-- No new dependencies. std, tokio, azalea, serde, thiserror, futures, regex, uuid only.
+- No new dependencies. std, tokio, mineflayer-engine, serde, thiserror, futures, regex, uuid only.
 - No unsafe. Keep the existing code style and doc-comment style.
 - Behavior must match the upstream JavaScript implementation listed in the context,
   except where docs/api-parity.md records an intentional divergence.

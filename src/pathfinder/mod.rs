@@ -1,31 +1,31 @@
 //! The mineflayer-pathfinder plugin surface: `bot.pathfinder()` with
-//! `goto`/`setGoal`/`stop`, the `Goal*` family mapped onto azalea goals, a
+//! `goto`/`setGoal`/`stop`, the `Goal*` family mapped onto the engine goals, a
 //! `Movements` config, and the `path_update`/`goal_reached`/`goal_updated`/
 //! `path_stop`/`path_reset` events.
 //!
-//! azalea's pathfinder is goal-driven: a `GotoEvent` stores
+//! The engine's pathfinder is goal-driven: a `GotoEvent` stores
 //! `Arc<dyn Goal>` + [`PathfinderOpts`] on the `Pathfinder` component and its
 //! systems repath on obstruction, timeout, and partial-path completion while
 //! the goal stands — the same recovery loop upstream drives by re-running
 //! A* after `path_reset`, so mid-path fixes come free. Facade bookkeeping
-//! azalea has no slot for (the [`Goal`] enum the user set, `dynamic`,
+//! The engine has no slot for (the [`Goal`] enum the user set, `dynamic`,
 //! `Movements`, watcher cancellation) lives in the `PathfinderFacade` ECS
 //! component on the client entity.
 //!
 //! Events are a tick-aligned diff of the `Pathfinder`/`ExecutingPath`/
-//! `PathfinderFacade` components — azalea's `PathFoundEvent`/
+//! `PathfinderFacade` components — the engine's `PathFoundEvent`/
 //! `StopPathfindingEvent` are ECS messages that never reach the `Event`
 //! stream, so the bridge diffs once per `Tick` (the same cadence upstream's
 //! `physicsTick` monitor uses). Two failure classes need care beyond
 //! edge detection:
 //!
-//! - azalea runs its whole goto chain per Update (~17 ms) while ticks
+//! - the engine runs its whole goto chain per Update (~17 ms) while ticks
 //!   land per GameTick (50 ms), so a fast-failing search can install
 //!   and drop inside one gap — no `is_calculating`/goal edges survive.
 //!   The bridge flags a *steady-state wedge* instead: facade goal set
 //!   while the ECS shows no goal, no calc, and no path, persisting past
 //!   `WEDGE_GRACE`.
-//! - upstream's `thinkTimeout` bounds one A* end-to-end, but azalea
+//! - upstream's `thinkTimeout` bounds one A* end-to-end, but the engine
 //!   splits the search into a fresh `max_timeout` per repath, so the
 //!   budget is tracked cumulatively per goal issue — partial progress
 //!   can't keep a `goto` pending forever (upstream's `timeout`). The
@@ -36,18 +36,18 @@
 //!
 //! - `path_update` — a path was installed, a repath result merged
 //!   mid-run (the executing path grows — consumption only shrinks), or
-//!   a calculation finished (azalea clears `is_calculating` for every
+//!   a calculation finished (the engine clears `is_calculating` for every
 //!   result, failures included, matching upstream's per-result
 //!   `path_update`).
-//! - `goal_reached` — azalea cleared the goal while its success check
+//! - `goal_reached` — the engine cleared the goal while its success check
 //!   holds (suppressed for `dynamic` goals, like upstream).
 //! - `path_stop` — the goal was abandoned without reaching (emitted by
-//!   `stop()`, by a follow-goal going invalid, or here for azalea-internal
+//!   `stop()`, by a follow-goal going invalid, or here for the engine-internal
 //!   clears like world changes; deduped via the facade goal).
 //! - `goal_updated` / `path_reset` — emitted synchronously by
 //!   `set_goal`/`set_movements` at upstream's call sites.
 //!
-//! azalea's own repaths (patch/timeout/partial-end) surface only as
+//! The engine's own repaths (patch/timeout/partial-end) surface only as
 //! `path_update`s — upstream's per-reason `path_reset`s (`stuck`,
 //! `block_updated`, `chunk_loaded`, …) aren't distinguishable from outside
 //! the runner and are a documented `diverges`.
@@ -61,7 +61,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use azalea::{
+use mineflayer_engine::{
     BlockPos, EntityRef, Event, Vec3, ecs as bevy_ecs,
     ecs::prelude::Component,
     entity::{
@@ -71,7 +71,7 @@ use azalea::{
     pathfinder::{
         self, CalculatePathCtx, ExecutingPath, PathfinderClientExt, PathfinderOpts, calculate_path,
         custom_state::CustomPathfinderState,
-        goals::{self, Goal as AzaleaGoal},
+        goals::{self, Goal as EngineGoal},
         mining::MiningCache,
         moves, player_pos_to_block_pos,
         positions::RelBlockPos,
@@ -99,14 +99,14 @@ use crate::{Bot, BotEvent, Error, Result, windows::Item, world::Block};
 const AVOID_STEP_COST: f32 = 100.0;
 
 /// `bot.pathfinder.thinkTimeout` upstream (5000 ms) — the per-search time
-/// budget; azalea's `PathfinderOpts::max_timeout` plays the same role,
+/// budget; the engine's `PathfinderOpts::max_timeout` plays the same role,
 /// and the bridge applies it cumulatively across repaths (see
 /// [`bridge_events`]) since upstream's sliced A* shares one budget.
 const DEFAULT_THINK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the facade-goal-without-any-ECS-goal signature must persist
 /// before it's a failed search rather than a `GotoEvent` still waiting
-/// for the next Update pass to pick it up. azalea drains the goto
+/// for the next Update pass to pick it up. The engine drains the goto
 /// message every Update (~17 ms), so a transient wedge clears in one
 /// tick; >2 GameTicks means the goal already installed and dropped
 /// inside a tick gap no edge-detection could see.
@@ -156,7 +156,7 @@ pub enum PathError {
 }
 
 /// The result of one `getPathTo`/`getPathFromTo` search — upstream's
-/// `results` object reduced to its observed fields (azalea computes the
+/// `results` object reduced to its observed fields (the engine computes the
 /// whole search in one pass, so there are no intermediate yields).
 #[derive(Clone, Debug)]
 pub struct PathResult {
@@ -167,7 +167,7 @@ pub struct PathResult {
     pub path: Vec<BlockPos>,
 }
 
-/// Facade state azalea has no slot for: the [`Goal`] the user set (azalea
+/// Facade state the engine has no slot for: the [`Goal`] the user set (the engine
 /// keeps only the opaque `Arc<dyn Goal>`), the `dynamic` flag, the
 /// `Movements`, and the cancel flag for the follow/dynamic watcher.
 #[derive(Component)]
@@ -225,7 +225,10 @@ impl Default for PathfinderFacade {
 ///
 /// lock rule: `f` runs while the ECS lock is held — it must not take any
 /// domain lock (never take a domain lock while an ECS guard is alive).
-fn facade_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut PathfinderFacade) -> R) -> Option<R> {
+fn facade_mut<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut PathfinderFacade) -> R,
+) -> Option<R> {
     let mut ecs = client.ecs.write();
     let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
         warn!("pathfinder facade is missing — the client entity is gone");
@@ -242,7 +245,10 @@ fn facade_mut<R>(client: &azalea::Client, f: impl FnOnce(&mut PathfinderFacade) 
 ///
 /// lock rule: `f` runs while the ECS lock is held — it must not take any
 /// domain lock.
-fn facade<R>(client: &azalea::Client, f: impl FnOnce(&PathfinderFacade) -> R) -> Option<R> {
+fn facade<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&PathfinderFacade) -> R,
+) -> Option<R> {
     let ecs = client.ecs.read();
     let entity = ecs.get_entity(client.entity).ok()?;
     entity.get::<PathfinderFacade>().map(f)
@@ -254,7 +260,7 @@ fn facade<R>(client: &azalea::Client, f: impl FnOnce(&PathfinderFacade) -> R) ->
 /// lock rule: the state lock is taken with no ECS guard held — the value
 /// is copied out of the ECS first (the search thread takes this state
 /// lock while holding nothing, so the reverse order would cross it).
-fn sync_constraints(client: &azalea::Client, movements: &Movements) {
+fn sync_constraints(client: &mineflayer_engine::Client, movements: &Movements) {
     // lock rule (bot/mod.rs): the state lock is taken after the ECS guard
     // is dropped — never the reverse
     let state = {
@@ -288,7 +294,7 @@ impl Bot {
 }
 
 impl Pathfinder<'_> {
-    fn client(&self) -> &azalea::Client {
+    fn client(&self) -> &mineflayer_engine::Client {
         &self.bot.client
     }
 
@@ -434,7 +440,7 @@ impl Pathfinder<'_> {
         let client = self.client().clone();
         let movements = self.movements();
         sync_constraints(&client, &movements);
-        // Already satisfied — azalea would drop the goto without ever
+        // Already satisfied — the engine would drop the goto without ever
         // storing the goal, so mirror upstream's monitor: `goal_updated`
         // then `goal_reached`, and stop the in-flight path (upstream's
         // resetPath also cleared it).
@@ -486,7 +492,7 @@ impl Pathfinder<'_> {
         result.map(|_| set_gen)
     }
 
-    /// Issue a goal to azalea (or its watcher task for
+    /// Issue a goal to the engine (or its watcher task for
     /// [`Goal::Follow`]/`dynamic`) after `set_goal` has done the facade
     /// bookkeeping.
     fn issue(&self, goal: Goal, dynamic: bool, movements: Movements) -> Result<()> {
@@ -494,7 +500,7 @@ impl Pathfinder<'_> {
         // Watchers re-check `goal_gen` against this before every
         // re-issue — a `set_goal` since their spawn bumps it, so they
         // can never write a stale `GotoEvent` over a replacement goal
-        // (azalea's `goto_listener` keeps the last event, and a stale
+        // (the engine's `goto_listener` keeps the last event, and a stale
         // goal would later emit a spurious `path_stop`).
         let (issue_gen, think_timeout) =
             facade(&client, |f| (f.goal_gen, f.think_timeout)).unwrap_or_default();
@@ -523,12 +529,12 @@ impl Pathfinder<'_> {
             }
             _ => {
                 let chunks = client.world().read().chunks.clone();
-                let Some(azalea_goal) = goal.to_azalea(&chunks) else {
+                let Some(engine_goal) = goal.to_engine(&chunks) else {
                     return Err(Error::NotFound(
                         "Goal::Follow's entity isn't loaded".to_string(),
                     ));
                 };
-                client.start_goto_with_opts(SharedGoal(azalea_goal.clone()), opts);
+                client.start_goto_with_opts(SharedGoal(engine_goal.clone()), opts);
                 if dynamic {
                     let cancel = Arc::new(AtomicBool::new(false));
                     facade_mut(&client, |f| {
@@ -537,7 +543,7 @@ impl Pathfinder<'_> {
                     });
                     dynamic_watcher(
                         client.clone(),
-                        azalea_goal,
+                        engine_goal,
                         movements,
                         cancel,
                         self.bot.shutdown.clone(),
@@ -552,7 +558,7 @@ impl Pathfinder<'_> {
     /// `bot.pathfinder.stop()` — stop navigating now (upstream clears the
     /// path immediately, so this is the `force` stop, not the
     /// mid-move-friendly `stop_pathfinding`). Emits `path_stop` here like
-    /// upstream's `stop()`; azalea's goal clear then arrives with the
+    /// upstream's `stop()`; the engine's goal clear then arrives with the
     /// facade goal already `None`, so the bridge doesn't re-report it.
     pub fn stop(&self) {
         let client = self.client();
@@ -639,7 +645,7 @@ impl Pathfinder<'_> {
 
     /// `bot.pathfinder.thinkTimeout` — the per-search budget applied to
     /// every issued goto (default 5000 ms like upstream). Passed to
-    /// azalea as `PathfinderOpts::max_timeout`; also the NoPath-vs-Timeout
+    /// The engine as `PathfinderOpts::max_timeout`; also the NoPath-vs-Timeout
     /// threshold the bridge classifies a failed search against.
     pub fn think_timeout(&self) -> Duration {
         facade(self.client(), |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT)
@@ -653,15 +659,15 @@ impl Pathfinder<'_> {
     }
 
     /// `bot.pathfinder.isMining()` — whether the bot is currently mining
-    /// a block (azalea's `Mining` component). `diverges`: upstream's flag
-    /// is the *pathfinder's own* `digging` state; azalea's component
+    /// a block (the engine's `Mining` component). `diverges`: upstream's flag
+    /// is the *pathfinder's own* `digging` state; the engine's component
     /// counts any in-progress client mining — a manual `bot.dig` in
     /// flight reports true here where upstream's would not.
     pub fn is_mining(&self) -> bool {
         self.client().is_mining()
     }
 
-    /// `bot.pathfinder.isBuilding()` — always `false`: azalea's
+    /// `bot.pathfinder.isBuilding()` — always `false`: the engine's
     /// successors never produce scaffolding placements, so the bot never
     /// builds while pathing (`diverges` — upstream can return true).
     pub fn is_building(&self) -> bool {
@@ -669,7 +675,7 @@ impl Pathfinder<'_> {
     }
 
     /// `bot.pathfinder.bestHarvestTool(block)` — the inventory item that
-    /// digs `block` fastest, via azalea's `get_mine_progress` (accounts
+    /// digs `block` fastest, via the engine's `get_mine_progress` (accounts
     /// for held-item rules, water on the eyes, haste/fatigue). `None`
     /// when the inventory is empty, the entity isn't loaded, or every
     /// tool's dig time is infinite (unbreakable — upstream's
@@ -679,7 +685,7 @@ impl Pathfinder<'_> {
     /// `inventory.items()` covers; crafting/armor/offhand slots are out.
     pub fn best_harvest_tool(&self, block: &Block) -> Option<Item> {
         let client = self.client();
-        let block_trait = Box::<dyn azalea::block::BlockTrait>::from(block.state);
+        let block_trait = Box::<dyn mineflayer_engine::block::BlockTrait>::from(block.state);
         client
             .try_query_self::<(
                 &Inventory,
@@ -727,7 +733,7 @@ impl Pathfinder<'_> {
     /// `think_timeout` like upstream's `options.timeout ?? thinkTimeout`.
     ///
     /// `diverges`: upstream returns a generator's first `{result}` and
-    /// keeps an `astarContext` for follow-up computes; azalea's search
+    /// keeps an `astarContext` for follow-up computes; the engine's search
     /// is one synchronous pass, so only the first result exists.
     pub fn get_path_to(
         &self,
@@ -749,7 +755,7 @@ impl Pathfinder<'_> {
     /// calling this on the bot's LocalSet thread stalls the ECS for
     /// that long, so prefer `spawn_blocking` for big searches.
     /// `optimizePath`/`resetEntityIntersects`/`searchRadius`/`tickTimeout`
-    /// have no azalea knob and are not exposed.
+    /// have no the engine knob and are not exposed.
     pub fn get_path_from_to(
         &self,
         movements: &Movements,
@@ -759,7 +765,7 @@ impl Pathfinder<'_> {
     ) -> Result<PathResult> {
         let client = self.client();
         let chunks = client.world().read().chunks.clone();
-        let Some(azalea_goal) = goal.to_azalea(&chunks) else {
+        let Some(engine_goal) = goal.to_engine(&chunks) else {
             return Err(Error::NotFound(
                 "Goal::Follow's entity isn't loaded".to_string(),
             ));
@@ -787,7 +793,7 @@ impl Pathfinder<'_> {
         let event = calculate_path(CalculatePathCtx {
             entity: client.entity,
             start,
-            goal: azalea_goal,
+            goal: engine_goal,
             world_lock: client.world(),
             goto_id_atomic: Arc::new(atomic::AtomicUsize::new(0)),
             mining_cache: MiningCache::new(inventory_menu),
@@ -805,7 +811,7 @@ impl Pathfinder<'_> {
     }
 }
 
-/// Upstream's `results.status` for a finished azalea search — a
+/// Upstream's `results.status` for a finished engine search — a
 /// complete path is `success`, a non-empty partial `partial`, and the
 /// empty+partial result means the space was exhausted (`noPath`) or the
 /// budget ran out (`timeout`), separated by elapsed time.
@@ -834,7 +840,7 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
     }
 }
 
-/// Stop azalea's pathfinder (`force` = halt mid-move) and patch the
+/// Stop the engine's pathfinder (`force` = halt mid-move) and patch the
 /// component state its 0.16 stop handler drops:
 /// `handle_stop_pathfinding_event` removes `ComputePath` without
 /// resetting `is_calculating`, and with a calculation in flight but no
@@ -843,12 +849,12 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
 /// `is_goto_target_reached`/`is_thinking` (and the `goto` future on
 /// them) stuck until the next goto.
 ///
-/// Workaround for azalea 0.16 (no upstream issue filed); drop the
-/// component write once a released azalea clears `is_calculating` (and
+/// Workaround for the engine (0.16) (no upstream issue filed); drop the
+/// component write once a released the engine clears `is_calculating` (and
 /// handles the no-`ExecutingPath` case) in
-/// `handle_stop_pathfinding_event` — verify against azalea's
+/// `handle_stop_pathfinding_event` — verify against the engine's
 /// `src/pathfinder/mod.rs`.
-fn stop_pathfinding_patched(client: &azalea::Client, force: bool) {
+fn stop_pathfinding_patched(client: &mineflayer_engine::Client, force: bool) {
     if force {
         client.force_stop_pathfinding();
     } else {
@@ -861,7 +867,7 @@ fn stop_pathfinding_patched(client: &azalea::Client, force: bool) {
 }
 
 /// The [`Goal::Follow`] driver: every tick, re-issue a radius goal on the
-/// entity's new block position (azalea merges it into the running path).
+/// entity's new block position (the engine merges it into the running path).
 /// Ends silently when the facade goal is gone or its generation moved on
 /// — a non-dynamic follow ends once the bridge reports `goal_reached`,
 /// and `stop()`/`set_goal`/`set_movements` retire it through the cancel
@@ -872,7 +878,7 @@ fn stop_pathfinding_patched(client: &azalea::Client, force: bool) {
 /// reports `path_stop` itself (the ECS goal may never have been
 /// installed, so the diff can't see it).
 fn follow_driver(
-    client: azalea::Client,
+    client: mineflayer_engine::Client,
     entity: EntityRef,
     range: f32,
     movements: Movements,
@@ -960,16 +966,16 @@ fn follow_driver(
     })
 }
 
-/// The `dynamic`-goal watcher: once azalea clears a reached goal, keep
+/// The `dynamic`-goal watcher: once the engine clears a reached goal, keep
 /// re-issuing it whenever the goal's success check stops holding —
-/// upstream's "dynamic goals never complete" semantics, which azalea's
+/// upstream's "dynamic goals never complete" semantics, which the engine's
 /// goal-clears-on-success can't express on its own. `goal_gen` gates the
 /// re-issue so a watcher can't write a stale `GotoEvent` over a goal
 /// `set_goal`/`set_movements` installed after it spawned. Disconnect
 /// retires it through `Bot::shutdown`, like [`follow_driver`].
 fn dynamic_watcher(
-    client: azalea::Client,
-    goal: Arc<dyn AzaleaGoal>,
+    client: mineflayer_engine::Client,
+    goal: Arc<dyn EngineGoal>,
     movements: Movements,
     cancel: Arc<AtomicBool>,
     mut shutdown: watch::Receiver<()>,
@@ -1031,10 +1037,10 @@ fn dynamic_watcher(
 /// Whether the ECS pathfinder looks live — a goal installed, a search
 /// in flight, or a path executing. Watchers diff this across their own
 /// ticks: a fresh drop may be a failed search whose failure-clear
-/// hasn't run yet (azalea's goal drop lands in Update, the bridge sees
+/// hasn't run yet (the engine's goal drop lands in Update, the bridge sees
 /// it on the next GameTick), and a re-issue inside that window would
 /// install an unclaimed goal the bot then walks (M-4).
-fn pathfinder_live(client: &azalea::Client) -> bool {
+fn pathfinder_live(client: &mineflayer_engine::Client) -> bool {
     client
         .try_query_self::<&pathfinder::Pathfinder, _>(|p| p.goal.is_some() || p.is_calculating)
         .unwrap_or(false)
@@ -1050,17 +1056,19 @@ mod tests {
     /// `start_goto_with_opts` lands in `Messages<GotoEvent>` where the
     /// test can count it. No systems run — ticks arrive only via
     /// [`crate::test_util::tick_sender`].
-    pub(super) fn watcher_client(bundle: impl bevy_ecs::bundle::Bundle) -> azalea::Client {
-        let mut app = azalea::app::App::new();
-        app.add_plugins(azalea::tick_broadcast::TickBroadcastPlugin)
+    pub(super) fn watcher_client(
+        bundle: impl bevy_ecs::bundle::Bundle,
+    ) -> mineflayer_engine::Client {
+        let mut app = mineflayer_engine::app::App::new();
+        app.add_plugins(mineflayer_engine::tick_broadcast::TickBroadcastPlugin)
             .add_plugins(pathfinder::PathfinderPlugin);
-        let (ecs, _run_systems, _exit_rx) = azalea::start_ecs_runner(app.main_mut());
+        let (ecs, _run_systems, _exit_rx) = mineflayer_engine::start_ecs_runner(app.main_mut());
         let entity = ecs.write().spawn(bundle).id();
-        azalea::Client::new(entity, ecs)
+        mineflayer_engine::Client::new(entity, ecs)
     }
 
     /// Count of `GotoEvent`s the watcher has issued so far.
-    pub(super) fn goto_messages(client: &azalea::Client) -> usize {
+    pub(super) fn goto_messages(client: &mineflayer_engine::Client) -> usize {
         client
             .ecs
             .read()
@@ -1084,7 +1092,7 @@ mod tests {
             },
         ));
         // a goal the bot isn't standing in, so the watcher re-issues it
-        let goal: Arc<dyn AzaleaGoal> = Arc::new(goals::BlockPosGoal(BlockPos::new(100, 64, 100)));
+        let goal: Arc<dyn EngineGoal> = Arc::new(goals::BlockPosGoal(BlockPos::new(100, 64, 100)));
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let handle = dynamic_watcher(
             client.clone(),
@@ -1173,7 +1181,7 @@ mod tests {
     /// A `Goal::Follow` targeting an entity at `pos` — `is_end` reads the
     /// entity's `Position` instead of `client.world()`, so these tests
     /// never need a `WorldHolder` (no world lock to build one).
-    pub(super) fn follow_at(client: &azalea::Client, pos: Vec3) -> Goal {
+    pub(super) fn follow_at(client: &mineflayer_engine::Client, pos: Vec3) -> Goal {
         let target_entity = client.ecs.write().spawn(Position::new(pos)).id();
         Goal::Follow {
             entity: client.entity_ref_for(target_entity),
@@ -1181,35 +1189,35 @@ mod tests {
         }
     }
 
-    /// Flip azalea's `Pathfinder` state like the search lifecycle does:
+    /// Flip the engine's `Pathfinder` state like the search lifecycle does:
     /// `goal` + `is_calculating` while a search is in flight, both
     /// cleared when an empty result comes back (`retry_on_no_path=false`
     /// on every facade-issued goto).
-    pub(super) fn set_searching(client: &azalea::Client, searching: bool) {
+    pub(super) fn set_searching(client: &mineflayer_engine::Client, searching: bool) {
         let mut ecs = client.ecs.write();
         let mut entity = ecs.get_entity_mut(client.entity).unwrap();
         let mut pf = entity.get_mut::<pathfinder::Pathfinder>().unwrap();
         pf.is_calculating = searching;
         pf.goal =
-            searching.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn AzaleaGoal>);
+            searching.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn EngineGoal>);
     }
 
     /// Plant just the installed ECS goal (no `is_calculating`) — the
-    /// brief window between azalea draining a `GotoEvent` and the
+    /// brief window between the engine draining a `GotoEvent` and the
     /// search task starting, and the state a watcher re-issue leaves
     /// when its own search dies hidden.
-    pub(super) fn set_goal_installed(client: &azalea::Client, installed: bool) {
+    pub(super) fn set_goal_installed(client: &mineflayer_engine::Client, installed: bool) {
         let mut ecs = client.ecs.write();
         let mut entity = ecs.get_entity_mut(client.entity).unwrap();
         entity.get_mut::<pathfinder::Pathfinder>().unwrap().goal =
-            installed.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn AzaleaGoal>);
+            installed.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn EngineGoal>);
     }
 
     /// Drive `goto` until its goal is installed — `set_goal` runs on the
     /// future's first poll, so the watcher arm completes after a round.
     pub(super) async fn await_install(
         goto: &mut std::pin::Pin<&mut impl std::future::Future<Output = Result<()>>>,
-        client: &azalea::Client,
+        client: &mineflayer_engine::Client,
     ) {
         tokio::select! {
             r = &mut *goto => panic!("goto resolved before its goal was installed: {r:?}"),
@@ -1239,7 +1247,7 @@ mod tests {
             .write()
             .spawn(Position::new(Vec3::new(500., 64., 0.)))
             .id();
-        let mk = |client: &azalea::Client| Goal::Follow {
+        let mk = |client: &mineflayer_engine::Client| Goal::Follow {
             entity: client.entity_ref_for(target_entity),
             range: 1.,
         };
@@ -1303,7 +1311,7 @@ mod tests {
         assert_eq!(pf.think_timeout(), DEFAULT_THINK_TIMEOUT);
         pf.set_think_timeout(Duration::from_millis(1234));
         assert_eq!(pf.think_timeout(), Duration::from_millis(1234));
-        // no Mining component → not mining; azalea never places → never building
+        // no Mining component → not mining; the engine never places → never building
         assert!(!pf.is_mining());
         assert!(!pf.is_building());
     }

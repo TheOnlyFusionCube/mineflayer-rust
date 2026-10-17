@@ -30,15 +30,15 @@
 use std::time::Duration;
 
 use crate::common::wait_for;
-use azalea::{
+use mineflayer::{Bot, BotEvent, CommandBlockOpts, FindBlocksOpts};
+use mineflayer_engine::{
     BlockPos,
     entity::{EntityKindComponent, Position, inventory::Inventory},
     registry::builtin::{BlockKind, EntityKind},
 };
-use mineflayer::{Bot, BotEvent, CommandBlockOpts, FindBlocksOpts};
 
 /// The nearest loaded non-player, non-villager entity, if any.
-fn non_villager_entity(bot: &Bot) -> Option<azalea::EntityRef> {
+fn non_villager_entity(bot: &Bot) -> Option<mineflayer_engine::EntityRef> {
     bot.nearest_entity(|e| {
         e.get_component::<EntityKindComponent>()
             .is_some_and(|k| k.0 != EntityKind::Villager && k.0 != EntityKind::Player)

@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- The engine is in this repository (`crates/mineflayer-*`). The crate no
+  longer depends on an external engine and needs no `[patch]` table in a
+  dependent workspace.
+- The engine re-export is `mineflayer::engine` (was the upstream crate
+  name). Engine paths in signatures are `mineflayer_engine::…`; the buffer
+  derive and traits are `McBuf`/`McBufVar`/`McBufLimited`.
+
+### Fixed
+
+- The `McBuf` derive generates field shorthand, so workspace clippy is
+  clean. Three engine doctests that cannot compile are `ignore`.
+
 ## 0.2.0 — 2026-10-16
 
 The holistic improvement plan (`docs/improvement_plan.md`). Breaking
@@ -23,7 +39,7 @@ changes first.
 
 ### Added
 
-- `mineflayer::prelude` and `pub use azalea` (the patched azalea).
+- `mineflayer::prelude` and a re-export of the patched engine crate.
 - `BotBuilder::packet_events(false)` keeps raw `BotEvent::Packet` off the
   event stream.
 - `Block::short_name()`, `Bot::click_window_operation(ClickOperation)`.
@@ -39,7 +55,7 @@ changes first.
 - `unequip(Hand)` after a disconnect returns `NotConnected` (was a panic).
 - `transfer` rejects a negative count (was an unbounded click loop).
 - `find_blocks`/`raycast` predicates run outside the world lock (deadlock).
-- The bridge always sends one `End`, also when azalea's channel closes
+- The bridge always sends one `End`, also when the engine's channel closes
   without a disconnect event.
 - Locks are `parking_lot` (no poisoning); a written lock order.
 - A cancelled `tab_complete` no longer leaks its correlation entry.

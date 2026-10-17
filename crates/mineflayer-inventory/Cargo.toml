@@ -1,0 +1,22 @@
+[package]
+name = "mineflayer-inventory"
+description = "Representations of various inventory data structures in Minecraft."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mineflayer-auth.workspace = true
+mineflayer-buf.workspace = true
+mineflayer-chat = { workspace = true, features = ["mineflayer-buf"] }
+mineflayer-core = { workspace = true, features = ["serde"] }
+mineflayer-inventory-macros.workspace = true
+mineflayer-registry = { workspace = true, features = ["serde"] }
+indexmap.workspace = true
+serde.workspace = true
+simdnbt.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

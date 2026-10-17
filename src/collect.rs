@@ -19,10 +19,10 @@
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
-// `azalea::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // real crate name in scope.
-use azalea::ecs as bevy_ecs;
-use azalea::{
+use mineflayer_engine::ecs as bevy_ecs;
+use mineflayer_engine::{
     BlockPos, Vec3,
     ecs::prelude::Component,
     entity::{EntityKindComponent, Position},
@@ -51,7 +51,7 @@ const MAX_VACUUM_ATTEMPTS: usize = 4;
 const VACUUM_GOTO_TIMEOUT: Duration = Duration::from_secs(4);
 /// … and only drops this close to the bot are chased.
 const VACUUM_RADIUS: f64 = 10.;
-/// A single `goto` can't hang a collect: azalea leaves a partial path
+/// A single `goto` can't hang a collect: the engine leaves a partial path
 /// unresolved when a candidate turns out unreachable mid-walk, and our
 /// `goto` (like upstream's) only resolves on reach/stop. Bound each
 /// attempt and move to the next candidate on timeout.
@@ -105,7 +105,7 @@ pub struct CollectOpts {
     pub item_filter: Option<ItemFilter>,
 }
 
-/// Facade state azalea has no slot for — the plugin's mutable fields
+/// Facade state the engine has no slot for — the plugin's mutable fields
 /// (`chestLocations`, `itemFilter`, `movements`) plus the cancellation
 /// bookkeeping for `cancelTask`/`append`.
 /// Stored as an ECS component created on first use — rule 2 of the
@@ -141,7 +141,10 @@ impl Default for CollectState {
 }
 
 /// Read from the [`CollectState`] component; `None` pre-spawn.
-fn collect_state<R>(client: &azalea::Client, f: impl FnOnce(&CollectState) -> R) -> Option<R> {
+fn collect_state<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&CollectState) -> R,
+) -> Option<R> {
     let ecs = client.ecs.read();
     let entity = ecs.get_entity(client.entity).ok()?;
     entity.get::<CollectState>().map(f)
@@ -149,7 +152,7 @@ fn collect_state<R>(client: &azalea::Client, f: impl FnOnce(&CollectState) -> R)
 
 /// Run `f` against [`CollectState`], inserting a default one first.
 fn collect_state_mut<R>(
-    client: &azalea::Client,
+    client: &mineflayer_engine::Client,
     f: impl FnOnce(&mut CollectState) -> R,
 ) -> Option<R> {
     let mut ecs = client.ecs.write();
@@ -162,7 +165,7 @@ fn collect_state_mut<R>(
 
 /// `true` when `generation` went stale — `cancel_task` or a newer
 /// non-`append` collect retired this run (or the state itself is gone).
-fn stale(client: &azalea::Client, generation: u64) -> bool {
+fn stale(client: &mineflayer_engine::Client, generation: u64) -> bool {
     collect_state(client, |s| s.generation != generation).unwrap_or(true)
 }
 
@@ -773,7 +776,7 @@ impl CollectBlock<'_> {
 /// considered "touching"; candidates farther than `max_distance`
 /// (manhattan) from `start` are skipped.
 fn vein_positions(
-    world: &azalea::world::World,
+    world: &mineflayer_engine::world::World,
     start: BlockPos,
     kind: BlockKind,
     max_blocks: usize,
@@ -813,7 +816,7 @@ fn vein_positions(
 
 #[cfg(test)]
 mod tests {
-    use azalea::{
+    use mineflayer_engine::{
         block::BlockState,
         registry::builtin::BlockKind,
         world::{Chunk, PartialChunkStorage},
@@ -927,11 +930,11 @@ mod tests {
     #[test]
     fn default_item_filter_keeps_loot_and_holds_gear() {
         let filter = default_item_filter();
-        let item = |kind: azalea::registry::builtin::ItemKind| Item {
-            stack: azalea::inventory::ItemStack::new(kind, 1),
+        let item = |kind: mineflayer_engine::registry::builtin::ItemKind| Item {
+            stack: mineflayer_engine::inventory::ItemStack::new(kind, 1),
             slot: 0,
         };
-        use azalea::registry::builtin::ItemKind;
+        use mineflayer_engine::registry::builtin::ItemKind;
         assert!(!filter(&item(ItemKind::DiamondPickaxe)));
         assert!(!filter(&item(ItemKind::DiamondSword)));
         assert!(!filter(&item(ItemKind::IronChestplate)));
@@ -949,8 +952,8 @@ mod tests {
         assert!(bot.collect_block().movements().is_some());
         let filter = bot.collect_block().item_filter();
         let pick = Item {
-            stack: azalea::inventory::ItemStack::new(
-                azalea::registry::builtin::ItemKind::DiamondPickaxe,
+            stack: mineflayer_engine::inventory::ItemStack::new(
+                mineflayer_engine::registry::builtin::ItemKind::DiamondPickaxe,
                 1,
             ),
             slot: 0,
@@ -959,13 +962,13 @@ mod tests {
     }
 
     /// A 3×3-chunk `World` like world.rs's `test_world`.
-    fn vein_world() -> (azalea::world::World, PartialChunkStorage) {
-        let mut world = azalea::world::World::default();
+    fn vein_world() -> (mineflayer_engine::world::World, PartialChunkStorage) {
+        let mut world = mineflayer_engine::world::World::default();
         let mut partial = PartialChunkStorage::default();
         for x in -1..=1 {
             for z in -1..=1 {
                 partial.set(
-                    &azalea::core::position::ChunkPos { x, z },
+                    &mineflayer_engine::core::position::ChunkPos { x, z },
                     Some(Chunk::default()),
                     &mut world.chunks,
                 );

@@ -14,12 +14,12 @@
 use std::time::Duration;
 
 use crate::common::wait_for;
-use azalea::{
-    core::entity_id::MinecraftEntityId, protocol::packets::game::s_interact::InteractionHand,
-};
 use mineflayer::{
     Bot, BotEvent,
     entity::{EntityExt, PlayerFilter},
+};
+use mineflayer_engine::{
+    core::entity_id::MinecraftEntityId, protocol::packets::game::s_interact::InteractionHand,
 };
 
 #[tokio::test]

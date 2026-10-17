@@ -1,8 +1,8 @@
 # mineflayer-rs
 
 A Rust port of the [mineflayer](https://github.com/PrismarineJS/mineflayer)
-Minecraft bot API, built on [azalea](https://github.com/azalea-rs/azalea)
-(Bevy-ECS client framework: protocol, world state, physics, pathfinding).
+Minecraft bot API, built on an in-tree client engine (`crates/`, Bevy-ECS:
+protocol, world state, physics, pathfinding).
 Written for Rust authors porting mineflayer bots: the public surface keeps
 mineflayer's names and semantics wherever Rust idiom allows.
 
@@ -107,61 +107,31 @@ account.
 ## Toolchain
 
 Nightly only, pinned in `rust-toolchain.toml` to **nightly-2026-10-01**.
-azalea requires nightly (edition 2024 + feature gates); the latest nightly
-at pin time ICEs compiling `azalea-entity`, and `.cargo/config.toml` sets
-`-Znext-solver=no` because the next-gen trait solver can't infer
-azalea-core's const generics. Both pins are workspace-local — don't
-override with `cargo +nightly` or `RUSTFLAGS`.
+The engine crates need nightly (edition 2024 + feature gates); the latest
+nightly at pin time ICEs compiling the entity crate, and
+`.cargo/config.toml` sets `-Znext-solver=no` because the next-gen trait
+solver can't infer `mineflayer-core`'s const generics. Both pins are
+workspace-local — don't override with `cargo +nightly` or `RUSTFLAGS`.
 
-`Cargo.toml`'s `[patch.crates-io]` also pins every `azalea*` crate to
-upstream commit `ddef371` (still the `0.16.0+mc26.1` release line): the
-published release serializes `ServerboundAttack`'s entity id as a fixed
-i32 where release MC 26.1 servers read a VarInt, so every `bot.attack()`
-was rejected as malformed and kicked the client. Drop the patch once a
-fixed release is published.
+## Layout
 
-`ref/` (git-ignored) holds read-only source checkouts for review:
-`ref/azalea` must be at the pinned commit `ddef371`
-(`git -C ref/azalea checkout ddef371`), because the azalea `main` branch
-is already on a newer Minecraft version and reads differently.
+The repository is one Cargo workspace. The root package is `mineflayer`
+(the bot API). `crates/mineflayer-*` is the client engine under it:
+`mineflayer-engine` is the facade the port uses, re-exported as
+`mineflayer::engine`; the other crates hold the protocol, registries,
+world, physics, inventory, and auth layers. `docs/version_upgrade.md`
+covers how the engine moves to a new Minecraft version.
+
+`ref/` (git-ignored) holds read-only source checkouts for review.
 `ref/mineflayer` is the upstream JavaScript source the port follows.
 
 ## Use as a dependency
 
-Cargo applies `[patch.crates-io]` and toolchain settings per workspace, so
-a crate that depends on `mineflayer` must repeat three things in its own
-workspace. Without the patch, the published azalea `0.16` serializes
-`ServerboundAttack` incorrectly and every `bot.attack()` is kicked as
-malformed (see Toolchain above).
+The engine is part of this repository, so a dependent crate needs no
+`[patch]` table. It must still use the same toolchain settings, because
+Cargo reads them per workspace:
 
-1. `Cargo.toml` — the patch table:
-
-   ```toml
-   [patch.crates-io]
-   azalea = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-auth = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-block = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-block-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-brigadier = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-buf = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-buf-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-chat = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-client = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-core = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-crypto = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-entity = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-inventory = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-inventory-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-language = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-physics = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-protocol = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-protocol-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-registry = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-registry-macros = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   azalea-world = { git = "https://github.com/azalea-rs/azalea", rev = "ddef37118448b639ff56b86ae339e8913cb4ed11" }
-   ```
-
-2. `rust-toolchain.toml` — the pinned nightly:
+1. `rust-toolchain.toml` — the pinned nightly:
 
    ```toml
    [toolchain]
@@ -169,21 +139,20 @@ malformed (see Toolchain above).
    components = ["rustfmt", "clippy"]
    ```
 
-3. `.cargo/config.toml` — the trait-solver flag:
+2. `.cargo/config.toml` — the trait-solver flag:
 
    ```toml
    [build]
    rustflags = ["-Znext-solver=no"]
    ```
 
-The gate (`scripts/verify.sh`) plus the live suite is the port's own
-verification; a dependent crate verifies its patch by attacking a spawned
-entity against the fixture (`scripts/live-server.sh`).
+Name engine types through `mineflayer::engine` (or the `mineflayer::prelude`
+re-exports) so that they always match the version the bot uses.
 
 ## Limitations
 
-- **One Minecraft version.** azalea tracks latest MC only (`0.16.0+mc26.1`
-  → MC `26.1`); mineflayer's multi-version `supportFeature`/version-choice
+- **One Minecraft version.** The engine targets one MC release
+  (`0.16.0+mc26.1` → MC `26.1`); mineflayer's multi-version `supportFeature`/version-choice
   APIs are `diverges` by construction.
 - **`diverges` rows are real.** Prominent ones: `event('chat')` is a raw
   always-on packet event (the derived `Message`/`MessageStr` family is the
@@ -200,4 +169,5 @@ entity against the fixture (`scripts/live-server.sh`).
 ## License
 
 MIT. The API surface is derived from mineflayer (MIT,
-© PrismarineJS contributors); the implementation builds on azalea (MIT).
+© PrismarineJS contributors). Third-party notices for code in `crates/`
+are in `LICENSE`.

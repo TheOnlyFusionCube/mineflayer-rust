@@ -2,15 +2,15 @@
 //! `bot.scoreboards` / `bot.scoreboard` / `bot.teams` / `bot.teamMap` /
 //! `bot.bossBars` surface.
 //!
-//! azalea stores none of this; everything here is facade-kept state on
+//! The engine stores none of this; everything here is facade-kept state on
 //! `ScoreboardState`, fed by `c_set_objective` / `c_set_score` /
 //! `c_reset_score` / `c_set_display_objective` / `c_set_player_team` /
 //! `c_boss_event` packets decoded in `handle`.
 
 use std::collections::{HashMap, HashSet};
 
-use azalea::chat::style::ChatFormatting;
-use azalea::{
+use mineflayer_engine::chat::style::ChatFormatting;
+use mineflayer_engine::{
     FormattedText,
     protocol::packets::game::{
         ClientboundGamePacket,
@@ -28,7 +28,7 @@ use crate::{Bot, BotEvent};
 /// (`bot.scoreboard(slot)`), `bot.teams`, `bot.teamMap`, `bot.bossBars`.
 ///
 /// Upstream keeps these in JS objects owned by the scoreboard plugin. Only
-/// the bridge writes this state and `Bot` reads it without any azalea
+/// the bridge writes this state and `Bot` reads it without any the engine
 /// component, so it lives in `BotShared` (the storage rule there), not on
 /// the client entity; the domain still owns its whole lifecycle: packet
 /// decode and the login/respawn clear.
@@ -82,7 +82,7 @@ pub(crate) fn handle_for(
 pub struct ScoreItem {
     pub name: String,
     /// The signed score — objectives legitimately go negative (the wire
-    /// is a signed VarInt; azalea decodes it as `u32` and we un-wrap).
+    /// is a signed VarInt; the engine decodes it as `u32` and we un-wrap).
     pub value: i32,
     /// `scoreboard_score.display` — a custom name shown instead of `name`.
     pub display: Option<FormattedText>,
@@ -210,9 +210,9 @@ pub struct Team {
 }
 
 /// `team.collisionRule`.
-pub use azalea::protocol::packets::game::c_set_player_team::CollisionRule;
-/// `team.nameTagVisibility` (`azalea`'s packet enum, which is the domain type).
-pub use azalea::protocol::packets::game::c_set_player_team::NameTagVisibility;
+pub use mineflayer_engine::protocol::packets::game::c_set_player_team::CollisionRule;
+/// `team.nameTagVisibility` (`mineflayer-engine`'s packet enum, which is the domain type).
+pub use mineflayer_engine::protocol::packets::game::c_set_player_team::NameTagVisibility;
 
 impl Team {
     fn new(name: String, params: c_set_player_team::Parameters) -> Self {
@@ -244,7 +244,7 @@ impl Team {
     /// `team.displayName(member)` — `prefix + colored member + suffix` as a
     /// chat component.
     pub fn member_display_name(&self, member: &str) -> FormattedText {
-        use azalea::chat::{
+        use mineflayer_engine::chat::{
             base_component::BaseComponent,
             style::{Style, TextColor},
             text_component::TextComponent,
@@ -411,7 +411,7 @@ pub(crate) fn handle(
             };
             let item = ScoreItem {
                 name: p.owner.clone(),
-                // the wire field is a signed VarInt azalea reads as u32 —
+                // the wire field is a signed VarInt the engine reads as u32 —
                 // `as i32` un-wraps it, so -1 arrives as -1 not 0xFFFFFFFF
                 value: p.score as i32,
                 display: p.display.clone(),
@@ -560,7 +560,7 @@ pub(crate) fn handle(
 
 #[cfg(test)]
 mod tests {
-    use azalea::protocol::packets::game::{
+    use mineflayer_engine::protocol::packets::game::{
         c_boss_event::{AddOperation, BossBarColor, BossBarOverlay, Operation, Properties, Style},
         c_set_objective::Method,
         c_set_player_team::{CollisionRule, Method as TeamMethod, NameTagVisibility, Parameters},
@@ -588,12 +588,12 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
-                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                mineflayer_engine::protocol::packets::game::c_set_objective::ClientboundSetObjective {
                     objective_name: "obj".into(),
                     method: Method::Add {
                         display_name: "My Objective".into(),
-                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea::chat::numbers::NumberFormat::Blank,
+                        render_type: mineflayer_engine::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: mineflayer_engine::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
@@ -608,12 +608,12 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
-                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                mineflayer_engine::protocol::packets::game::c_set_objective::ClientboundSetObjective {
                     objective_name: "obj".into(),
                     method: Method::Change {
                         display_name: "Renamed".into(),
-                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea::chat::numbers::NumberFormat::Blank,
+                        render_type: mineflayer_engine::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: mineflayer_engine::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
@@ -627,7 +627,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetScore(
-                azalea::protocol::packets::game::c_set_score::ClientboundSetScore {
+                mineflayer_engine::protocol::packets::game::c_set_score::ClientboundSetScore {
                     owner: "alice".into(),
                     objective_name: "obj".into(),
                     score: 7,
@@ -643,7 +643,7 @@ mod tests {
         handle(
             &mut s,
             &ClientboundGamePacket::SetScore(
-                azalea::protocol::packets::game::c_set_score::ClientboundSetScore {
+                mineflayer_engine::protocol::packets::game::c_set_score::ClientboundSetScore {
                     owner: "bob".into(),
                     objective_name: "obj".into(),
                     score: 9,
@@ -658,7 +658,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::ResetScore(
-                azalea::protocol::packets::game::c_reset_score::ClientboundResetScore {
+                mineflayer_engine::protocol::packets::game::c_reset_score::ClientboundResetScore {
                     owner: "bob".into(),
                     objective_name: None,
                 },
@@ -672,7 +672,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetDisplayObjective(
-                azalea::protocol::packets::game::c_set_display_objective::ClientboundSetDisplayObjective {
+                mineflayer_engine::protocol::packets::game::c_set_display_objective::ClientboundSetDisplayObjective {
                     slot: DisplaySlot::Sidebar,
                     objective_name: "obj".into(),
                 },
@@ -687,7 +687,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
-                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                mineflayer_engine::protocol::packets::game::c_set_objective::ClientboundSetObjective {
                     objective_name: "obj".into(),
                     method: Method::Remove,
                 },
@@ -704,19 +704,19 @@ mod tests {
         let mut s = ScoreboardState::default();
         let objective = |name: &str| {
             ClientboundGamePacket::SetObjective(
-                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                mineflayer_engine::protocol::packets::game::c_set_objective::ClientboundSetObjective {
                     objective_name: name.into(),
                     method: Method::Add {
                         display_name: name.into(),
-                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea::chat::numbers::NumberFormat::Blank,
+                        render_type: mineflayer_engine::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: mineflayer_engine::chat::numbers::NumberFormat::Blank,
                     },
                 },
             )
         };
         let display = |name: &str| {
             ClientboundGamePacket::SetDisplayObjective(
-                azalea::protocol::packets::game::c_set_display_objective::ClientboundSetDisplayObjective {
+                mineflayer_engine::protocol::packets::game::c_set_display_objective::ClientboundSetDisplayObjective {
                     slot: DisplaySlot::Sidebar,
                     objective_name: name.into(),
                 },
@@ -752,19 +752,19 @@ mod tests {
         handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
-                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                mineflayer_engine::protocol::packets::game::c_set_objective::ClientboundSetObjective {
                     objective_name: "obj".into(),
                     method: Method::Add {
                         display_name: "x".into(),
-                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea::chat::numbers::NumberFormat::Blank,
+                        render_type: mineflayer_engine::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: mineflayer_engine::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
         );
         let set_score = |owner: &str, score: u32| {
             ClientboundGamePacket::SetScore(
-                azalea::protocol::packets::game::c_set_score::ClientboundSetScore {
+                mineflayer_engine::protocol::packets::game::c_set_score::ClientboundSetScore {
                     owner: owner.into(),
                     objective_name: "obj".into(),
                     score,
@@ -773,7 +773,7 @@ mod tests {
                 },
             )
         };
-        // a wire -1 decodes through azalea's u32 as 0xFFFFFFFF
+        // a wire -1 decodes through the engine's u32 as 0xFFFFFFFF
         let events = handle(&mut s, &set_score("neg", u32::MAX)).unwrap();
         assert!(
             matches!(&events[..], [BotEvent::ScoreUpdated { item, .. }] if item.value == -1),
@@ -794,12 +794,12 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetObjective(
-                azalea::protocol::packets::game::c_set_objective::ClientboundSetObjective {
+                mineflayer_engine::protocol::packets::game::c_set_objective::ClientboundSetObjective {
                     objective_name: "ghost".into(),
                     method: Method::Change {
                         display_name: "x".into(),
-                        render_type: azalea::core::objectives::ObjectiveCriteria::Integer,
-                        number_format: azalea::chat::numbers::NumberFormat::Blank,
+                        render_type: mineflayer_engine::core::objectives::ObjectiveCriteria::Integer,
+                        number_format: mineflayer_engine::chat::numbers::NumberFormat::Blank,
                     },
                 },
             ),
@@ -815,7 +815,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetPlayerTeam(
-                azalea::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
+                mineflayer_engine::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
                     name: "t".into(),
                     method: TeamMethod::Add((params(), vec!["alice".into(), "bob".into()])),
                 },
@@ -831,7 +831,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetPlayerTeam(
-                azalea::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
+                mineflayer_engine::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
                     name: "t".into(),
                     method: TeamMethod::Join(vec!["carol".into()]),
                 },
@@ -845,7 +845,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetPlayerTeam(
-                azalea::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
+                mineflayer_engine::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
                     name: "t".into(),
                     method: TeamMethod::Leave(vec!["alice".into()]),
                 },
@@ -863,7 +863,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetPlayerTeam(
-                azalea::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
+                mineflayer_engine::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
                     name: "t".into(),
                     method: TeamMethod::Change(p2),
                 },
@@ -882,7 +882,7 @@ mod tests {
         let events = handle(
             &mut s,
             &ClientboundGamePacket::SetPlayerTeam(
-                azalea::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
+                mineflayer_engine::protocol::packets::game::c_set_player_team::ClientboundSetPlayerTeam {
                     name: "t".into(),
                     method: TeamMethod::Remove,
                 },
@@ -897,13 +897,13 @@ mod tests {
     fn boss_bar_lifecycle() {
         let mut s = ScoreboardState::default();
         // `uuid` isn't in our dep set: build the packet id by decoding one
-        // from the wire — AzBuf gives us a `Uuid` without naming the type.
-        let id =
-            azalea::buf::AzBuf::azalea_read(&mut std::io::Cursor::new(&[0u8; 16][..])).unwrap();
+        // from the wire — McBuf gives us a `Uuid` without naming the type.
+        let id = mineflayer_engine::buf::McBuf::mc_read(&mut std::io::Cursor::new(&[0u8; 16][..]))
+            .unwrap();
         let id_string = "00000000-0000-0000-0000-000000000000".to_string();
         let packet = |operation| {
             ClientboundGamePacket::BossEvent(
-                azalea::protocol::packets::game::c_boss_event::ClientboundBossEvent {
+                mineflayer_engine::protocol::packets::game::c_boss_event::ClientboundBossEvent {
                     id,
                     operation,
                 },
@@ -958,7 +958,7 @@ mod tests {
     /// `handle_for` entry the bridge uses.
     #[test]
     fn login_clears_the_domain_state_through_handle_for() {
-        use azalea::{
+        use mineflayer_engine::{
             core::game_type::{GameMode, OptionalGameType},
             protocol::packets::{common::CommonPlayerSpawnInfo, game::c_login::ClientboundLogin},
         };
@@ -1009,7 +1009,7 @@ mod tests {
         });
 
         let login = ClientboundGamePacket::Login(ClientboundLogin {
-            player_id: azalea::core::entity_id::MinecraftEntityId(0),
+            player_id: mineflayer_engine::core::entity_id::MinecraftEntityId(0),
             hardcore: false,
             levels: vec![],
             max_players: 20,
@@ -1019,8 +1019,8 @@ mod tests {
             show_death_screen: true,
             do_limited_crafting: false,
             common: CommonPlayerSpawnInfo {
-                dimension_type: azalea::registry::DataRegistry::new_raw(0),
-                dimension: azalea::Identifier::new("minecraft:overworld"),
+                dimension_type: mineflayer_engine::registry::DataRegistry::new_raw(0),
+                dimension: mineflayer_engine::Identifier::new("minecraft:overworld"),
                 seed: 0,
                 game_type: GameMode::Survival,
                 previous_game_type: OptionalGameType(None),

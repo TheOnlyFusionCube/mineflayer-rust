@@ -1,0 +1,21 @@
+[package]
+name = "mineflayer-brigadier"
+description = "A port of Mojang's Brigadier command parsing and dispatching library."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+
+[dependencies]
+mineflayer-buf = { workspace = true, optional = true }
+mineflayer-chat = { workspace = true, optional = true }
+parking_lot.workspace = true
+
+[features]
+mineflayer-buf = ["dep:mineflayer-buf", "dep:mineflayer-chat", "mineflayer-chat/mineflayer-buf"]
+
+[lints]
+workspace = true

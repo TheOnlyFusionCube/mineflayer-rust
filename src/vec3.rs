@@ -1,15 +1,15 @@
 //! `Vec3` (prismarine `vec3`) — the extension methods node-vec3's `Vec3`
-//! class carries that azalea's [`Vec3`] doesn't.
+//! class carries that the engine's [`Vec3`] doesn't.
 //!
-//! azalea's `Vec3` covers `length`/`distance_to`/`dot`/`cross`/`min`/`max`,
+//! The engine's `Vec3` covers `length`/`distance_to`/`dot`/`cross`/`min`/`max`,
 //! `with_*`, `x_rot`/`y_rot`, and the arithmetic ops traits; [`Vec3Ext`]
 //! fills the rest of the node-vec3 surface. Semantic traps, all inherited
-//! from azalea rather than fixed here:
+//! from the engine rather than fixed here:
 //!
-//! - `v.xz()` is azalea's inherent method — it zeroes `y` and returns a
+//! - `v.xz()` is the engine's inherent method — it zeroes `y` and returns a
 //!   `Vec3`; upstream's `xz()` returns the `[x, z]` pair. Use [`Vec3Ext::xy`]
 //!   /[`Vec3Ext::yz`]/[`Vec3Ext::to_array`] for the upstream shapes.
-//! - `v.scale(s)`/`v.normalize()`/`v.multiply(x,y,z)` are azalea's inherent
+//! - `v.scale(s)`/`v.normalize()`/`v.multiply(x,y,z)` are the engine's inherent
 //!   *non-mutating* methods — they cover upstream's `scaled`/`unit`/
 //!   `multiply` but under names that are mutating upstream. The mutating
 //!   variants aren't provided (inherent names shadow any trait method);
@@ -17,7 +17,7 @@
 //! - upstream `equals(other, error)` takes an error tolerance; Rust's
 //!   `PartialEq` is exact. Compare components for tolerance checks.
 
-use azalea::Vec3;
+use mineflayer_engine::Vec3;
 
 /// `euclideanMod(numerator, denominator)` — node-vec3's helper, ported
 /// literally (`n % d`, plus `d` when the remainder went negative; JS and
@@ -35,8 +35,8 @@ pub fn euclidean_mod(numerator: f64, denominator: f64) -> f64 {
     }
 }
 
-/// node-vec3 `Vec3` methods on azalea's [`Vec3`]. Non-mutating methods take
-/// `self` by value (`Vec3` is `Copy`), matching azalea's own `distance_to`
+/// node-vec3 `Vec3` methods on the engine's [`Vec3`]. Non-mutating methods take
+/// `self` by value (`Vec3` is `Copy`), matching the engine's own `distance_to`
 /// style; the mutating set takes `&mut self`.
 pub trait Vec3Ext {
     /// `v.offset(dx, dy, dz)` — the most-used upstream method.
@@ -47,11 +47,11 @@ pub trait Vec3Ext {
     fn plus(self, other: Vec3) -> Vec3;
     /// `v.minus(other)`.
     fn minus(self, other: Vec3) -> Vec3;
-    /// `v.scaled(scalar)` — `v * scalar`. (azalea's inherent `scale` is the
+    /// `v.scaled(scalar)` — `v * scalar`. (the engine's inherent `scale` is the
     /// same method under the name upstream gives the mutating variant.)
     fn scaled(self, scalar: f64) -> Vec3;
     /// `v.floored()` — component-wise `floor`, still a `Vec3` (for the
-    /// [`BlockPos`](azalea::BlockPos) use `to_block_pos_floor`).
+    /// [`BlockPos`](mineflayer_engine::BlockPos) use `to_block_pos_floor`).
     fn floored(self) -> Vec3;
     /// `v.floor()` — `floored` in place.
     fn floor(&mut self);
@@ -68,12 +68,12 @@ pub trait Vec3Ext {
     fn modulus(self, other: Vec3) -> Vec3;
     /// `v.volume()` — `x * y * z`.
     fn volume(self) -> f64;
-    /// `v.norm()` — the Euclidean length (azalea calls it `length`).
+    /// `v.norm()` — the Euclidean length (the engine calls it `length`).
     fn norm(self) -> f64;
     /// `v.unit()` — `scaled(1 / norm)` like upstream (multiply by the
     /// reciprocal — `v(0,3,4).unit().y` is `0.6000000000000001`, matching
     /// upstream bit-for-bit); the zero vector returns itself. Upstream's
-    /// mutating `normalize` divides per component instead; azalea's
+    /// mutating `normalize` divides per component instead; the engine's
     /// inherent `normalize` does the same division but non-mutating (and
     /// returns `ZERO` under a 1e-5 length threshold upstream lacks).
     fn unit(self) -> Vec3;
@@ -284,7 +284,7 @@ mod tests {
         assert_eq!(a, v(2., 3., 4.));
         a = a.scaled(2.);
         assert_eq!(a, v(4., 6., 8.));
-        // azalea's inherent scale/normalize are non-mutating — upstream's
+        // The engine's inherent scale/normalize are non-mutating — upstream's
         // names for these are scaled/unit
         assert_eq!(a.scale(2.), v(8., 12., 16.));
         a.floor();

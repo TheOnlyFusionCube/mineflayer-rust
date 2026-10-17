@@ -47,7 +47,7 @@ impl Deref for EnchantmentTable {
 /// wire value); the id resolves through the server's dynamic registry.
 pub(super) fn enchantment_options(
     data: &HashMap<u16, i16>,
-    registries: &azalea::core::registry_holder::RegistryHolder,
+    registries: &mineflayer_engine::core::registry_holder::RegistryHolder,
 ) -> [EnchantmentOption; 3] {
     let get = |id: u16| data.get(&id).copied().unwrap_or(-1) as i32;
     std::array::from_fn(|i| {
@@ -203,12 +203,12 @@ mod tests {
     fn enchant_options_decode_clues() {
         // a holder with one enchantment entry — clue id 0 then resolves
         // like a real server's registry_data would
-        let mut holder = azalea::core::registry_holder::RegistryHolder::default();
+        let mut holder = mineflayer_engine::core::registry_holder::RegistryHolder::default();
         holder.append(
-            azalea::Identifier::new("minecraft:enchantment"),
+            mineflayer_engine::Identifier::new("minecraft:enchantment"),
             vec![(
-                azalea::Identifier::new("minecraft:sharpness"),
-                Some(azalea::protocol::simdnbt::owned::NbtCompound::new()),
+                mineflayer_engine::Identifier::new("minecraft:sharpness"),
+                Some(mineflayer_engine::protocol::simdnbt::owned::NbtCompound::new()),
             )],
         );
         // level costs 1/2/3, seed 42, clue 0 = sharpness at level 4,

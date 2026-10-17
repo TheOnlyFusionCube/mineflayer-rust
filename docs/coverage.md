@@ -81,7 +81,7 @@ Note: a file's numbers include its own `#[cfg(test)]` module.
 | `bridge.rs` | The per-event body of the `spawn` loop: `Init` client information, `Login` brand payload, the observer calls, and the event fan-out | live tests only |
 | `bridge.rs` | The keepalive watchdog arm (`check_timeout_interval` expiry, `Error` then `keepAliveError`) | nothing — no unit test and no live test makes the server stop keepalives |
 | `bridge.rs` | `Event::ConnectionFailed` in `translate` | nothing |
-| `bridge.rs` | The `debug!` arm for untranslated azalea events | nothing (log only) |
+| `bridge.rs` | The `debug!` arm for untranslated the engine events | nothing (log only) |
 | `bot/mod.rs` (A1, A2) | `subscribe` and `driver_handle` are covered. Not covered: `quit`/`end`/`respawn`, the version getters, `registry`, `wait_for_ticks`, and `wait_for_chunks_to_load` with its chunk check | live lifecycle test |
 | `inventory/mod.rs` (A3) | The `equip_empty` paths after the `NotConnected` guard: toss when the quick bar is full, and the click sequence | live tests only |
 | `inventory/transfer.rs` (A4) | The click loop after the count check: the half-stack shortcut and the right-click loop | live tests only |

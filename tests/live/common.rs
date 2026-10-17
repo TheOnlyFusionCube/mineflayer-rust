@@ -124,7 +124,7 @@ pub(crate) async fn collect_until(
 }
 
 /// Horizontal (xz) distance — the plane pathfinder/movement paths follow.
-pub(crate) fn horizontal_distance(a: azalea::Vec3, b: azalea::Vec3) -> f64 {
+pub(crate) fn horizontal_distance(a: mineflayer_engine::Vec3, b: mineflayer_engine::Vec3) -> f64 {
     let (dx, dz) = (a.x - b.x, a.z - b.z);
     (dx * dx + dz * dz).sqrt()
 }

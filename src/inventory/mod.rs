@@ -5,7 +5,7 @@
 //! method surface over it. Click choreography (equip, transfer, putAway,
 //! toss) follows upstream `inventory.js`/`simple_inventory.js` closely;
 //! where upstream clicks through `clickWindow` we send the equivalent
-//! azalea [`ClickOperation`] on the same window.
+//! The engine [`ClickOperation`] on the same window.
 //!
 //! A method here is `async` only when it waits for something (a server
 //! reply, a tick, a window event). `update_held_item`, `close_window`,
@@ -14,7 +14,7 @@
 
 use std::{ops::Range, time::Duration};
 
-use azalea::{
+use mineflayer_engine::{
     BlockPos,
     core::{direction::Direction, game_type::GameMode},
     entity::LookDirection,
@@ -101,7 +101,7 @@ pub enum ContainerTarget {
     /// pre-check (chest.js throws before opening other blocks).
     Block { pos: BlockPos, name: String },
     /// An entity reference.
-    Entity(azalea::EntityRef),
+    Entity(mineflayer_engine::EntityRef),
 }
 
 impl From<&Block> for ContainerTarget {
@@ -119,14 +119,14 @@ impl From<Block> for ContainerTarget {
     }
 }
 
-impl From<azalea::EntityRef> for ContainerTarget {
-    fn from(entity: azalea::EntityRef) -> Self {
+impl From<mineflayer_engine::EntityRef> for ContainerTarget {
+    fn from(entity: mineflayer_engine::EntityRef) -> Self {
         ContainerTarget::Entity(entity)
     }
 }
 
-impl From<&azalea::EntityRef> for ContainerTarget {
-    fn from(entity: &azalea::EntityRef) -> Self {
+impl From<&mineflayer_engine::EntityRef> for ContainerTarget {
+    fn from(entity: &mineflayer_engine::EntityRef) -> Self {
         ContainerTarget::Entity(entity.clone())
     }
 }
@@ -168,7 +168,7 @@ fn is_container_menu(kind: MenuKind) -> bool {
     )
 }
 
-/// `(mouseButton, mode)` → the azalea click operation, upstream's
+/// `(mouseButton, mode)` → the engine click operation, upstream's
 /// `clickWindow` mode dispatch. `slot` is the absolute window slot
 /// (`-999` is handled in [`Bot::click_window`], which sends the outside
 /// clicks).
@@ -235,13 +235,13 @@ impl Bot {
             return sel;
         }
         self.client
-            .get_component::<azalea::entity::inventory::Inventory>()
+            .get_component::<mineflayer_engine::entity::inventory::Inventory>()
             .map(|i| i.selected_hotbar_slot)
             .unwrap_or(0)
     }
 
     /// `bot.setQuickBarSlot(slot)` — select a hotbar slot (`0..=8`),
-    /// sending `held_item_slot` to the server (azalea's
+    /// sending `held_item_slot` to the server (the engine's
     /// `set_selected_hotbar_slot` does both) and emitting
     /// [`BotEvent::HeldItemChanged`] like upstream's `setQuickBarSlot`.
     pub async fn set_quick_bar_slot(&self, slot: u8) -> Result<()> {
@@ -310,7 +310,7 @@ impl Bot {
         click_window_on(&window, slot, mouse_button, mode, self.subscribe()).await
     }
 
-    /// [`Bot::click_window`] with a typed azalea [`ClickOperation`] in
+    /// [`Bot::click_window`] with a typed the engine [`ClickOperation`] in
     /// place of upstream's `(slot, mouseButton, mode)` integer codes. The
     /// same crafting-result wait applies.
     pub async fn click_window_operation(&self, operation: ClickOperation) -> Result<()> {
@@ -606,9 +606,11 @@ impl Bot {
         self.shared.windows.lock().using_held_item = true;
         let seq = {
             let mut ecs = self.client.ecs.write();
-            ecs.get_mut::<azalea::interact::BlockStatePredictionHandler>(self.client.entity)
-                .map(|mut h| h.start_predicting())
-                .unwrap_or_default()
+            ecs.get_mut::<mineflayer_engine::interact::BlockStatePredictionHandler>(
+                self.client.entity,
+            )
+            .map(|mut h| h.start_predicting())
+            .unwrap_or_default()
         };
         let (y_rot, x_rot) = self
             .client
@@ -617,9 +619,9 @@ impl Bot {
             .unwrap_or_default();
         self.client.write_packet(ServerboundUseItem {
             hand: if off_hand {
-                azalea::protocol::packets::game::s_interact::InteractionHand::OffHand
+                mineflayer_engine::protocol::packets::game::s_interact::InteractionHand::OffHand
             } else {
-                azalea::protocol::packets::game::s_interact::InteractionHand::MainHand
+                mineflayer_engine::protocol::packets::game::s_interact::InteractionHand::MainHand
             },
             seq,
             y_rot,
@@ -697,7 +699,7 @@ impl Bot {
     /// `activateBlock`'s `lookAt`), right-click it, and wait for the
     /// server's `open_screen` + slot data; resolves with the opened
     /// [`Window`]. The upstream `direction`/`cursorPos` hit-result
-    /// parameters have no azalea equivalent (azalea fabricates the
+    /// parameters have no the engine equivalent (the engine fabricates the
     /// block-face hit from `force_block`).
     pub async fn open_block(&self, block: &Block) -> Result<Window> {
         let mut rx = self.subscribe();
@@ -709,19 +711,19 @@ impl Bot {
     /// `bot.openEntity(entity)` — look at the entity, right-click a
     /// container-bearing entity (chest minecart, llama, …), and wait
     /// for the window.
-    pub async fn open_entity(&self, entity: &azalea::EntityRef) -> Result<Window> {
+    pub async fn open_entity(&self, entity: &mineflayer_engine::EntityRef) -> Result<Window> {
         let mut rx = self.subscribe();
         // upstream activateEntity's lookAt aims at the entity's
         // position (feet); half-height approximates the body's center
         if let Some(pos) = entity
-            .get_component::<azalea::entity::Position>()
+            .get_component::<mineflayer_engine::entity::Position>()
             .map(|p| **p)
         {
             let mid = entity
-                .get_component::<azalea::entity::dimensions::EntityDimensions>()
+                .get_component::<mineflayer_engine::entity::dimensions::EntityDimensions>()
                 .map(|d| f64::from(d.height) / 2.)
                 .unwrap_or(0.5);
-            self.look_at(pos + azalea::Vec3::new(0., mid, 0.), false)
+            self.look_at(pos + mineflayer_engine::Vec3::new(0., mid, 0.), false)
                 .await?;
         }
         entity.interact();
@@ -879,7 +881,7 @@ async fn wait_for_slot_update(rx: &mut broadcast::Receiver<BotEvent>, window_id:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use azalea::inventory::{components::Damage, operations::CloneClick};
+    use mineflayer_engine::inventory::{components::Damage, operations::CloneClick};
 
     /// `unequip(Hand)` on a despawned client must return `NotConnected`.
     /// The baseline read `slots().unwrap_or_default()` and indexed the
@@ -1004,8 +1006,8 @@ mod tests {
         assert_eq!(dest_fixed_slot(EquipDest::Hand), None);
     }
 
-    fn stack(kind: ItemKind, count: i32) -> azalea::inventory::ItemStack {
-        azalea::inventory::ItemStack::new(kind, count)
+    fn stack(kind: ItemKind, count: i32) -> mineflayer_engine::inventory::ItemStack {
+        mineflayer_engine::inventory::ItemStack::new(kind, count)
     }
 
     #[test]
@@ -1013,7 +1015,7 @@ mod tests {
         use crate::windows::{find_item_in, first_empty_in};
         let slots = vec![
             stack(ItemKind::Stone, 32),
-            azalea::inventory::ItemStack::Empty,
+            mineflayer_engine::inventory::ItemStack::Empty,
             stack(ItemKind::Stone, 64), // full
             stack(ItemKind::Dirt, 10),
             stack(ItemKind::IronSword, 1).with_component(Damage { amount: 15 }),
@@ -1051,7 +1053,7 @@ mod tests {
         assert_eq!(cursor.slot, -1);
         assert_eq!(cursor.kind(), ItemKind::Apple);
         assert_eq!(cursor.name(), "apple");
-        assert!(Item::of(azalea::inventory::ItemStack::Empty, 0).is_none());
+        assert!(Item::of(mineflayer_engine::inventory::ItemStack::Empty, 0).is_none());
 
         // same_item ignores count but not kind or components
         let a = Item::of(stack(ItemKind::Stone, 1), 0).unwrap();

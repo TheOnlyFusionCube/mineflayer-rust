@@ -1,0 +1,61 @@
+[package]
+name = "mineflayer-protocol"
+description = "Send and receive Minecraft packets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dev-dependencies]
+eyre.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono = { workspace = true, features = ["now"] }
+minecraft_folder_path.workspace = true
+parking_lot.workspace = true
+
+[dependencies]
+mineflayer-auth.workspace = true
+mineflayer-block.workspace = true
+mineflayer-brigadier = { workspace = true, features = ["mineflayer-buf"] }
+mineflayer-buf.workspace = true
+mineflayer-chat = { workspace = true, features = ["numbers", "mineflayer-buf"] }
+mineflayer-core = { workspace = true }
+mineflayer-crypto = { workspace = true, features = ["signing"] }
+mineflayer-entity = { workspace = true }
+mineflayer-inventory.workspace = true
+mineflayer-protocol-macros.workspace = true
+mineflayer-registry.workspace = true
+mineflayer-world = { workspace = true, optional = true }
+bevy_ecs = { workspace = true, optional = true }
+# byteorder.workspace = true
+flate2.workspace = true
+futures.workspace = true
+futures-lite.workspace = true
+# futures-util.workspace = true
+serde = { workspace = true, features = ["serde_derive"] }
+serde_json.workspace = true
+simdnbt.workspace = true
+socks5-impl = { workspace = true, features = ["client"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "macros"] }
+tokio-util = { workspace = true, features = ["codec"] }
+tracing.workspace = true
+hickory-resolver = { workspace = true, features = ["tokio", "system-config"] }
+uuid.workspace = true
+indexmap.workspace = true
+reqwest = { workspace = true, optional = true, features = ["socks"] }
+
+[features]
+default = ["online-mode", "connecting"]
+connecting = []
+online-mode = ["mineflayer-auth/online-mode", "dep:reqwest"]
+bevy_ecs = [
+    "dep:bevy_ecs",
+    "dep:mineflayer-world",
+    "mineflayer-entity/bevy_ecs",
+    "mineflayer-core/bevy_ecs",
+]
+
+[lints]
+workspace = true
+

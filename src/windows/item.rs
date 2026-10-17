@@ -1,4 +1,4 @@
-use azalea::{
+use mineflayer_engine::{
     inventory::{DataComponentPatch, ItemStack, item::MaxStackSizeExt},
     registry::builtin::ItemKind,
 };
@@ -26,7 +26,7 @@ impl Item {
     }
 
     /// `item.type` analog — the item kind, e.g. [`ItemKind::Stone`]. The
-    /// numeric mcdata id has no azalea equivalent; the enum is richer.
+    /// numeric mcdata id has no the engine equivalent; the enum is richer.
     pub fn kind(&self) -> ItemKind {
         self.stack.kind()
     }
@@ -41,7 +41,7 @@ impl Item {
     /// else the item name.
     pub fn display_name(&self) -> String {
         self.stack
-            .get_component::<azalea::inventory::components::CustomName>()
+            .get_component::<mineflayer_engine::inventory::components::CustomName>()
             .map(|c| c.name.to_string())
             .unwrap_or_else(|| self.name().to_string())
     }
@@ -65,7 +65,7 @@ impl Item {
     /// `item.durabilityUsed` — damage already taken.
     pub fn durability_used(&self) -> Option<i32> {
         self.stack
-            .get_component::<azalea::inventory::components::Damage>()
+            .get_component::<mineflayer_engine::inventory::components::Damage>()
             .map(|d| d.amount)
     }
 
@@ -73,16 +73,16 @@ impl Item {
     /// items without durability.
     pub fn max_durability(&self) -> Option<i32> {
         self.stack
-            .get_component::<azalea::inventory::components::MaxDamage>()
+            .get_component::<mineflayer_engine::inventory::components::MaxDamage>()
             .map(|d| d.amount)
     }
 
     /// `item.nbt` analog — the `custom_data` component. Modern items have
     /// component patches rather than free-form NBT; use
     /// [`Item::component_patch`] for the full set.
-    pub fn custom_data(&self) -> Option<azalea::inventory::components::CustomData> {
+    pub fn custom_data(&self) -> Option<mineflayer_engine::inventory::components::CustomData> {
         self.stack
-            .get_component::<azalea::inventory::components::CustomData>()
+            .get_component::<mineflayer_engine::inventory::components::CustomData>()
             .map(|c| c.into_owned())
     }
 
