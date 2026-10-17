@@ -51,6 +51,19 @@ merge; plan item E2 keeps this list current):
     (path/is_partial/elapsed, goal reached, stopped) on the client event
     stream, and `PathFoundEvent` gains `elapsed`; the port translates
     these instead of diffing engine components per tick.
+11. (A3) The inventory packet handlers apply what the port used to patch
+    in from outside: `container_set_content` on the active menu sets
+    `carried` and `state_id` (vanilla `initializeContents`); `set_slot`
+    on the active menu adopts `state_id`, hotbar writes included; every
+    window-0 `set_slot` reaches the player menu (vanilla drops non-hotbar
+    ones while a container is open; upstream mineflayer applies them);
+    `set_player_inventory` and `set_cursor_item` are applied (upstream
+    ignored both); content before `open_screen` is buffered in
+    `Inventory::early_content`; and syncs under a client-closed id reach
+    the player menu through `Inventory::last_closed` (vanilla drops them;
+    upstream mineflayer's `lastClosedWindow`). `Player::slot_for_inventory_index`
+    maps `set_player_inventory` slots. Tests:
+    `mineflayer-client/tests/simulation/inventory_packets.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
@@ -75,7 +88,9 @@ lock cannot break a domain for the rest of the session.
 
 **D-lock-order (first plan B9). A domain lock may be held while the ECS lock is
 taken; never the reverse.** The rule and every two-lock site are documented
-next to `BotShared` (`src/bot/mod.rs`).
+next to `BotShared` (`src/bot/mod.rs`). Plan item A3 (2026-10-17)
+removed the window tracker's ECS writes, but it still reads the ECS under
+its lock, as does the world-state observer, so the rule stays as it is.
 
 **D-log (first plan C1). `tracing` is the log facade.** The engine already logs through
 it. The crate emits and never installs a subscriber; it never logs chat

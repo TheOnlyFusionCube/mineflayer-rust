@@ -61,6 +61,15 @@ pub struct Inventory {
     /// In a vanilla client this is changed by pressing the number keys or using
     /// the scroll wheel.
     pub selected_hotbar_slot: u8,
+
+    /// Content that arrived for a container id before its `open_screen`.
+    /// The matching open applies it. Vanilla drops such content; upstream
+    /// mineflayer buffers it (`windowItems`).
+    pub early_content: Option<(i32, Vec<ItemStack>)>,
+    /// `(id, player_start, len)` of the container the client closed last.
+    /// The server can still sync that id; its player region is applied to
+    /// [`Self::inventory_menu`] (upstream mineflayer `lastClosedWindow`).
+    pub last_closed: Option<(i32, usize, usize)>,
 }
 
 impl Inventory {
@@ -682,6 +691,8 @@ impl Default for Inventory {
             quick_craft_kind: QuickCraftKind::Middle,
             quick_craft_slots: HashSet::new(),
             selected_hotbar_slot: 0,
+            early_content: None,
+            last_closed: None,
         }
     }
 }
@@ -707,12 +718,7 @@ mod tests {
                 player: SlotList::default(),
             }),
             container_menu_title: None,
-            carried: ItemStack::Empty,
-            state_id: 0,
-            quick_craft_status: QuickCraftStatusKind::Start,
-            quick_craft_kind: QuickCraftKind::Middle,
-            quick_craft_slots: HashSet::new(),
-            selected_hotbar_slot: 0,
+            ..Inventory::default()
         };
 
         inventory.simulate_click(

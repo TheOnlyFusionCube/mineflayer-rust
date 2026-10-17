@@ -82,6 +82,22 @@ impl Menu {
     }
 }
 
+impl Player {
+    /// The [`Menu::Player`] slot for a vanilla `Inventory` index, as
+    /// `set_player_inventory` addresses it: `0..=8` hotbar → `36..=44`,
+    /// `36..=39` armor feet→head → `8..=5`, `40` off-hand → `45`, and
+    /// `9..=35` main inventory unchanged.
+    pub fn slot_for_inventory_index(index: u32) -> usize {
+        let index = index as usize;
+        match index {
+            0..=8 => index + 36,
+            36..=39 => 44 - index,
+            40 => 45,
+            _ => index,
+        }
+    }
+}
+
 // the player inventory part is always the last 36 slots (except in the Player
 // menu), so we don't have to explicitly specify it
 

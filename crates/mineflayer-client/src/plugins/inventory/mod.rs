@@ -71,8 +71,21 @@ pub struct MenuOpenedEvent {
 fn handle_menu_opened_trigger(event: On<MenuOpenedEvent>, mut query: Query<&mut Inv>) {
     let mut inventory = query.get_mut(event.entity).unwrap();
     inventory.id = event.window_id;
-    inventory.container_menu = Some(Menu::from_kind(event.menu_type));
+    let mut menu = Menu::from_kind(event.menu_type);
+    if let Some((_, items)) = inventory
+        .early_content
+        .take()
+        .filter(|(id, _)| *id == event.window_id)
+    {
+        for (i, item) in items.into_iter().enumerate() {
+            if let Some(slot) = menu.slot_mut(i) {
+                *slot = item;
+            }
+        }
+    }
+    inventory.container_menu = Some(menu);
     inventory.container_menu_title = Some(event.title.clone());
+    inventory.last_closed = None;
 }
 
 /// Tell the server that we want to close a container.
@@ -91,15 +104,19 @@ pub struct CloseContainerEvent {
 fn handle_container_close_event(
     close_container: On<CloseContainerEvent>,
     mut commands: Commands,
-    query: Query<(Entity, &Inv)>,
+    mut query: Query<(Entity, &mut Inv)>,
 ) {
-    let (entity, inventory) = query.get(close_container.entity).unwrap();
+    let (entity, mut inventory) = query.get_mut(close_container.entity).unwrap();
     if close_container.id != inventory.id {
         warn!(
             "Tried to close container with ID {}, but the current container ID is {}",
             close_container.id, inventory.id
         );
         return;
+    }
+    if let Some(menu) = &inventory.container_menu {
+        let player_start = *menu.player_slots_range().start();
+        inventory.last_closed = Some((inventory.id, player_start, menu.slots().len()));
     }
 
     commands.trigger(SendGamePacketEvent::new(
