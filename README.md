@@ -169,6 +169,15 @@ re-exports) so that they always match the version the bot uses.
   can't produce (real chests, riding, explosions) are unit-tested and
   source-reviewed but not all live-exercised — see the unit reports.
 
+## Maintainer tools
+
+`scripts/argon-unit.py` and `scripts/test-argon-unit.py` send a brief
+plus source files to a local model API and write the returned files into
+`src/`, `docs/`, or `tests/`. They are personal workflow tools with no
+role in building or testing the crate — nothing in the build, the examples,
+or the gate reads them. Run them only on a clean tree and review every
+written file before committing.
+
 ## License
 
 MIT. The API surface is derived from mineflayer (MIT,
