@@ -68,6 +68,12 @@ merge; plan item E2 keeps this list current):
     `StartClientOpts::new_with_plugins` let a caller add and disable
     plugins without a copy of the bootstrap; `swarm` exports
     `SwarmPlugin` and `SwarmChatPlugin` so that they can be disabled.
+13. (A5) `CancelMiningEvent` (an entity event, mining plugin) drops a
+    queued start, also a `StartMiningBlockEvent` written before it and
+    not read yet, and aborts live mining. The start handler skips start
+    messages with an id below the entity's `MiningCancelledBefore`; starts
+    written after the cancel are not affected. Tests:
+    `mineflayer-client/tests/simulation/cancel_mining.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

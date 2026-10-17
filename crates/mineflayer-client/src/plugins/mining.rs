@@ -64,7 +64,8 @@ impl Plugin for MiningPlugin {
                     .after(crate::interact::pick::update_hit_result_component)
                     .after(crate::attack::handle_attack_event),
             )
-            .add_observer(handle_finish_mining_block_observer);
+            .add_observer(handle_finish_mining_block_observer)
+            .add_observer(handle_cancel_mining_event);
     }
 }
 
@@ -160,11 +161,14 @@ pub struct StartMiningBlockEvent {
 fn handle_start_mining_block_event(
     mut commands: Commands,
     mut events: MessageReader<StartMiningBlockEvent>,
-    mut query: Query<&HitResultComponent>,
+    mut query: Query<(&HitResultComponent, Option<&MiningCancelledBefore>)>,
 ) {
-    for event in events.read() {
+    for (event, id) in events.read_with_id() {
         trace!("{event:?}");
-        let hit_result = query.get_mut(event.entity).unwrap();
+        let (hit_result, cancelled_before) = query.get_mut(event.entity).unwrap();
+        if cancelled_before.is_some_and(|c| id.id < c.0) {
+            continue;
+        }
         if event.force {
             let direction = if let Some(block_hit_result) =
                 hit_result.as_block_hit_result_if_not_miss()
@@ -555,23 +559,80 @@ pub fn handle_stop_mining_block_event(
 
         let mine_block_pos =
             mine_block_pos.expect("IsMining is true so MineBlockPos must be present");
-        commands.trigger(SendGamePacketEvent::new(
+        abort_mining(
+            &mut commands,
+            &mut mine_block_progress_events,
             event.entity,
-            ServerboundPlayerAction {
-                action: s_player_action::Action::AbortDestroyBlock,
-                pos: mine_block_pos,
-                direction: Direction::Down,
-                seq: 0,
-            },
-        ));
-        commands.entity(event.entity).remove::<Mining>();
+            mine_block_pos,
+        );
         **mine_progress = 0.;
-        mine_block_progress_events.write(MineBlockProgressEvent {
-            entity: event.entity,
-            position: mine_block_pos,
-            destroy_stage: None,
-        });
     }
+}
+
+/// Cancel mining now: drop a queued start, including a
+/// [`StartMiningBlockEvent`] written before this event and not read yet,
+/// and abort the block being mined, if any. Starts written after this
+/// event are not affected.
+///
+/// Trigger it on the world. Unlike [`StopMiningBlockEvent`], it is ordered
+/// against the start messages: the cutoff is taken when it is triggered,
+/// and the rest applies at the next command flush.
+#[derive(EntityEvent)]
+pub struct CancelMiningEvent {
+    pub entity: Entity,
+}
+
+/// Start messages with an id below this were written before the last
+/// [`CancelMiningEvent`]; the start handler skips them.
+#[derive(Component)]
+struct MiningCancelledBefore(usize);
+
+fn handle_cancel_mining_event(
+    event: On<CancelMiningEvent>,
+    mut commands: Commands,
+    starts: Res<Messages<StartMiningBlockEvent>>,
+    mut mine_block_progress_events: MessageWriter<MineBlockProgressEvent>,
+    mut query: Query<(Option<&Mining>, &MineBlockPos, &mut MineProgress)>,
+) {
+    let entity = event.entity;
+    commands
+        .entity(entity)
+        .remove::<MiningQueued>()
+        .insert(MiningCancelledBefore(
+            starts.oldest_message_count() + starts.len(),
+        ));
+    let Ok((mining, mine_block_pos, mut mine_progress)) = query.get_mut(entity) else {
+        return;
+    };
+    if mining.is_some()
+        && let Some(pos) = **mine_block_pos
+    {
+        abort_mining(&mut commands, &mut mine_block_progress_events, entity, pos);
+        **mine_progress = 0.;
+    }
+}
+
+fn abort_mining(
+    commands: &mut Commands,
+    mine_block_progress_events: &mut MessageWriter<MineBlockProgressEvent>,
+    entity: Entity,
+    pos: BlockPos,
+) {
+    commands.trigger(SendGamePacketEvent::new(
+        entity,
+        ServerboundPlayerAction {
+            action: s_player_action::Action::AbortDestroyBlock,
+            pos,
+            direction: Direction::Down,
+            seq: 0,
+        },
+    ));
+    commands.entity(entity).remove::<Mining>();
+    mine_block_progress_events.write(MineBlockProgressEvent {
+        entity,
+        position: pos,
+        destroy_stage: None,
+    });
 }
 
 pub fn decrement_mine_delay(mut query: Query<&mut MineDelay>) {
