@@ -343,23 +343,16 @@ impl BotBuilder {
         };
         let client = mineflayer_engine::Client::start_client(opts).await;
 
-        // the misc domains keep their state in one component so it exists
-        // before the first packet arrives (difficulty comes from
-        // `options.difficulty`; it's client-side only like upstream)
+        // the misc state (difficulty comes from `options.difficulty`; it's
+        // client-side only like upstream) and the dig bookkeeping exist
+        // before the first packet, inserted together in one lock
         let mut misc_state = crate::misc::MiscState::default();
         misc_state.difficulty = builder.difficulty;
         client
             .ecs
             .write()
             .entity_mut(client.entity)
-            .insert(misc_state);
-
-        // dig bookkeeping (lastDigTime / abort generations) — same rationale
-        client
-            .ecs
-            .write()
-            .entity_mut(client.entity)
-            .insert(crate::interact::InteractShared::default());
+            .insert((misc_state, crate::interact::InteractShared::default()));
 
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let shared = BotShared::new(events);
