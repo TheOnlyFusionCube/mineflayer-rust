@@ -151,7 +151,7 @@ impl Bot {
                 })
         })
         .await
-        .is_some();
+        .is_ok();
 
         if acked {
             self.set_quick_bar_slot(quick_bar_slot).await?;

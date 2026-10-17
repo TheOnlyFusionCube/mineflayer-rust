@@ -168,7 +168,7 @@ impl Bot {
             .with_window_record(id, |record| record.offers.is_some())
             .unwrap_or(false);
         if !has_offers {
-            await_event(
+            let _ = await_event(
                 &mut rx,
                 WINDOW_WAIT,
                 |e| matches!(e, BotEvent::VillagerReady { window_id } if *window_id == id),

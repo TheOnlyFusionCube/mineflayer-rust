@@ -15,6 +15,7 @@ use mineflayer_engine::{
 use tokio::sync::broadcast;
 
 use super::MiscState;
+use crate::bot::wait::await_map;
 use crate::bot::with_component_mut;
 use crate::{Bot, BotEvent, Error, Result};
 
@@ -101,37 +102,28 @@ impl Creative {
                 slot_num: slot,
                 item_stack: item.clone(),
             });
-        let wait = async {
-            loop {
-                // the window observer's derived event, not the raw packet,
-                // so the wait also works with `packet_events(false)`. A full
-                // inventory resync (`container_set_content`) also emits
-                // this event; one that arrives before the server applies the
-                // write reports the old stack as "Server rejected" — a rare
-                // race the raw-packet wait did not have.
-                match rx.recv().await {
-                    Ok(BotEvent::WindowUpdateSlot {
-                        window_id: 0,
-                        slot: s,
-                        new,
-                        ..
-                    }) if s == slot => {
-                        let echoed = new.map(|i| i.stack).unwrap_or(ItemStack::Empty);
-                        return if echoed == item {
-                            Ok(())
-                        } else {
-                            Err(Error::Failed("Server rejected".into()))
-                        };
-                    }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => return Err(Error::NotConnected),
-                }
+        // the window observer's derived event, not the raw packet, so the
+        // wait also works with `packet_events(false)`. A full inventory
+        // resync (`container_set_content`) also emits this event; one that
+        // arrives before the server applies the write reports the old stack
+        // as "Server rejected" — a rare race the raw-packet wait did not have.
+        await_map(&mut rx, Duration::from_secs(5), |e| match e {
+            BotEvent::WindowUpdateSlot {
+                window_id: 0,
+                slot: s,
+                new,
+                ..
+            } if *s == slot => {
+                let echoed = new.as_ref().map_or(ItemStack::Empty, |i| i.stack.clone());
+                Some(if echoed == item {
+                    Ok(())
+                } else {
+                    Err(Error::Failed("Server rejected".into()))
+                })
             }
-        };
-        match tokio::time::timeout(Duration::from_secs(5), wait).await {
-            Ok(result) => result,
-            Err(_) => Err(Error::Timeout),
-        }
+            _ => None,
+        })
+        .await?
     }
 
     /// `bot.creative.clearSlot(slot)`.

@@ -114,7 +114,7 @@ impl EnchantmentTable {
                 |e| matches!(e, BotEvent::EnchantmentTableReady { window_id } if *window_id == id),
             )
             .await
-            .ok_or(Error::Timeout)?;
+            .map_err(|_| Error::Timeout)?;
         }
         if self.enchantments()[usize::from(choice)].level == -1 {
             return Err(Error::InvalidState(format!(
@@ -131,7 +131,7 @@ impl EnchantmentTable {
             matches!(e, BotEvent::WindowUpdateSlot { window_id, slot: 0, .. } if *window_id == id)
         })
         .await
-        .ok_or(Error::Timeout)?;
+        .map_err(|_| Error::Timeout)?;
         let BotEvent::WindowUpdateSlot { new, .. } = event else {
             unreachable!()
         };

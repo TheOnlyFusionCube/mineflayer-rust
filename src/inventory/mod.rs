@@ -36,7 +36,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     Bot, BotEvent, Error, Result,
-    bot::wait::await_event,
+    bot::wait::{await_event, await_map},
     windows::{Item, Window, find_item_in, first_empty_in, held_item},
     world::Block,
 };
@@ -790,22 +790,11 @@ impl Bot {
     /// Wait for the next `WindowOpen` — upstream's
     /// `once(bot, 'windowOpen')` after `activateBlock`/`activateEntity`.
     async fn await_window_open(&self, rx: &mut broadcast::Receiver<BotEvent>) -> Result<Window> {
-        let wait = async {
-            loop {
-                match rx.recv().await {
-                    Ok(BotEvent::WindowOpen(w)) => return Ok(w),
-                    Ok(BotEvent::End(_)) => return Err(Error::NotConnected),
-                    Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(Error::NotConnected);
-                    }
-                }
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(5), wait)
-            .await
-            .map_err(|_| Error::Timeout)?
+        Ok(await_map(rx, Duration::from_secs(5), |e| match e {
+            BotEvent::WindowOpen(w) => Some(w.clone()),
+            _ => None,
+        })
+        .await?)
     }
 }
 

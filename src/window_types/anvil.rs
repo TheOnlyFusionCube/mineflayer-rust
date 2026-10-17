@@ -178,7 +178,7 @@ impl Anvil {
         rx: &mut broadcast::Receiver<BotEvent>,
     ) -> bool {
         let id = self.window.id();
-        await_event(rx, ANVIL_COST_WAIT, |e| {
+        let _ = await_event(rx, ANVIL_COST_WAIT, |e| {
             matches!(
                 e,
                 BotEvent::WindowDataUpdate { window_id, property: ANVIL_COST, .. }
@@ -230,7 +230,7 @@ impl Anvil {
     ) -> Result<()> {
         self.bot.put_away(TRADE_RESULT).await?;
         if !creative {
-            await_event(rx, WINDOW_WAIT, |e| matches!(e, BotEvent::Experience)).await;
+            let _ = await_event(rx, WINDOW_WAIT, |e| matches!(e, BotEvent::Experience)).await;
         }
         Ok(())
     }

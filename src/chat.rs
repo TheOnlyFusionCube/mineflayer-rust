@@ -20,6 +20,7 @@ use mineflayer_engine::{
 use regex::Regex;
 use tokio::sync::{broadcast, oneshot};
 
+use crate::bot::wait::await_map;
 use crate::{Bot, BotEvent, Error, Result};
 
 /// Upstream's `CHAT_LENGTH_LIMIT` for >=1.11 (`options.chatLengthLimit`
@@ -554,17 +555,15 @@ async fn await_message_on(
     mut rx: broadcast::Receiver<BotEvent>,
     matchers: &[MessageMatcher],
 ) -> Result<String> {
-    loop {
-        match rx.recv().await {
-            Ok(BotEvent::MessageStr { message, .. })
-                if matchers.iter().any(|m| m.matches(&message)) =>
-            {
-                return Ok(message);
-            }
-            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-            Err(broadcast::error::RecvError::Closed) => return Err(Error::NotConnected),
+    Ok(await_map(&mut rx, AWAIT_MESSAGE_TIMEOUT, |e| match e {
+        BotEvent::MessageStr { message, .. }
+            if matchers.iter().any(|m| m.matches(message.as_str())) =>
+        {
+            Some(message.clone())
         }
-    }
+        _ => None,
+    })
+    .await?)
 }
 
 impl Bot {
@@ -683,12 +682,7 @@ impl Bot {
         matchers: impl IntoIterator<Item = impl Into<MessageMatcher>>,
     ) -> Result<String> {
         let matchers: Vec<MessageMatcher> = matchers.into_iter().map(Into::into).collect();
-        tokio::time::timeout(
-            AWAIT_MESSAGE_TIMEOUT,
-            await_message_on(self.subscribe(), &matchers),
-        )
-        .await
-        .map_err(|_| Error::Timeout)?
+        await_message_on(self.subscribe(), &matchers).await
     }
 
     /// `bot.tabComplete(text)` — ask the server to complete `text`; resolves

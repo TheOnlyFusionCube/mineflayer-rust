@@ -376,27 +376,17 @@ impl Bot {
     /// upstream.
     pub async fn wait_for_chunks_to_load(&self) -> Result<()> {
         const TIMEOUT: Duration = Duration::from_secs(10);
-        tokio::time::timeout(TIMEOUT, async {
-            let mut rx = self.subscribe();
-            loop {
-                if self.spawn_chunks_loaded() {
-                    return Ok(());
-                }
-                match rx.recv().await {
-                    // any event may have changed the world — just re-check
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return if self.spawn_chunks_loaded() {
-                            Ok(())
-                        } else {
-                            Err(Error::NotConnected)
-                        };
-                    }
-                }
-            }
-        })
-        .await
-        .map_err(|_| Error::Timeout)?
+        let mut rx = self.subscribe();
+        if self.spawn_chunks_loaded() {
+            return Ok(());
+        }
+        // any event may have changed the world — re-check on each one
+        match wait::await_event(&mut rx, TIMEOUT, |_| self.spawn_chunks_loaded()).await {
+            Ok(_) => Ok(()),
+            Err(wait::WaitEnd::Timeout) => Err(Error::Timeout),
+            Err(_) if self.spawn_chunks_loaded() => Ok(()),
+            Err(end) => Err(end.into()),
+        }
     }
 
     /// The `waitForChunksToLoad` condition: the bot entity is in the world

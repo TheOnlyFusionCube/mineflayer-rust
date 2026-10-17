@@ -20,7 +20,11 @@ use mineflayer_engine::{
 use tokio::sync::broadcast;
 
 use super::ForceLook;
-use crate::{Bot, BotEvent, Error, Result, world::Block};
+use crate::{
+    Bot, BotEvent, Error, Result,
+    bot::wait::{WaitEnd, await_map},
+    world::Block,
+};
 
 /// Upstream's own bound: `placeBlock` uses `onceWithCleanup(timeout: 5000)`
 /// and `placeEntity` a `setTimeout(5000)` before rejecting.
@@ -341,30 +345,23 @@ impl Bot {
                 x_rot,
             });
         }
-        let entity = tokio::time::timeout(PLACE_TIMEOUT, async {
-            loop {
-                match rx.recv().await {
-                    Ok(BotEvent::EntitySpawn(entity)) => {
-                        let kind = entity
-                            .get_component::<mineflayer_engine::entity::EntityKindComponent>()
-                            .map(|k| k.0.to_str());
-                        let pos = entity.get_component::<Position>().map(|p| **p);
-                        if kind.is_some_and(|k| expected.matches(k))
-                            && pos
-                                .is_some_and(|p| p.distance_to(dest_corner) < expected.max_distance)
-                        {
-                            return Ok(entity);
-                        }
-                    }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(Error::NotConnected);
-                    }
-                }
-            }
+        let entity = await_map(&mut rx, PLACE_TIMEOUT, |e| {
+            let BotEvent::EntitySpawn(entity) = e else {
+                return None;
+            };
+            let kind = entity
+                .get_component::<mineflayer_engine::entity::EntityKindComponent>()
+                .map(|k| k.0.to_str());
+            let pos = entity.get_component::<Position>().map(|p| **p);
+            (kind.is_some_and(|k| expected.matches(k))
+                && pos.is_some_and(|p| p.distance_to(dest_corner) < expected.max_distance))
+            .then(|| entity.clone())
         })
         .await
-        .map_err(|_| Error::Failed("Failed to place entity".to_string()))??;
+        .map_err(|end| match end {
+            WaitEnd::Timeout => Error::Failed("Failed to place entity".to_string()),
+            end => end.into(),
+        })?;
         self.emit_event(BotEvent::EntityPlaced(entity.clone()));
         Ok(entity)
     }
@@ -537,46 +534,39 @@ impl Bot {
         rx: &mut broadcast::Receiver<BotEvent>,
     ) -> Result<Block> {
         let mut acked = false;
-        tokio::time::timeout(PLACE_TIMEOUT, async {
-            loop {
-                match rx.recv().await {
-                    Ok(BotEvent::BlockUpdate { new, .. }) if new.pos == reference => {
-                        acked = true;
-                    }
-                    Ok(BotEvent::BlockUpdate { old, new }) if new.pos == dest => {
-                        if old.is_none() || old.map(|o| o.kind()) != Some(new.kind()) || acked {
-                            if Some(new.kind()) == old_kind {
-                                // upstream reads `bot.heldItem?.name` at
-                                // throw time — a mid-wait switch names
-                                // the current item, not the placed one.
-                                let held_name = self
-                                    .held_item()
-                                    .map(|h| h.name().to_string())
-                                    .unwrap_or_else(|| "block".to_string());
-                                return Err(Error::Failed(format!(
-                                    "Server refused to place {held_name} at {dest}: \
-                                     the block is still {}",
-                                    new.name()
-                                )));
-                            }
-                            return Ok(new);
-                        }
-                        // dest update older than the ack — keep waiting
-                    }
-                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(Error::NotConnected);
-                    }
-                }
+        let result = await_map(rx, PLACE_TIMEOUT, |e| match e {
+            BotEvent::BlockUpdate { new, .. } if new.pos == reference => {
+                acked = true;
+                None
             }
+            BotEvent::BlockUpdate { old, new } if new.pos == dest => {
+                // a dest update older than the ack keeps the wait going
+                (old.is_none() || old.as_ref().map(|o| o.kind()) != Some(new.kind()) || acked).then(|| {
+                    if Some(new.kind()) == old_kind {
+                        // upstream reads `bot.heldItem?.name` at throw
+                        // time — a mid-wait switch names the current
+                        // item, not the placed one.
+                        let held_name = self
+                            .held_item()
+                            .map(|h| h.name().to_string())
+                            .unwrap_or_else(|| "block".to_string());
+                        return Err(Error::Failed(format!(
+                            "Server refused to place {held_name} at {dest}: the block is still {}",
+                            new.name()
+                        )));
+                    }
+                    Ok(new.clone())
+                })
+            }
+            _ => None,
         })
-        .await
-        .map_err(|_| {
-            if acked {
-                Error::Timeout
-            } else {
+        .await;
+        result.map_err(|end| match end {
+            WaitEnd::Timeout if acked => Error::Timeout,
+            WaitEnd::Timeout => {
                 Error::Failed(format!("Server did not answer the placement at {dest}"))
             }
+            end => end.into(),
         })?
     }
 }

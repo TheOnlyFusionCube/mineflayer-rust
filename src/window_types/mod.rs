@@ -280,7 +280,7 @@ async fn wait_for_slot_updates(
     timeout: Duration,
 ) {
     let mut remaining: HashSet<u16> = needed.iter().copied().collect();
-    await_event(rx, timeout, |e| {
+    let _ = await_event(rx, timeout, |e| {
         if let BotEvent::WindowUpdateSlot {
             window_id: wid,
             slot,
