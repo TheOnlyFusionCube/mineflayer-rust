@@ -17,7 +17,10 @@ use super::{
     moves,
     simulation::{SimulatedPlayerBundle, Simulation},
 };
-use crate::pathfinder::goto_event::PathfinderOpts;
+use crate::{
+    events::{Event, LocalPlayerEvents, PathEvent},
+    pathfinder::goto_event::PathfinderOpts,
+};
 
 fn setup_blockposgoal_simulation(
     partial_chunks: &mut PartialChunkStorage,
@@ -338,4 +341,166 @@ fn stop_clears_goal_and_calculating_without_an_executing_path() {
     let pathfinder = simulation.component::<Pathfinder>();
     assert!(pathfinder.goal.is_none(), "goal must be cleared");
     assert!(!pathfinder.is_calculating, "is_calculating must be cleared");
+}
+
+fn pathfinder_event_simulation(
+    partial_chunks: &mut PartialChunkStorage,
+    start: BlockPos,
+    solid: &[BlockPos],
+) -> (Simulation, tokio::sync::mpsc::UnboundedReceiver<Event>) {
+    let mut simulation = setup_simulation_world(partial_chunks, start, solid, &[]);
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    simulation
+        .app
+        .world_mut()
+        .entity_mut(simulation.entity)
+        .insert(LocalPlayerEvents(tx));
+    (simulation, rx)
+}
+
+/// A1: a search with no route reports `PathFound` on the client event
+/// stream (empty path, not partial, with the real search time). Before
+/// the engine emitted these events, nothing ever arrived and the port had
+/// to infer the outcome by diffing components each tick.
+#[test]
+fn pathfinder_reports_no_path_as_an_event() {
+    let mut partial_chunks = PartialChunkStorage::default();
+    // The player is sealed inside a one-block cell; the goal sits outside
+    // it. The search space is tiny, so A* exhausts it immediately.
+    let (mut simulation, mut rx) = pathfinder_event_simulation(
+        &mut partial_chunks,
+        BlockPos::new(0, 71, 0),
+        &[
+            BlockPos::new(0, 70, 0),
+            BlockPos::new(1, 71, 0),
+            BlockPos::new(-1, 71, 0),
+            BlockPos::new(0, 71, 1),
+            BlockPos::new(0, 71, -1),
+            BlockPos::new(0, 72, 0),
+        ],
+    );
+
+    simulation.app.world_mut().write_message(GotoEvent {
+        entity: simulation.entity,
+        goal: Arc::new(BlockPosGoal(BlockPos::new(5, 71, 0))),
+        opts: PathfinderOpts {
+            successors_fn: moves::default_move,
+            allow_mining: false,
+            retry_on_no_path: true,
+            min_timeout: PathfinderTimeout::Nodes(1_000_000),
+            max_timeout: PathfinderTimeout::Nodes(5_000_000),
+        },
+    });
+
+    let mut found = None;
+    'ticks: for _ in 0..2_000 {
+        simulation.tick();
+        loop {
+            match rx.try_recv() {
+                Ok(Event::Pathfinder(PathEvent::PathFound {
+                    path,
+                    is_partial,
+                    elapsed,
+                })) => {
+                    found = Some((path, is_partial, elapsed));
+                    break 'ticks;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        // The search runs on the async compute task pool; give it time.
+        thread::sleep(Duration::from_millis(1));
+    }
+    let (path, is_partial, elapsed) = found.expect("no path event arrived on the event channel");
+    assert!(
+        path.is_empty(),
+        "no route must report an empty path: {path:?}"
+    );
+    // `is_partial == false` is reserved for paths that reach the goal;
+    // an exhausted or budget-cut search returns an incomplete result.
+    assert!(is_partial, "a no-route search is incomplete");
+    assert!(elapsed > Duration::ZERO, "the search time must be real");
+}
+
+/// A1: the already-at-goal fast path reports `GoalReached`.
+#[test]
+fn pathfinder_reports_reached_goal_as_an_event() {
+    let mut partial_chunks = PartialChunkStorage::default();
+    let (mut simulation, mut rx) = pathfinder_event_simulation(
+        &mut partial_chunks,
+        BlockPos::new(0, 71, 0),
+        &[BlockPos::new(0, 70, 0)],
+    );
+
+    // Goal == the player's own block: `goto_listener` takes the
+    // already-there path and never starts a search.
+    simulation.app.world_mut().write_message(GotoEvent {
+        entity: simulation.entity,
+        goal: Arc::new(BlockPosGoal(BlockPos::new(0, 71, 0))),
+        opts: PathfinderOpts::new()
+            .min_timeout(PathfinderTimeout::Nodes(1_000_000))
+            .max_timeout(PathfinderTimeout::Nodes(5_000_000)),
+    });
+
+    let mut reached = false;
+    'ticks: for _ in 0..50 {
+        simulation.tick();
+        loop {
+            match rx.try_recv() {
+                Ok(Event::Pathfinder(PathEvent::GoalReached)) => {
+                    reached = true;
+                    break 'ticks;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
+    assert!(reached, "GoalReached never arrived on the event channel");
+}
+
+/// A1: a stop reports `Stopped` on the client event stream.
+#[test]
+fn pathfinder_reports_stop_as_an_event() {
+    let mut partial_chunks = PartialChunkStorage::default();
+    let (mut simulation, mut rx) = pathfinder_event_simulation(
+        &mut partial_chunks,
+        BlockPos::new(0, 71, 0),
+        &[BlockPos::new(0, 70, 0)],
+    );
+
+    simulation.app.world_mut().write_message(GotoEvent {
+        entity: simulation.entity,
+        goal: Arc::new(BlockPosGoal(BlockPos::new(0, 71, 5))),
+        opts: PathfinderOpts::new()
+            .min_timeout(PathfinderTimeout::Nodes(1_000_000))
+            .max_timeout(PathfinderTimeout::Nodes(5_000_000)),
+    });
+    // Let the goto land (goal set, search running or done).
+    simulation.tick();
+
+    simulation
+        .app
+        .world_mut()
+        .write_message(StopPathfindingEvent {
+            entity: simulation.entity,
+            force: false,
+        });
+
+    let mut stopped = false;
+    'ticks: for _ in 0..50 {
+        simulation.tick();
+        loop {
+            match rx.try_recv() {
+                Ok(Event::Pathfinder(PathEvent::Stopped)) => {
+                    stopped = true;
+                    break 'ticks;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
+    assert!(stopped, "Stopped never arrived on the event channel");
 }

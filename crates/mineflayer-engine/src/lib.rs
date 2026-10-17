@@ -58,7 +58,7 @@ pub use mineflayer_world as world;
 pub use crate::{
     client_impl::{Client, StartClientOpts},
     entity_ref::EntityRef,
-    events::Event,
+    events::{Event, PathEvent},
 };
 
 pub type BoxHandleFn<S, R> = Box<dyn Fn(Client, Event, S) -> BoxFuture<'static, R> + Send>;

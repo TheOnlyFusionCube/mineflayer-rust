@@ -1,14 +1,18 @@
 //! Defines the [`enum@Event`] enum and makes those events trigger when they're
 //! sent in the ECS.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use bevy_app::{App, Plugin, PreUpdate, Update};
 use bevy_ecs::prelude::*;
 use derive_more::{Deref, DerefMut};
 use mineflayer_chat::FormattedText;
 use mineflayer_client::join::ConnectionFailedEvent;
-use mineflayer_core::{entity_id::MinecraftEntityId, position::ChunkPos, tick::GameTick};
+use mineflayer_core::{
+    entity_id::MinecraftEntityId,
+    position::{BlockPos, ChunkPos},
+    tick::GameTick,
+};
 use mineflayer_entity::{Dead, InLoadedChunk};
 use mineflayer_protocol::{
     connect::ConnectionError, packets::game::c_player_combat_kill::ClientboundPlayerCombatKill,
@@ -134,6 +138,33 @@ pub enum Event {
     /// [`ConnectionFailedEvent`].
     ConnectionFailed(Arc<ConnectionError>),
     ReceiveChunk(ChunkPos),
+    /// A pathfinder result — see [`PathEvent`].
+    Pathfinder(PathEvent),
+}
+
+/// A pathfinder result, lifted from the ECS messages into the client
+/// event stream (the port used to infer these by diffing components
+/// every tick).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum PathEvent {
+    /// A search finished. An empty `path` with `is_partial == false`
+    /// means no route exists; `is_partial == true` means the search hit
+    /// its budget.
+    PathFound {
+        /// The path nodes the bot will walk, from its own position.
+        path: Vec<BlockPos>,
+        /// Whether the search gave up before reaching the goal.
+        is_partial: bool,
+        /// How long the A* search ran.
+        elapsed: Duration,
+    },
+    /// The goal's success check holds — the path executed to its end, or
+    /// the goal was already satisfied.
+    GoalReached,
+    /// The goal was abandoned without reaching it (a stop, or a world
+    /// change).
+    Stopped,
 }
 
 /// A component that contains an event sender for events that are only

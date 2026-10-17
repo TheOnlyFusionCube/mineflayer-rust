@@ -25,6 +25,7 @@ use crate::{
         query::Without,
         system::{Commands, Query, Res},
     },
+    events::{Event, LocalPlayerEvents, PathEvent},
     pathfinder::{
         ExecutingPath, GotoEvent, Pathfinder, PathfinderSystems,
         astar::PathfinderTimeout,
@@ -118,6 +119,7 @@ pub fn tick_execute_path(
     }
 }
 
+#[allow(clippy::type_complexity)]
 pub fn check_node_reached(
     mut query: Query<(
         Entity,
@@ -126,12 +128,22 @@ pub fn check_node_reached(
         &Position,
         &Physics,
         &WorldName,
+        Option<&LocalPlayerEvents>,
     )>,
     mut walk_events: MessageWriter<StartWalkEvent>,
     mut commands: Commands,
     worlds: Res<Worlds>,
 ) {
-    for (entity, mut pathfinder, mut executing_path, position, physics, world_name) in &mut query {
+    for (
+        entity,
+        mut pathfinder,
+        mut executing_path,
+        position,
+        physics,
+        world_name,
+        local_player_events,
+    ) in &mut query
+    {
         let Some(world) = worlds.get(world_name) else {
             warn!("entity is pathfinding but not in a valid world");
             continue;
@@ -241,6 +253,10 @@ pub fn check_node_reached(
                             info!("goal was reached!");
                             pathfinder.goal = None;
                             pathfinder.opts = None;
+                            if let Some(local_player_events) = local_player_events {
+                                let _ = local_player_events
+                                    .send(Event::Pathfinder(PathEvent::GoalReached));
+                            }
                         }
                     }
 

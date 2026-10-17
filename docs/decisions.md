@@ -47,6 +47,10 @@ merge; plan item E2 keeps this list current):
    `is_calculating` on every stop, also when the entity has no
    `ExecutingPath` (upstream left `is_calculating` set and skipped the
    clear entirely).
+10. (A1) `Event::Pathfinder(PathEvent)` carries pathfinder results
+    (path/is_partial/elapsed, goal reached, stopped) on the client event
+    stream, and `PathFoundEvent` gains `elapsed`; the port translates
+    these instead of diffing engine components per tick.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

@@ -69,6 +69,7 @@ use crate::{
         query::{With, Without},
         system::{Commands, Query, Res},
     },
+    events::{Event, LocalPlayerEvents, PathEvent},
     pathfinder::{
         astar::{PathfinderTimeout, a_star},
         execute::{DefaultPathfinderExecutionPlugin, simulation::SimulatingPathState},
@@ -147,6 +148,8 @@ pub struct PathFoundEvent {
     pub is_partial: bool,
     pub successors_fn: SuccessorsFn,
     pub allow_mining: bool,
+    /// How long the A* search ran.
+    pub elapsed: Duration,
 }
 
 #[allow(clippy::type_complexity)]
@@ -309,6 +312,7 @@ pub fn goto_listener(
         &WorldName,
         &Inventory,
         Option<&CustomPathfinderState>,
+        Option<&LocalPlayerEvents>,
     )>,
     worlds: Res<Worlds>,
 ) {
@@ -323,6 +327,7 @@ pub fn goto_listener(
             world_name,
             inventory,
             custom_state,
+            local_player_events,
         )) = query.get_mut(event.entity)
         else {
             warn!("got goto event for an entity that can't pathfind");
@@ -347,6 +352,9 @@ pub fn goto_listener(
             pathfinder.opts = None;
             pathfinder.is_calculating = false;
             debug!("already at goal, not pathfinding");
+            if let Some(local_player_events) = local_player_events {
+                let _ = local_player_events.send(Event::Pathfinder(PathEvent::GoalReached));
+            }
             continue;
         }
 
@@ -615,6 +623,7 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
         is_partial,
         successors_fn: ctx.opts.successors_fn,
         allow_mining: ctx.opts.allow_mining,
+        elapsed: duration,
     })
 }
 
@@ -646,17 +655,36 @@ pub fn path_found_listener(
         &WorldName,
         &Inventory,
         Option<&CustomPathfinderState>,
+        Option<&LocalPlayerEvents>,
     )>,
     worlds: Res<Worlds>,
     mut commands: Commands,
 ) {
     for event in events.read() {
-        let Ok((mut pathfinder, executing_path, world_name, inventory, custom_state)) =
-            query.get_mut(event.entity)
+        let Ok((
+            mut pathfinder,
+            executing_path,
+            world_name,
+            inventory,
+            custom_state,
+            local_player_events,
+        )) = query.get_mut(event.entity)
         else {
             debug!("got path found event for an entity that can't pathfind");
             continue;
         };
+        if let Some(local_player_events) = local_player_events {
+            let path = event
+                .path
+                .as_ref()
+                .map(|path| path.iter().map(|edge| edge.movement.target).collect())
+                .unwrap_or_default();
+            let _ = local_player_events.send(Event::Pathfinder(PathEvent::PathFound {
+                path,
+                is_partial: event.is_partial,
+                elapsed: event.elapsed,
+            }));
+        }
         if let Some(found_path) = &event.path {
             if let Some(mut executing_path) = executing_path {
                 let mut new_path = VecDeque::new();
@@ -772,7 +800,7 @@ pub struct StopPathfindingEvent {
 
 pub fn handle_stop_pathfinding_event(
     mut events: MessageReader<StopPathfindingEvent>,
-    mut pathfinder_query: Query<&mut Pathfinder>,
+    mut pathfinder_query: Query<(&mut Pathfinder, Option<&LocalPlayerEvents>)>,
     mut executing_query: Query<&mut ExecutingPath>,
     mut walk_events: MessageWriter<StartWalkEvent>,
     mut commands: Commands,
@@ -785,9 +813,13 @@ pub fn handle_stop_pathfinding_event(
         // exists: a calculation in flight has none, and a stuck
         // `is_calculating` keeps `is_goto_target_reached` false for every
         // later goto.
-        if let Ok(mut pathfinder) = pathfinder_query.get_mut(event.entity) {
+        if let Ok((mut pathfinder, local_player_events)) = pathfinder_query.get_mut(event.entity) {
+            let stopped_a_goal = pathfinder.goal.is_some();
             pathfinder.goal = None;
             pathfinder.is_calculating = false;
+            if stopped_a_goal && let Some(local_player_events) = local_player_events {
+                let _ = local_player_events.send(Event::Pathfinder(PathEvent::Stopped));
+            }
         }
 
         let Ok(mut executing_path) = executing_query.get_mut(event.entity) else {
