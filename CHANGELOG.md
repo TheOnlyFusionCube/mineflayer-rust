@@ -4,6 +4,9 @@
 
 ### Breaking
 
+- `Bot::new` is removed. It was `#[doc(hidden)]` and only the unit tests
+  used it; they construct their scaffold bots through the crate's test
+  utilities now.
 - The engine is in this repository (`crates/mineflayer-*`). The crate no
   longer depends on an external engine and needs no `[patch]` table in a
   dependent workspace.

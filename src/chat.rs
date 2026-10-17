@@ -748,7 +748,7 @@ mod tests {
         let client = crate::test_util::live_entity_client(mineflayer_engine::world::WorldName(
             mineflayer_engine::Identifier::new("minecraft:overworld"),
         ));
-        let bot = Bot::new(client);
+        let bot = crate::test_util::bot(client);
         let call = bot.tab_complete("/he");
         // poll once so the entry is registered, then cancel
         let cancelled = tokio::time::timeout(Duration::from_millis(10), call).await;

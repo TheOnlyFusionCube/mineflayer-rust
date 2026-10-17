@@ -797,7 +797,7 @@ mod tests {
             .ecs
             .write()
             .init_resource::<mineflayer_engine::entity::indexing::EntityUuidIndex>();
-        let bot = Bot::new(client);
+        let bot = crate::test_util::bot(client);
         let mut tracker = EntityTracker::default();
         tracker.chat_sessions.insert(
             uuid,

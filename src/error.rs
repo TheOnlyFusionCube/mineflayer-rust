@@ -109,7 +109,7 @@ mod tests {
     async fn typed_errors_keep_upstream_messages() {
         use crate::{EquipDest, Item, interact::DigAbortReason, inventory::click_operation};
 
-        let bot = crate::Bot::new(crate::test_util::despawned_client());
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
         let empty = Item {
             stack: mineflayer_engine::inventory::ItemStack::Empty,
             slot: 0,

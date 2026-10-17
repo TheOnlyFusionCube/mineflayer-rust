@@ -1160,7 +1160,7 @@ mod tests {
             ))
             .id();
         let bobber = client.entity_ref_for(bobber);
-        let bot = Bot::new(client);
+        let bot = crate::test_util::bot(client);
         let bot2 = bot.clone();
         let fishing = tokio::spawn(async move { bot2.fish().await });
         let result = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1184,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn fish_exits_on_end() {
-        let bot = Bot::new(crate::test_util::live_entity_client((
+        let bot = crate::test_util::bot(crate::test_util::live_entity_client((
             mineflayer_engine::world::WorldName(mineflayer_engine::Identifier::new(
                 "minecraft:overworld",
             )),

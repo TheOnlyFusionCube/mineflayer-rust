@@ -916,7 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn unequip_hand_without_inventory_is_not_connected() {
-        let bot = Bot::new(crate::test_util::despawned_client());
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
         let err = bot.unequip(EquipDest::Hand).await.unwrap_err();
         assert!(matches!(err, Error::NotConnected), "got {err:?}");
     }

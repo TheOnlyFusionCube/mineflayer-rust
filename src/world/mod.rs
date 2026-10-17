@@ -1370,7 +1370,7 @@ mod tests {
     /// not the origin (B5).
     #[test]
     fn spawn_point_is_none_before_the_packet() {
-        let bot = Bot::new(crate::test_util::despawned_client());
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
         assert_eq!(bot.spawn_point(), None);
     }
 

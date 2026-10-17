@@ -289,7 +289,7 @@ mod tests {
     /// cleanup and completes.
     #[tokio::test]
     async fn transfer_rejects_negative_counts_and_noops_zero() {
-        let bot = Bot::new(crate::test_util::despawned_client());
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
         let opts = |count: i32| TransferOpts {
             window: Some(bot.inventory()),
             kind: mineflayer_engine::registry::builtin::ItemKind::Stone,

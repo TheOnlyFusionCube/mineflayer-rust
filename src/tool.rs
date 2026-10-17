@@ -587,7 +587,7 @@ mod tests {
     fn pick_scans_the_whole_inventory_like_upstream() {
         // the best tool sits in the main inventory, not the hotbar —
         // upstream's items() scan reaches it
-        let bot = Bot::new(player_with_inventory(&[
+        let bot = crate::test_util::bot(player_with_inventory(&[
             (
                 QUICK_BAR_START + 1,
                 ItemStack::new(ItemKind::DiamondSword, 1),
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn pick_require_harvest_filters_and_errors() {
         // no harvestable tool anywhere → Empty (the NoItem path)
-        let bare = Bot::new(player_with_hotbar(&[]));
+        let bare = crate::test_util::bot(player_with_hotbar(&[]));
         assert!(matches!(
             bare.tool().pick(&stone(&bare), true).unwrap(),
             ToolPick::Empty
@@ -625,7 +625,7 @@ mod tests {
 
         // a pickaxe survives the filter (main inventory, so it isn't
         // the already-held item — that case is `Skip`)
-        let bot = Bot::new(player_with_inventory(&[(
+        let bot = crate::test_util::bot(player_with_inventory(&[(
             12,
             ItemStack::new(ItemKind::DiamondPickaxe, 1),
         )]));
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn pick_skips_when_the_held_item_is_already_best() {
-        let bot = Bot::new(player_with_hotbar(&[(
+        let bot = crate::test_util::bot(player_with_hotbar(&[(
             0,
             ItemStack::new(ItemKind::DiamondPickaxe, 1),
         )]));
@@ -650,7 +650,7 @@ mod tests {
 
     #[test]
     fn chest_locations_round_trip() {
-        let bot = Bot::new(player_with_hotbar(&[]));
+        let bot = crate::test_util::bot(player_with_hotbar(&[]));
         assert!(bot.tool().chest_locations().is_empty());
         bot.tool().set_chest_locations(vec![BlockPos::new(1, 2, 3)]);
         bot.tool().add_chest_location(BlockPos::new(4, 5, 6));
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn best_tool_for_returns_the_inventory_winner() {
-        let bot = Bot::new(player_with_inventory(&[
+        let bot = crate::test_util::bot(player_with_inventory(&[
             (QUICK_BAR_START, ItemStack::new(ItemKind::DiamondSword, 1)),
             (20, ItemStack::new(ItemKind::DiamondPickaxe, 1)),
         ]));
@@ -685,13 +685,13 @@ mod tests {
         assert_eq!(best.slot, 20);
 
         // an empty hotbar+inventory has nothing better than the bare hand
-        let bare = Bot::new(player_with_hotbar(&[]));
+        let bare = crate::test_util::bot(player_with_hotbar(&[]));
         assert!(bare.tool().best_tool_for(&stone(&bare)).is_none());
     }
 
     #[tokio::test]
     async fn equip_for_block_selects_the_best_slot() {
-        let bot = Bot::new(player_with_hotbar(&[
+        let bot = crate::test_util::bot(player_with_hotbar(&[
             (0, ItemStack::new(ItemKind::DiamondSword, 1)),
             (3, ItemStack::new(ItemKind::DiamondPickaxe, 1)),
         ]));
@@ -705,7 +705,7 @@ mod tests {
             (0, ItemStack::new(ItemKind::Stick, 1)),
             (2, ItemStack::new(ItemKind::DiamondSword, 1)),
         ]);
-        let bot = Bot::new(client.clone());
+        let bot = crate::test_util::bot(client.clone());
         let target = client.entity_ref_for(client.entity); // arg is unused
         bot.tool().equip_for_entity(&target).await.unwrap();
         assert_eq!(bot.quick_bar_slot(), 2);

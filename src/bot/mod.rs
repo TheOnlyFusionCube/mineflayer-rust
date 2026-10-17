@@ -33,12 +33,12 @@ pub struct Bot {
     /// before the bridge task started, so events that fired before
     /// `connect` returned (`Init`, `Login`, the spawn burst) are still on
     /// its ring. `None` once claimed.
-    bootstrap_events: Arc<Mutex<Option<broadcast::Receiver<BotEvent>>>>,
+    pub(crate) bootstrap_events: Arc<Mutex<Option<broadcast::Receiver<BotEvent>>>>,
     /// Dropping the last sender signals the bridge task to shut the client
     /// down (see `bridge::spawn`). `None` on driver handles: a background
     /// driver must not keep the connection open after the user drops every
     /// handle. Held only to keep the watch channel open.
-    _alive: Option<watch::Sender<()>>,
+    pub(crate) _alive: Option<watch::Sender<()>>,
     /// The bridge's shutdown signal: its sender lives in the bridge task
     /// and drops when the bridge exits (disconnect, or every `Bot`
     /// handle gone), resolving `changed()` for every receiver. The
@@ -47,10 +47,6 @@ pub struct Bot {
     /// never report `Closed` because the sender is a World resource kept
     /// alive by the `Client` handle the driver itself holds.
     pub(crate) shutdown: watch::Receiver<()>,
-    /// Scaffold bots ([`Bot::new`]) have no bridge to own the shutdown
-    /// sender; keeping it here leaves `shutdown` open — a wrapped client
-    /// is never "ended" from our side, matching pre-signal behavior.
-    _shutdown_tx: Option<watch::Sender<()>>,
     /// Per-domain state shared with the bridge task; `Bot` method blocks
     /// reach domains through `self.shared` (see [`BotShared`]).
     pub(crate) shared: Arc<BotShared>,
@@ -161,32 +157,11 @@ pub use event::BotEvent;
 /// without the multi-MB upfront ring a much larger capacity would
 /// allocate per `Bot`; `BotBuilder::packet_events(false)` removes the
 /// largest share instead.
-const EVENT_CHANNEL_CAPACITY: usize = 8192;
+pub(crate) const EVENT_CHANNEL_CAPACITY: usize = 8192;
 impl Bot {
     /// `createBot(options)` — the builder entry point.
     pub fn builder() -> BotBuilder {
         BotBuilder::default()
-    }
-
-    /// Wrap an already-connected [`mineflayer_engine::Client`] in a `Bot` handle.
-    ///
-    /// Scaffolding: the resulting bot has no event bridge (no the engine event
-    /// receiver exists for prebuilt clients), so [`Bot::events`] yields a
-    /// silent stream. Prefer [`Bot::builder`].
-    #[doc(hidden)]
-    pub fn new(client: mineflayer_engine::Client) -> Self {
-        let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        let (alive, _) = watch::channel(());
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
-        Self {
-            client,
-            bootstrap_events: Arc::new(Mutex::new(Some(events.subscribe()))),
-            _alive: Some(alive),
-            shutdown: shutdown_rx,
-            _shutdown_tx: Some(shutdown_tx),
-            shared: Arc::new(BotShared::new(events)),
-            chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
-        }
     }
 
     /// The underlying [`mineflayer_engine::Client`] — the `bot._client` analog for when
@@ -469,7 +444,6 @@ mod tests {
                 bootstrap_events: Arc::new(Mutex::new(None)),
                 _alive: Some(alive),
                 shutdown: shutdown_rx,
-                _shutdown_tx: None,
                 shared: Arc::new(BotShared::new(events)),
                 chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
             }
@@ -511,7 +485,7 @@ mod tests {
     /// first public subscription still sees the queued `Init`.
     #[tokio::test]
     async fn crate_waits_do_not_take_the_bootstrap_receiver() {
-        let bot = Bot::new(crate::test_util::despawned_client());
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
         bot.emit_event(BotEvent::Init);
 
         // a crate wait polls first; the outer timeout only cancels it
@@ -534,7 +508,7 @@ mod tests {
         // `bot.events()` receiver was subscribed before the bridge started,
         // so those earliest events are still on it. Later subscribers only
         // see events sent after they attach.
-        let bot = Bot::new(crate::test_util::despawned_client());
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
         bot.shared.events.send(BotEvent::Init).unwrap();
         bot.shared.events.send(BotEvent::Spawn).unwrap();
 

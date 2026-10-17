@@ -176,13 +176,34 @@ pub(crate) mod test_util {
             .clone()
     }
 
+    /// A `Bot` over a prebuilt `Client` — the unit-test scaffold: no event
+    /// bridge (so `Bot::events()` yields a silent stream), and a shutdown
+    /// receiver that stays pending (the sender is leaked on purpose: a
+    /// scaffold bot has no bridge to own it).
+    pub(crate) fn bot(client: mineflayer_engine::Client) -> crate::Bot {
+        let (events, _) = tokio::sync::broadcast::channel(crate::bot::EVENT_CHANNEL_CAPACITY);
+        let (alive, _) = tokio::sync::watch::channel(());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        std::mem::forget(shutdown_tx);
+        crate::Bot {
+            client,
+            bootstrap_events: std::sync::Arc::new(parking_lot::Mutex::new(Some(
+                events.subscribe(),
+            ))),
+            _alive: Some(alive),
+            shutdown: shutdown_rx,
+            shared: std::sync::Arc::new(crate::bot::BotShared::new(events)),
+            chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
+        }
+    }
+
     /// A `Bot` whose `shutdown` receiver is wired to the returned sender —
     /// drop the sender to play the bridge's exit (disconnect), like
     /// `bridge::spawn` does.
     pub(crate) fn bot_with_shutdown(
         client: mineflayer_engine::Client,
     ) -> (crate::Bot, tokio::sync::watch::Sender<()>) {
-        let mut bot = crate::Bot::new(client);
+        let mut bot = bot(client);
         let (tx, rx) = tokio::sync::watch::channel(());
         bot.shutdown = rx;
         (bot, tx)

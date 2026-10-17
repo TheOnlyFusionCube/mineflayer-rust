@@ -772,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn stop_digging_without_a_target_is_a_no_op() {
         let client = crate::test_util::live_entity_client(InteractShared::default());
-        let bot = crate::Bot::new(client);
+        let bot = crate::test_util::bot(client);
         bot.stop_digging();
         let ecs = bot.client().ecs.read();
         let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
@@ -961,7 +961,7 @@ mod tests {
                 force: true,
             },
         ));
-        let bot = crate::Bot::new(client);
+        let bot = crate::test_util::bot(client);
         bot.stop_digging();
         let ecs = bot.client().ecs.read();
         assert!(
@@ -987,7 +987,7 @@ mod tests {
             dig_target: Some((BlockPos::new(1, 64, 2), Direction::Up, 2)),
             ..InteractShared::default()
         });
-        let bot = crate::Bot::new(client);
+        let bot = crate::test_util::bot(client);
         bot.stop_digging();
         let ecs = bot.client().ecs.read();
         let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
@@ -1003,7 +1003,7 @@ mod tests {
             dig_target: Some((BlockPos::new(0, 64, 0), Direction::East, 1)),
             ..InteractShared::default()
         });
-        let bot = crate::Bot::new(client);
+        let bot = crate::test_util::bot(client);
         assert_eq!(bot.target_dig_face(), Some(Direction::East));
     }
 

@@ -528,7 +528,7 @@ mod tests {
     /// `TickBroadcast` resource) — the synchronous state transitions are
     /// what's under test here.
     fn spawned_bot() -> Bot {
-        Bot::new(live_entity_client((
+        crate::test_util::bot(live_entity_client((
             WorldName(Identifier::from("minecraft:overworld")),
             Position::new(Vec3::new(0., 64., 0.)),
         )))
@@ -539,7 +539,7 @@ mod tests {
     /// run, so ticks only arrive when the test sends them), matching how
     /// it waits on a live connection.
     fn tick_bot() -> Bot {
-        Bot::new(tick_client((
+        crate::test_util::bot(tick_client((
             WorldName(Identifier::from("minecraft:overworld")),
             Position::new(Vec3::new(0., 64., 0.)),
         )))
@@ -818,7 +818,7 @@ mod tests {
     #[tokio::test]
     async fn attack_before_spawn_is_not_connected() {
         let client = despawned_client();
-        let bot = Bot::new(client.clone());
+        let bot = crate::test_util::bot(client.clone());
         let target = client.entity_ref_for(client.entity);
         assert!(matches!(
             bot.pvp().attack(&target),

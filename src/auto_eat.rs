@@ -638,7 +638,7 @@ mod tests {
     /// A scaffold bot for direct `eat()` calls — live entity carrying the
     /// inventory, no tick broadcast (the driver isn't spawned).
     fn eating_bot(items: &[(usize, ItemKind)]) -> Bot {
-        Bot::new(live_entity_client((
+        crate::test_util::bot(live_entity_client((
             WorldName(Identifier::from("minecraft:overworld")),
             food_inventory(items),
         )))

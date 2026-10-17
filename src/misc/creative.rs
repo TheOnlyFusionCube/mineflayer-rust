@@ -239,7 +239,7 @@ mod tests {
 
         let mut inventory = Inventory::default();
         *inventory.inventory_menu.slot_mut(5).unwrap() = ItemStack::new(ItemKind::Stone, 1);
-        let bot = Bot::new(crate::test_util::live_entity_client(inventory));
+        let bot = crate::test_util::bot(crate::test_util::live_entity_client(inventory));
         let creative = bot.creative();
         let item = ItemStack::new(ItemKind::Dirt, 1);
         let set = || creative.set_inventory_slot(5, item.clone());
@@ -265,7 +265,7 @@ mod tests {
         let mut inventory = Inventory::default();
         *inventory.inventory_menu.slot_mut(10).unwrap() = ItemStack::new(ItemKind::Stone, 1);
         *inventory.inventory_menu.slot_mut(45).unwrap() = ItemStack::new(ItemKind::Dirt, 1);
-        let bot = Bot::new(crate::test_util::live_entity_client(inventory));
+        let bot = crate::test_util::bot(crate::test_util::live_entity_client(inventory));
         let bot2 = bot.clone();
         let clear = tokio::spawn(async move { bot2.creative().clear_inventory().await });
 

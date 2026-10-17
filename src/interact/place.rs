@@ -658,7 +658,7 @@ mod tests {
         use mineflayer_engine::entity::inventory::Inventory;
 
         let client = crate::test_util::live_entity_client(Inventory::default());
-        let bot = crate::Bot::new(client);
+        let bot = crate::test_util::bot(client);
         let face = Vec3::new(0., 1., 0.);
         let pos = BlockPos::new(0, 64, 0);
 

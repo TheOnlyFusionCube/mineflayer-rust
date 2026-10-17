@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn plugin_state_round_trip() {
-        let bot = Bot::new(despawned_client());
+        let bot = crate::test_util::bot(despawned_client());
         // despawned clients can't hold state — accessors fall back to
         // defaults rather than panicking
         assert!(bot.collect_block().chest_locations().is_empty());
@@ -1042,7 +1042,7 @@ mod tests {
     /// upstream `targets.empty` early return.
     #[tokio::test]
     async fn cancel_task_without_a_run_is_a_noop() {
-        let bot = Bot::new(despawned_client());
+        let bot = crate::test_util::bot(despawned_client());
         tokio::time::timeout(Duration::from_secs(2), bot.collect_block().cancel_task())
             .await
             .expect("idle cancel_task hung");
@@ -1050,7 +1050,7 @@ mod tests {
 
     #[tokio::test]
     async fn collect_before_spawn_is_not_connected() {
-        let bot = Bot::new(despawned_client());
+        let bot = crate::test_util::bot(despawned_client());
         let err = bot
             .collect_block()
             .collect(BlockKind::Stone)

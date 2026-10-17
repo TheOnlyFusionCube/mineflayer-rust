@@ -392,7 +392,6 @@ impl BotBuilder {
             bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
             _alive: Some(alive),
             shutdown: shutdown_rx,
-            _shutdown_tx: None,
             shared: Arc::new(shared),
             chat_length_limit: builder.chat_length_limit,
         })
