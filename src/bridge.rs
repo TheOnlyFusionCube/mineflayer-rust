@@ -1148,19 +1148,14 @@ mod tests {
         }
     }
 
-    /// F3: pin the bridge's cross-domain emission order.
-    ///
-    /// Only the bridge loop states this order today. Within one engine
-    /// event: `translate`'s direct events are sent one by one, each
-    /// followed immediately by what `misc::after_event` derives from it
-    /// (a `SetHealth` packet: `Packet`, then `Health`, then the lifecycle
-    /// `Spawn`); then the held domain lists go out in a fixed order —
-    /// movement, pathfinder, entity, windows, window types, world (a
-    /// chest `BlockEvent`'s `ChestLidMove` is decoded before `translate`
-    /// but sent last). A later refactor (B1) must keep this order or
-    /// change it on purpose; upstream `ref/mineflayer/lib/plugins/health.js`
-    /// emits `health` before the re-arm `spawn`, which `Packet -> Health ->
-    /// Spawn` preserves.
+    /// F3: pin the bridge's cross-domain emission order, which `OBSERVERS`
+    /// states. Within one engine event the direct translation comes first,
+    /// then misc and scoreboard, then the lifecycle and chat events derived
+    /// from the packet, then the other domains (a `SetHealth` packet:
+    /// `Packet`, `Health`, then the re-arm `Spawn`; a chest `BlockEvent`'s
+    /// `ChestLidMove` from the world observer comes last). Upstream
+    /// `ref/mineflayer/lib/plugins/health.js` emits `health` before the
+    /// re-arm `spawn`.
     #[tokio::test]
     async fn bridge_emission_order() {
         use mineflayer_engine::{
@@ -1285,7 +1280,7 @@ mod tests {
             "Packet",       // note block
             "NoteHeard",    // misc, straight after its Packet
             "Packet",       // chest block event
-            "ChestLidMove", // world list, after the six held lists
+            "ChestLidMove", // world observer, last in the list
             "End",          // fallback on channel close
         ];
         assert_eq!(labels, expected, "emission order changed: {seen:#?}");

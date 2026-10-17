@@ -69,7 +69,9 @@ With a `tracing` subscriber at `WARN`, bevy reports that the dig-abort
 reconciler (`reconcile_aborted_dig`, an exclusive system) has an
 indeterminate order against 8 other `GameTick` systems. Only its order
 before `MiningSystems` matters, so the system is now marked
-`ambiguous_with_all()`. The warning no longer shows.
+`ambiguous_with_all()`. The warning no longer shows. (The reconciler was
+removed in plan item A5, 2026-10-17; the engine's `CancelMiningEvent`
+does its job.)
 
 ## B3 re-measurement (2026-10-17)
 
