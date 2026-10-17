@@ -106,6 +106,40 @@ impl WindowTracker {
             self.eat_notify.notify_waiters();
         }
     }
+
+    /// The quickbar slot in hand: the tracked override, else the ECS
+    /// value, else 0.
+    fn selected(&self, client: &mineflayer_engine::Client) -> u8 {
+        self.selected_hotbar.unwrap_or_else(|| {
+            client
+                .get_component::<Inventory>()
+                .map(|i| i.selected_hotbar_slot)
+                .unwrap_or(0)
+        })
+    }
+
+    /// Record `stack` as the snapshot of `window_id[slot]` and report the
+    /// change, with the previous snapshot value as `old`.
+    fn slot_update(&mut self, window_id: i32, slot: usize, stack: &ItemStack) -> BotEvent {
+        let slots = self.slots.entry(window_id).or_default();
+        if slots.len() <= slot {
+            slots.resize(slot + 1, ItemStack::Empty);
+        }
+        let old = std::mem::replace(&mut slots[slot], stack.clone());
+        BotEvent::WindowUpdateSlot {
+            window_id,
+            slot: slot as u16,
+            old: Item::of(old, slot as i16),
+            new: Item::of(stack.clone(), slot as i16),
+        }
+    }
+
+    /// Run the held-item check (upstream `updateHeldItem`) and report the
+    /// held stack.
+    fn held_changed(&mut self, client: &mineflayer_engine::Client) -> BotEvent {
+        self.held_sig_changed(client);
+        BotEvent::HeldItemChanged(held_item(client, self.selected(client)))
+    }
 }
 
 /// `(kind, count)` of the currently held stack, `None` when empty or the
@@ -149,14 +183,6 @@ pub(crate) fn observe_event(
     let Event::Packet(packet) = event else {
         return Vec::new();
     };
-    let sel = |t: &WindowTracker| {
-        t.selected_hotbar.unwrap_or_else(|| {
-            client
-                .get_component::<Inventory>()
-                .map(|i| i.selected_hotbar_slot)
-                .unwrap_or(0)
-        })
-    };
     match &**packet {
         ClientboundGamePacket::OpenScreen(p) => {
             let mut t = tracker.lock();
@@ -189,16 +215,9 @@ pub(crate) fn observe_event(
                 t.current = Some(window.shared.clone());
                 let mut out = Vec::new();
                 for (i, stack) in items.iter().enumerate() {
-                    let old = snapshot_set(&mut t, p.container_id, i, stack.clone());
-                    out.push(BotEvent::WindowUpdateSlot {
-                        window_id: p.container_id,
-                        slot: i as u16,
-                        old,
-                        new: Item::of(stack.clone(), i as i16),
-                    });
+                    out.push(t.slot_update(p.container_id, i, stack));
                 }
-                t.held_sig_changed(client);
-                out.push(BotEvent::HeldItemChanged(held_item(client, sel(&t))));
+                out.push(t.held_changed(client));
                 out.push(BotEvent::WindowOpen(window));
                 out
             } else {
@@ -242,7 +261,7 @@ pub(crate) fn observe_event(
             // lock rule: tracker lock held while `held_sig_changed` /
             // `held_item` take brief ECS reads — allowed direction.
             let mut t = tracker.lock();
-            let changed = u32::from(sel(&t)) != p.slot;
+            let changed = u32::from(t.selected(client)) != p.slot;
             t.selected_hotbar = Some(p.slot as u8);
             t.held_sig_changed(client);
             if changed {
@@ -254,16 +273,9 @@ pub(crate) fn observe_event(
         ClientboundGamePacket::SetPlayerInventory(p) => {
             let win_slot = mineflayer_engine::inventory::Player::slot_for_inventory_index(p.slot);
             let mut t = tracker.lock();
-            let old = snapshot_set(&mut t, 0, win_slot, p.contents.clone());
-            t.held_sig_changed(client);
             vec![
-                BotEvent::WindowUpdateSlot {
-                    window_id: 0,
-                    slot: win_slot as u16,
-                    old,
-                    new: Item::of(p.contents.clone(), win_slot as i16),
-                },
-                BotEvent::HeldItemChanged(held_item(client, sel(&t))),
+                t.slot_update(0, win_slot, &p.contents),
+                t.held_changed(client),
             ]
         }
         ClientboundGamePacket::EntityEvent(p) => {
@@ -343,28 +355,15 @@ fn set_content_events(
     // lock rule: tracker lock held while ECS reads (`get_component`,
     // `held_sig_changed`, `held_item`) run — allowed direction.
     let mut t = tracker.lock();
-    let sel = t.selected_hotbar.unwrap_or_else(|| {
-        client
-            .get_component::<Inventory>()
-            .map(|i| i.selected_hotbar_slot)
-            .unwrap_or(0)
-    });
     let mut out = Vec::new();
 
     if p.container_id == 0 {
         for (i, stack) in p.items.iter().enumerate() {
-            let old = snapshot_set(&mut t, 0, i, stack.clone());
-            out.push(BotEvent::WindowUpdateSlot {
-                window_id: 0,
-                slot: i as u16,
-                old,
-                new: Item::of(stack.clone(), i as i16),
-            });
+            out.push(t.slot_update(0, i, stack));
         }
         // upstream runs updateHeldItem(), then emits
         // `setWindowItems:{id}` — resolved packets only
-        t.held_sig_changed(client);
-        out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        out.push(t.held_changed(client));
         out.push(BotEvent::SetWindowItems { window_id: 0 });
         return out;
     }
@@ -379,16 +378,9 @@ fn set_content_events(
         );
         t.current = Some(window.shared.clone());
         for (i, stack) in p.items.iter().enumerate() {
-            let old = snapshot_set(&mut t, p.container_id, i, stack.clone());
-            out.push(BotEvent::WindowUpdateSlot {
-                window_id: p.container_id,
-                slot: i as u16,
-                old,
-                new: Item::of(stack.clone(), i as i16),
-            });
+            out.push(t.slot_update(p.container_id, i, stack));
         }
-        t.held_sig_changed(client);
-        out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        out.push(t.held_changed(client));
         // upstream emits `setWindowItems:{id}` here; the once-listener
         // it registered in prepareWindow then fires `windowOpen`
         out.push(BotEvent::SetWindowItems {
@@ -402,16 +394,9 @@ fn set_content_events(
         // resync of the open window — upstream's resolved-window path
         // also runs updateHeldItem() before `setWindowItems:{id}`
         for (i, stack) in p.items.iter().enumerate() {
-            let old = snapshot_set(&mut t, p.container_id, i, stack.clone());
-            out.push(BotEvent::WindowUpdateSlot {
-                window_id: p.container_id,
-                slot: i as u16,
-                old,
-                new: Item::of(stack.clone(), i as i16),
-            });
+            out.push(t.slot_update(p.container_id, i, stack));
         }
-        t.held_sig_changed(client);
-        out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        out.push(t.held_changed(client));
         out.push(BotEvent::SetWindowItems {
             window_id: p.container_id,
         });
@@ -431,18 +416,11 @@ fn set_content_events(
         t.early_items = Some((p.container_id, p.items.clone()));
         for (i, stack) in p.items.iter().enumerate().skip(player_start) {
             let inv_slot = i - player_start + 9;
-            let old = snapshot_set(&mut t, 0, inv_slot, stack.clone());
-            out.push(BotEvent::WindowUpdateSlot {
-                window_id: 0,
-                slot: inv_slot as u16,
-                old,
-                new: Item::of(stack.clone(), inv_slot as i16),
-            });
+            out.push(t.slot_update(0, inv_slot, stack));
         }
         // each remapped write goes through upstream's `_setSlot`, which
         // runs updateHeldItem() — once per packet here
-        t.held_sig_changed(client);
-        out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+        out.push(t.held_changed(client));
         return out;
     }
 
@@ -465,12 +443,6 @@ fn set_slot_events(
     // lock rule: the tracker lock is held while brief ECS reads are taken
     // — allowed direction.
     let mut t = tracker.lock();
-    let sel = t.selected_hotbar.unwrap_or_else(|| {
-        client
-            .get_component::<Inventory>()
-            .map(|i| i.selected_hotbar_slot)
-            .unwrap_or(0)
-    });
     let mut out = Vec::new();
 
     match p.container_id {
@@ -479,15 +451,8 @@ fn set_slot_events(
             t.held_sig_changed(client);
         }
         -2 | 0 => {
-            let old = snapshot_set(&mut t, 0, p.slot as usize, p.item_stack.clone());
-            out.push(BotEvent::WindowUpdateSlot {
-                window_id: 0,
-                slot: p.slot,
-                old,
-                new: Item::of(p.item_stack.clone(), p.slot as i16),
-            });
-            t.held_sig_changed(client);
-            out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+            out.push(t.slot_update(0, usize::from(p.slot), &p.item_stack));
+            out.push(t.held_changed(client));
         }
         id => {
             // `pending` resolves too — upstream's `currentWindow` exists
@@ -497,15 +462,8 @@ fn set_slot_events(
             if t.current.as_ref().is_some_and(|c| c.id == id)
                 || t.pending.as_ref().is_some_and(|w| w.id == id)
             {
-                let old = snapshot_set(&mut t, id, p.slot as usize, p.item_stack.clone());
-                out.push(BotEvent::WindowUpdateSlot {
-                    window_id: id,
-                    slot: p.slot,
-                    old,
-                    new: Item::of(p.item_stack.clone(), p.slot as i16),
-                });
-                t.held_sig_changed(client);
-                out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+                out.push(t.slot_update(id, usize::from(p.slot), &p.item_stack));
+                out.push(t.held_changed(client));
             } else if let Some((closed_id, player_start, _)) = t.last_closed
                 && id == closed_id
                 && (p.slot as usize) >= player_start
@@ -515,37 +473,14 @@ fn set_slot_events(
                 // its player region still describes the player
                 // inventory — remap into window 0 like upstream.
                 let inv_slot = p.slot as usize - player_start + 9;
-                let old = snapshot_set(&mut t, 0, inv_slot, p.item_stack.clone());
-                out.push(BotEvent::WindowUpdateSlot {
-                    window_id: 0,
-                    slot: inv_slot as u16,
-                    old,
-                    new: Item::of(p.item_stack.clone(), inv_slot as i16),
-                });
+                out.push(t.slot_update(0, inv_slot, &p.item_stack));
                 // upstream's `_setSlot` runs updateHeldItem() here too —
                 // a remapped hotbar write can change the held stack
-                t.held_sig_changed(client);
-                out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
+                out.push(t.held_changed(client));
             }
         }
     }
     out
-}
-
-/// Record `new` into the tracked snapshot for `window_id[slot]`,
-/// returning the previous value as an [`Item`] (empty → `None`).
-fn snapshot_set(
-    t: &mut WindowTracker,
-    window_id: i32,
-    slot: usize,
-    new: ItemStack,
-) -> Option<Item> {
-    let slots = t.slots.entry(window_id).or_default();
-    if slots.len() <= slot {
-        slots.resize(slot + 1, ItemStack::Empty);
-    }
-    let old = std::mem::replace(&mut slots[slot], new);
-    Item::of(old, slot as i16)
 }
 
 #[cfg(test)]
