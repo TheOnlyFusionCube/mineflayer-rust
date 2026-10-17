@@ -11,7 +11,7 @@ use mineflayer_registry::builtin::BlockKind;
 use mineflayer_world::{Chunk, ChunkStorage, PartialChunkStorage};
 
 use super::{
-    GotoEvent,
+    ExecutingPath, GotoEvent, Pathfinder, StopPathfindingEvent,
     astar::PathfinderTimeout,
     goals::BlockPosGoal,
     moves,
@@ -297,4 +297,45 @@ fn test_mine_through_non_colliding_block() {
     });
 
     assert_simulation_reaches(&mut simulation, 200, BlockPos::new(0, 70, 0));
+}
+
+/// A2: a stop must clear `goal` and `is_calculating` even when the
+/// entity has no `ExecutingPath` (a calculation in flight, or none was
+/// ever started). The port's `stop_pathfinding_patched` existed only to
+/// repair these two fields from outside the engine.
+#[test]
+fn stop_clears_goal_and_calculating_without_an_executing_path() {
+    let mut partial_chunks = PartialChunkStorage::default();
+    let mut simulation = setup_simulation_world(
+        &mut partial_chunks,
+        BlockPos::new(0, 71, 0),
+        &[BlockPos::new(0, 70, 0)],
+        &[],
+    );
+    // PreUpdate's `add_default_pathfinder` inserts the component.
+    simulation.tick();
+
+    {
+        let world = simulation.app.world_mut();
+        let mut pathfinder = world.get_mut::<Pathfinder>(simulation.entity).unwrap();
+        pathfinder.goal = Some(Arc::new(BlockPosGoal(BlockPos::new(0, 70, 0))));
+        pathfinder.is_calculating = true;
+    }
+    assert!(
+        simulation.get_component::<ExecutingPath>().is_none(),
+        "the test needs the no-ExecutingPath case"
+    );
+
+    simulation
+        .app
+        .world_mut()
+        .write_message(StopPathfindingEvent {
+            entity: simulation.entity,
+            force: false,
+        });
+    simulation.tick();
+
+    let pathfinder = simulation.component::<Pathfinder>();
+    assert!(pathfinder.goal.is_none(), "goal must be cleared");
+    assert!(!pathfinder.is_calculating, "is_calculating must be cleared");
 }

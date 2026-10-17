@@ -772,7 +772,8 @@ pub struct StopPathfindingEvent {
 
 pub fn handle_stop_pathfinding_event(
     mut events: MessageReader<StopPathfindingEvent>,
-    mut query: Query<(&mut Pathfinder, &mut ExecutingPath)>,
+    mut pathfinder_query: Query<&mut Pathfinder>,
+    mut executing_query: Query<&mut ExecutingPath>,
     mut walk_events: MessageWriter<StartWalkEvent>,
     mut commands: Commands,
 ) {
@@ -780,10 +781,18 @@ pub fn handle_stop_pathfinding_event(
         // stop computing any path that's being computed
         commands.entity(event.entity).remove::<ComputePath>();
 
-        let Ok((mut pathfinder, mut executing_path)) = query.get_mut(event.entity) else {
+        // The goal state must be cleared even when no `ExecutingPath`
+        // exists: a calculation in flight has none, and a stuck
+        // `is_calculating` keeps `is_goto_target_reached` false for every
+        // later goto.
+        if let Ok(mut pathfinder) = pathfinder_query.get_mut(event.entity) {
+            pathfinder.goal = None;
+            pathfinder.is_calculating = false;
+        }
+
+        let Ok(mut executing_path) = executing_query.get_mut(event.entity) else {
             continue;
         };
-        pathfinder.goal = None;
         if event.force {
             executing_path.path.clear();
             executing_path.queued_path = None;

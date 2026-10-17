@@ -43,6 +43,10 @@ merge; plan item E2 keeps this list current):
 8. User-visible names: the Microsoft token cache is
    `mineflayer-auth.json`; the packet-log env var is
    `MINEFLAYER_DO_NOT_CUT_OFF_PACKET_LOGS`.
+9. (A2) `handle_stop_pathfinding_event` clears `goal` and
+   `is_calculating` on every stop, also when the entity has no
+   `ExecutingPath` (upstream left `is_calculating` set and skipped the
+   clear entirely).
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
