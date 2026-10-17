@@ -922,26 +922,6 @@ mod tests {
     }
 
     #[test]
-    fn player_inventory_slot_to_window_mapping() {
-        use crate::windows::player_inventory_slot_to_window as map;
-        // hotbar 0..=8 → window 36..=44
-        for vanilla in 0..=8u32 {
-            assert_eq!(map(vanilla), vanilla + 36);
-        }
-        // main inventory 9..=35 unchanged
-        for vanilla in 9..=35u32 {
-            assert_eq!(map(vanilla), vanilla);
-        }
-        // armor 36..=39 (feet→head) → window 8..=5 (feet→head)
-        assert_eq!(map(36), 8);
-        assert_eq!(map(37), 7);
-        assert_eq!(map(38), 6);
-        assert_eq!(map(39), 5);
-        // offhand 40 → 45
-        assert_eq!(map(40), 45);
-    }
-
-    #[test]
     fn click_operation_mode_button_mapping() {
         use ClickOperation::*;
         // mode 0: pickup

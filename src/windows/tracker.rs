@@ -137,29 +137,10 @@ pub(crate) fn held_item(client: &mineflayer_engine::Client, sel: u8) -> Option<I
     Item::of(inv.inventory_menu.slot(index)?.clone(), index as i16)
 }
 
-/// `c_set_player_inventory` uses vanilla `Inventory` indices, not window
-/// slots (upstream `playerInventorySlotToWindow`): `0..=8` hotbar →
-/// `36..=44`, `36..=39` armor feet→head → `8..=5`, `40` off-hand → `45`,
-/// `9..=35` main inventory unchanged.
-pub(crate) fn player_inventory_slot_to_window(slot: u32) -> u32 {
-    if slot <= 8 {
-        slot + 36
-    } else if (36..=39).contains(&slot) {
-        44 - slot
-    } else if slot == 40 {
-        45 // offhand
-    } else {
-        slot
-    }
-}
-
 /// Decode one engine [`Event`] into window-domain [`BotEvent`]s — the
 /// inventory-side analog of `entity::observe_event`. Runs after the engine's
 /// own packet handlers, so the ECS `Inventory` component already reflects
-/// the packet; the pieces the engine drops (`carried_item` on set-content,
-/// `set_player_inventory`, non-hotbar `set_slot` writes while a container
-/// is open, slot data sent before `open_screen`, trailing syncs under a
-/// closed id) are patched into the ECS here.
+/// the packet; this only reads it.
 pub(crate) fn observe_event(
     tracker: &Arc<Mutex<WindowTracker>>,
     client: &mineflayer_engine::Client,
@@ -197,22 +178,7 @@ pub(crate) fn observe_event(
                 .map(|(_, items)| items);
             if let Some(items) = early_items {
                 // slot data arrived before the open packet (upstream's
-                // prepareWindow sync branch). The engine dropped that early
-                // content — write it into the fresh menu now.
-                // lock rule: the tracker lock is held while this ECS
-                // guard is taken — allowed direction, keep it brief.
-                {
-                    let mut ecs = client.ecs.write();
-                    if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
-                        && let Some(menu) = inv.container_menu.as_mut()
-                    {
-                        for (i, stack) in items.iter().enumerate() {
-                            if let Some(slot) = menu.slot_mut(i) {
-                                *slot = stack.clone();
-                            }
-                        }
-                    }
-                }
+                // prepareWindow sync branch); the engine applied it
                 let window = Window::new(
                     p.container_id,
                     p.menu_type,
@@ -286,21 +252,9 @@ pub(crate) fn observe_event(
             }
         }
         ClientboundGamePacket::SetPlayerInventory(p) => {
-            let win_slot = player_inventory_slot_to_window(p.slot);
-            // The engine drops this packet entirely — apply it ourselves to
-            // the player menu, then report it like a `set_slot`.
-            // lock rule: this ECS guard must close before the tracker lock
-            // below (never hold the ECS lock while taking a domain lock).
-            {
-                let mut ecs = client.ecs.write();
-                if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
-                    && let Some(slot) = inv.inventory_menu.slot_mut(win_slot as usize)
-                {
-                    *slot = p.contents.clone();
-                }
-            }
+            let win_slot = mineflayer_engine::inventory::Player::slot_for_inventory_index(p.slot);
             let mut t = tracker.lock();
-            let old = snapshot_set(&mut t, 0, win_slot as usize, p.contents.clone());
+            let old = snapshot_set(&mut t, 0, win_slot, p.contents.clone());
             t.held_sig_changed(client);
             vec![
                 BotEvent::WindowUpdateSlot {
@@ -375,9 +329,8 @@ pub(crate) fn observe_event(
 /// a pending window into `current` + `windowOpen` (upstream's
 /// `setWindowItems` gate), then emits one `WindowUpdateSlot` per reported
 /// slot, like upstream calling `updateSlot` for each. Resolved packets
-/// (window 0, a pending window's first fill, or the open container) get
-/// the `carried_item` patch and end in `SetWindowItems` — upstream's
-/// `setWindowItems:{id}`. Buffered (`early_items`) and `last_closed`
+/// (window 0, a pending window's first fill, or the open container) end in
+/// `SetWindowItems` — upstream's `setWindowItems:{id}`. Buffered (`early_items`) and `last_closed`
 /// remaps return before upstream's emit, so they produce no
 /// `SetWindowItems` — a remap still buffers the packet for a same-id
 /// reopen and runs the held-item check, like upstream's `windowItems`
@@ -388,8 +341,7 @@ fn set_content_events(
     p: &mineflayer_engine::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
 ) -> Vec<BotEvent> {
     // lock rule: tracker lock held while ECS reads (`get_component`,
-    // `patch_carried`, `held_sig_changed`, `held_item`) and the short
-    // `patch_state_id` ECS write run — allowed direction.
+    // `held_sig_changed`, `held_item`) run — allowed direction.
     let mut t = tracker.lock();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client
@@ -398,11 +350,6 @@ fn set_content_events(
             .unwrap_or(0)
     });
     let mut out = Vec::new();
-
-    // Adopt when this packet resolves the active menu (see patch_state_id).
-    if p.container_id == active_inventory_id(client) {
-        patch_state_id(client, p.state_id);
-    }
 
     if p.container_id == 0 {
         for (i, stack) in p.items.iter().enumerate() {
@@ -414,9 +361,8 @@ fn set_content_events(
                 new: Item::of(stack.clone(), i as i16),
             });
         }
-        // upstream applies carriedItem, then updateHeldItem(), then
-        // emits `setWindowItems:{id}` — resolved packets only
-        patch_carried(client, &p.carried_item);
+        // upstream runs updateHeldItem(), then emits
+        // `setWindowItems:{id}` — resolved packets only
         t.held_sig_changed(client);
         out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
         out.push(BotEvent::SetWindowItems { window_id: 0 });
@@ -441,7 +387,6 @@ fn set_content_events(
                 new: Item::of(stack.clone(), i as i16),
             });
         }
-        patch_carried(client, &p.carried_item);
         t.held_sig_changed(client);
         out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
         // upstream emits `setWindowItems:{id}` here; the once-listener
@@ -465,7 +410,6 @@ fn set_content_events(
                 new: Item::of(stack.clone(), i as i16),
             });
         }
-        patch_carried(client, &p.carried_item);
         t.held_sig_changed(client);
         out.push(BotEvent::HeldItemChanged(held_item(client, sel)));
         out.push(BotEvent::SetWindowItems {
@@ -487,14 +431,6 @@ fn set_content_events(
         t.early_items = Some((p.container_id, p.items.clone()));
         for (i, stack) in p.items.iter().enumerate().skip(player_start) {
             let inv_slot = i - player_start + 9;
-            {
-                let mut ecs = client.ecs.write();
-                if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
-                    && let Some(slot) = inv.inventory_menu.slot_mut(inv_slot)
-                {
-                    *slot = stack.clone();
-                }
-            }
             let old = snapshot_set(&mut t, 0, inv_slot, stack.clone());
             out.push(BotEvent::WindowUpdateSlot {
                 window_id: 0,
@@ -516,48 +452,6 @@ fn set_content_events(
     out
 }
 
-/// Write `container_set_content`'s `carried_item` into the ECS — the engine
-/// ignores the field, so without this the cursor stack desyncs and click
-/// packets carry the wrong item. Upstream applies it only on resolved
-/// packets (window 0 or `currentWindow`, which includes pending windows);
-/// early-buffered and `lastClosedWindow`-remapped packets return first.
-fn patch_carried(client: &mineflayer_engine::Client, stack: &ItemStack) {
-    let mut ecs = client.ecs.write();
-    if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
-        inv.carried = stack.clone();
-    }
-}
-
-/// Protocol id of the menu clicks target — the engine's `Inventory.id`
-/// (0 = the player window, which `WindowTracker` mirrors in `pending`/
-/// `current`).
-/// lock rule: callers hold the tracker lock; the ECS read is brief.
-fn active_inventory_id(client: &mineflayer_engine::Client) -> i32 {
-    client
-        .get_component::<Inventory>()
-        .map(|inv| inv.id)
-        .unwrap_or(0)
-}
-
-/// Adopt a packet's `state_id` for the active menu — vanilla's
-/// `initializeContents` / `setItem(slot, stateId, item)` update the active
-/// menu's id, and upstream mineflayer mirrors it with a global
-/// `stateId = packet.stateId` listener over `set_slot`/`window_items`.
-/// The engine adopts one only from non-hotbar `set_slot` writes: hotbar writes
-/// into an idle window 0 skip it and `container_set_content` never carries
-/// it, so after a pickup or a full resync our clicks go out stale. The
-/// server answers a stale id with a full resync instead of a slot diff,
-/// and a resync landing mid-choreography (craft -> grab -> deposit)
-/// clobbers the cursor the next click is gated on.
-fn patch_state_id(client: &mineflayer_engine::Client, state_id: u32) {
-    // lock rule: callers hold the tracker lock; this ECS write is brief
-    // (domain lock → ECS lock is the allowed direction).
-    let mut ecs = client.ecs.write();
-    if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity) {
-        inv.state_id = state_id;
-    }
-}
-
 /// `container_set_slot` — single-slot write. `container_id` -1 is the
 /// cursor (applied by the engine, no event upstream), -2 and 0 hit the player
 /// window, anything else resolves the open *or pending* container (or a
@@ -568,10 +462,8 @@ fn set_slot_events(
     client: &mineflayer_engine::Client,
     p: &mineflayer_engine::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
 ) -> Vec<BotEvent> {
-    // lock rule: the tracker lock is held while ECS reads (and, through
-    // `patch_state_id`, one short ECS write) are taken — allowed
-    // direction; the ECS guards are brief and `t` is never held across
-    // an ECS guard's lifetime.
+    // lock rule: the tracker lock is held while brief ECS reads are taken
+    // — allowed direction.
     let mut t = tracker.lock();
     let sel = t.selected_hotbar.unwrap_or_else(|| {
         client
@@ -581,33 +473,12 @@ fn set_slot_events(
     });
     let mut out = Vec::new();
 
-    // Adopt when this packet resolves the active menu — hotbar writes into
-    // an idle window 0 included (see patch_state_id).
-    if p.container_id == active_inventory_id(client) {
-        patch_state_id(client, p.state_id);
-    }
-
     match p.container_id {
         -1 => {
             // cursor item — the engine applies it; upstream emits nothing.
             t.held_sig_changed(client);
         }
         -2 | 0 => {
-            // While a container is open the engine only applies id-0 writes
-            // to hotbar slots — patch the rest into the player menu so
-            // the model matches the server's write (upstream applies
-            // every id-0 set_slot to bot.inventory).
-            if p.container_id == 0
-                && t.current.is_some()
-                && !mineflayer_engine::inventory::Player::is_hotbar_slot(usize::from(p.slot))
-            {
-                let mut ecs = client.ecs.write();
-                if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
-                    && let Some(slot) = inv.inventory_menu.slot_mut(usize::from(p.slot))
-                {
-                    *slot = p.item_stack.clone();
-                }
-            }
             let old = snapshot_set(&mut t, 0, p.slot as usize, p.item_stack.clone());
             out.push(BotEvent::WindowUpdateSlot {
                 window_id: 0,
@@ -644,14 +515,6 @@ fn set_slot_events(
                 // its player region still describes the player
                 // inventory — remap into window 0 like upstream.
                 let inv_slot = p.slot as usize - player_start + 9;
-                {
-                    let mut ecs = client.ecs.write();
-                    if let Some(mut inv) = ecs.get_mut::<Inventory>(client.entity)
-                        && let Some(slot) = inv.inventory_menu.slot_mut(inv_slot)
-                    {
-                        *slot = p.item_stack.clone();
-                    }
-                }
                 let old = snapshot_set(&mut t, 0, inv_slot, p.item_stack.clone());
                 out.push(BotEvent::WindowUpdateSlot {
                     window_id: 0,
@@ -688,7 +551,6 @@ fn snapshot_set(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mineflayer_engine::inventory::Menu;
 
     // — packet→event decode: the per-window-id events upstream's
     // inventory.js emits (`setSlot:{id}`, `setWindowItems:{id}`) —
@@ -711,14 +573,6 @@ mod tests {
         crate::test_util::live_entity_client(Inventory::default())
     }
 
-    fn client_with(inv: Inventory) -> mineflayer_engine::Client {
-        crate::test_util::live_entity_client(inv)
-    }
-
-    fn state_id_of(client: &mineflayer_engine::Client) -> u32 {
-        client.get_component::<Inventory>().unwrap().state_id
-    }
-
     fn open_screen(id: i32) -> Event {
         packet_event(ClientboundGamePacket::OpenScreen(ClientboundOpenScreen {
             container_id: id,
@@ -728,14 +582,10 @@ mod tests {
     }
 
     fn set_content(id: i32, items: Vec<ItemStack>) -> Event {
-        set_content_sid(id, 0, items)
-    }
-
-    fn set_content_sid(id: i32, state_id: u32, items: Vec<ItemStack>) -> Event {
         packet_event(ClientboundGamePacket::ContainerSetContent(
             ClientboundContainerSetContent {
                 container_id: id,
-                state_id,
+                state_id: 0,
                 items,
                 carried_item: ItemStack::Empty,
             },
@@ -743,14 +593,10 @@ mod tests {
     }
 
     fn set_slot(id: i32, slot: u16, stack: ItemStack) -> Event {
-        set_slot_sid(id, 0, slot, stack)
-    }
-
-    fn set_slot_sid(id: i32, state_id: u32, slot: u16, stack: ItemStack) -> Event {
         packet_event(ClientboundGamePacket::ContainerSetSlot(
             ClientboundContainerSetSlot {
                 container_id: id,
-                state_id,
+                state_id: 0,
                 slot,
                 item_stack: stack,
             },
@@ -793,98 +639,6 @@ mod tests {
                 ..
             }
         )));
-    }
-
-    /// The live-craft regression: clicks carried a stale `state_id`
-    /// because the engine adopts one only from non-hotbar `set_slot` writes —
-    /// never from `container_set_content`, and never from hotbar writes.
-    /// The server answers a stale id with a full resync instead of a slot
-    /// diff, and a resync landing mid-choreography (craft -> grab ->
-    /// deposit) clobbers the cursor the next click is gated on. Vanilla
-    /// adopts the id from packets resolving the active menu
-    /// (`initializeContents` / `setItem(slot, stateId, item)`); upstream
-    /// mineflayer tracks it globally from every `set_slot`/`window_items`.
-    #[test]
-    fn state_id_adopts_from_active_menu_packets() {
-        let t = tracker();
-        let client = client();
-
-        // hotbar set_slot into an idle window 0 adopts (the engine skips these)
-        observe_event(
-            &t,
-            &client,
-            &set_slot_sid(0, 9, 36, ItemStack::new(ItemKind::OakLog, 1)),
-        );
-        assert_eq!(state_id_of(&client), 9);
-
-        // resolved window-0 bulk content adopts (the engine never does)
-        observe_event(
-            &t,
-            &client,
-            &set_content_sid(0, 12, vec![ItemStack::Empty; 46]),
-        );
-        assert_eq!(state_id_of(&client), 12);
-
-        // an unrelated window's bulk content buffers without adopting
-        observe_event(
-            &t,
-            &client,
-            &set_content_sid(7, 40, vec![ItemStack::Empty; 63]),
-        );
-        assert_eq!(state_id_of(&client), 12);
-
-        // cursor packets (`-1`) never initialize a menu — no adoption
-        observe_event(
-            &t,
-            &client,
-            &set_slot_sid(-1, 77, 0, ItemStack::new(ItemKind::OakLog, 1)),
-        );
-        assert_eq!(state_id_of(&client), 12);
-    }
-
-    /// While a container is open, only its own packets move the tracked
-    /// id — the id-0 hotbar specials and window-0 bulk resyncs must not
-    /// (vanilla gates adoption on the active menu).
-    #[test]
-    fn state_id_tracks_the_open_container() {
-        let t = tracker();
-        let inv = Inventory {
-            id: 5,
-            container_menu: Some(Menu::from_kind(MenuKind::Generic9x3)),
-            ..Inventory::default()
-        };
-        let client = client_with(inv);
-        observe_event(&t, &client, &open_screen(5));
-
-        // the open container's set_slot and bulk content adopt
-        observe_event(
-            &t,
-            &client,
-            &set_slot_sid(5, 4, 2, ItemStack::new(ItemKind::Stone, 1)),
-        );
-        assert_eq!(state_id_of(&client), 4);
-        observe_event(
-            &t,
-            &client,
-            &set_content_sid(5, 3, vec![ItemStack::Empty; 63]),
-        );
-        assert_eq!(state_id_of(&client), 3);
-
-        // an id-0 hotbar write while the container is open does not
-        observe_event(
-            &t,
-            &client,
-            &set_slot_sid(0, 9, 36, ItemStack::new(ItemKind::OakLog, 1)),
-        );
-        assert_eq!(state_id_of(&client), 3);
-
-        // nor does an id-0 bulk resync of the player window
-        observe_event(
-            &t,
-            &client,
-            &set_content_sid(0, 21, vec![ItemStack::Empty; 46]),
-        );
-        assert_eq!(state_id_of(&client), 3);
     }
 
     /// Upstream `setWindowItems:{windowId}` — fires once per resolved
@@ -1005,49 +759,6 @@ mod tests {
             out.iter()
                 .any(|e| matches!(e, BotEvent::SetWindowItems { window_id: 3 }))
         );
-    }
-
-    /// `carried_item` applies only on resolved packets — upstream sets
-    /// `selectedItem` after the unresolved-path early return, so a stale
-    /// trailing sync must not overwrite the cursor.
-    #[test]
-    fn carried_item_applies_only_on_resolved_set_content() {
-        let t = tracker();
-        let client = client();
-        let carried = |client: &mineflayer_engine::Client| {
-            client.get_component::<Inventory>().unwrap().carried.clone()
-        };
-
-        // buffered packet for an unseen id — carried untouched
-        let stone = ItemStack::new(ItemKind::Stone, 1);
-        observe_event(
-            &t,
-            &client,
-            &packet_event(ClientboundGamePacket::ContainerSetContent(
-                ClientboundContainerSetContent {
-                    container_id: 7,
-                    state_id: 0,
-                    items: vec![ItemStack::Empty; 63],
-                    carried_item: stone.clone(),
-                },
-            )),
-        );
-        assert!(carried(&client).is_empty());
-
-        // a resolved packet applies it
-        observe_event(
-            &t,
-            &client,
-            &packet_event(ClientboundGamePacket::ContainerSetContent(
-                ClientboundContainerSetContent {
-                    container_id: 0,
-                    state_id: 0,
-                    items: vec![ItemStack::Empty; 46],
-                    carried_item: stone.clone(),
-                },
-            )),
-        );
-        assert_eq!(carried(&client), stone);
     }
 
     /// Upstream buffers `windowItems` before the `lastClosedWindow`

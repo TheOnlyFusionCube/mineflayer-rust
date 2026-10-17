@@ -117,9 +117,9 @@ pub(crate) struct BotShared {
 /// `client.world()`).
 ///
 /// 1. A domain lock **may** be held while the ECS lock is taken. The
-///    window observer and the world-state observer do this, and it is
-///    safe because the ECS guard is only ever held for a moment under
-///    them.
+///    window observer (ECS reads only) and the world-state observer do
+///    this, and it is safe because the ECS guard is only ever held for a
+///    moment under them.
 /// 2. Never take a domain lock while an ECS guard is alive — the
 ///    reverse order would cross with (1) and deadlock a queued writer.
 ///    If a value from the ECS is needed under a domain lock later, copy

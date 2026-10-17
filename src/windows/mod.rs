@@ -67,8 +67,6 @@ mod item;
 mod tracker;
 
 pub use item::Item;
-#[cfg(test)]
-pub(crate) use tracker::player_inventory_slot_to_window;
 pub(crate) use tracker::{WindowTracker, held_item, observe_event};
 
 /// `bot.openBlock`/`openEntity`/`openContainer`/`inventory` produce this —
