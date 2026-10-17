@@ -74,6 +74,11 @@ merge; plan item E2 keeps this list current):
     messages with an id below the entity's `MiningCancelledBefore`; starts
     written after the cancel are not affected. Tests:
     `mineflayer-client/tests/simulation/cancel_mining.rs`.
+14. (D1) `mineflayer_registry::tags::item_tag_by_name` maps a tag name to
+    its static in the generated `tags/items.rs`. It is written by hand in
+    `tags/mod.rs`, so the generated file stays as upstream makes it. Its
+    test reads the statics out of `items.rs` and fails when a tag has no
+    entry, so add the new names after a merge that adds tags.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
