@@ -37,13 +37,14 @@ The engine is a renamed copy of an upstream project (`LICENSE`,
 3. Correct each compile error. Record each renamed engine path in the
    commit message.
 
-## 3. Bootstrap mirror
+## 3. Bootstrap
 
-1. Compare `src/client_app.rs` (`app()`) with the engine's
-   `crates/mineflayer-engine/src/client_impl/mod.rs` (`StartClientOpts::new`) at the new
-   revision. The default plugin groups and their sequence must be the same.
-2. Compare `join_engine` in `src/bot/connection.rs` with the engine's
-   `Client::join` and `Client::start_client`.
+1. Make sure that `ClientPlugins` in
+   `crates/mineflayer-engine/src/client_impl/mod.rs` still contains each
+   default plugin group, and that `StartClientOpts::new_with_plugins` still
+   builds the app from its argument (local engine change 12).
+2. Make sure that each plugin that `client_plugins` in
+   `src/bot/connection.rs` disables still exists in the engine.
 3. Run the schedule-level test:
    `cargo test --lib game_tick_cancels_an_aborted_dig_through_the_production_app`.
 4. Examine `reconcile_aborted_dig` in `src/interact/dig.rs` against the engine's

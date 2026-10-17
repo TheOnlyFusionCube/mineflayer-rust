@@ -1,11 +1,13 @@
 //! `createBot(options)`: the builder, the auth choice, and the bot-thread
-//! connection bootstrap (`join_engine` mirrors the engine's own
-//! `StartClientOpts::new` so the client app can carry the port's plugins —
-//! see `crate::client_app`).
+//! connection bootstrap.
 
 use mineflayer_engine::{
-    ClientInformation, auto_reconnect::AutoReconnectDelay, entity::HumanoidArm,
-    protocol::connect::Proxy,
+    ClientInformation, ClientPlugins, StartClientOpts,
+    app::{PluginGroup, PluginGroupBuilder},
+    auto_reconnect::AutoReconnectPlugin,
+    entity::HumanoidArm,
+    protocol::{address::ResolvableAddr as _, connect::Proxy},
+    swarm::{SwarmChatPlugin, SwarmPlugin},
 };
 
 use super::*;
@@ -312,14 +314,9 @@ impl BotBuilder {
             .map_err(|_| Error::Runtime("bot thread exited during connect".into()))?
     }
 
-    /// Join the server and wire up the event bridge. Runs inside the bot
+    /// Join the server through the engine's bootstrap with
+    /// [`client_plugins`], and wire up the event bridge. Runs inside the bot
     /// thread's `LocalSet` (the engine requires it for `Client::join`).
-    ///
-    /// This mirrors the engine's own `StartClientOpts::new` + `Client::join`
-    /// bootstrap (same default plugins, same runner start) so the client app
-    /// can also carry the port's [`crate::interact::DigAbortPlugin`], which
-    /// cancels engine mining for aborted digs inside the tick that a pending
-    /// start materializes — the engine gives no hook for that otherwise.
     async fn connect_engine(builder: BotBuilder) -> Result<Bot> {
         let account = match builder.auth {
             Some(Auth::Offline { username }) => {
@@ -333,18 +330,18 @@ impl BotBuilder {
             Some(Auth::Account(account)) => account,
             None => mineflayer_engine::account::Account::offline(&builder.username),
         };
-        let address = format!("{}:{}", builder.host, builder.port);
-        let (client, rx) = join_engine(account, &address, builder.proxy.clone()).await?;
-
-        // The engine's default plugins auto-reconnect 5s after any disconnect —
-        // including our own `disconnect()`. That would silently break
-        // `end`/`quit`/`kicked` semantics, so opt out for this client
-        // (Duration::MAX is the engine's documented "disabled" value).
-        client
-            .ecs
-            .write()
-            .entity_mut(client.entity)
-            .insert(AutoReconnectDelay::new(Duration::MAX));
+        let address = format!("{}:{}", builder.host, builder.port)
+            .resolve()
+            .await
+            .map_err(|e| Error::Connect(e.to_string()))?;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (opts, _app_exit) =
+            StartClientOpts::new_with_plugins(account, address, Some(tx), client_plugins());
+        let opts = match builder.proxy.clone() {
+            Some(proxy) => opts.proxy(proxy),
+            None => opts,
+        };
+        let client = mineflayer_engine::Client::start_client(opts).await;
 
         // the misc domains keep their state in one component so it exists
         // before the first packet arrives (difficulty comes from
@@ -398,50 +395,68 @@ impl BotBuilder {
     }
 }
 
-/// Join a server through the engine's own bootstrap, plus the port's plugins.
-///
-/// Mirrors `StartClientOpts::new` (`DefaultPlugins`, `DefaultBotPlugins`,
-/// `DefaultSwarmPlugins`, then the ECS runner) so the client app can carry
-/// [`crate::interact::DigAbortPlugin`] — `Client::join`/`join_with_proxy`
-/// build the same app, but offer no plugin hook.
-async fn join_engine(
-    account: mineflayer_engine::account::Account,
-    address: &str,
-    proxy: Option<mineflayer_engine::protocol::connect::Proxy>,
-) -> Result<(
-    mineflayer_engine::Client,
-    tokio::sync::mpsc::UnboundedReceiver<mineflayer_engine::Event>,
-)> {
-    use mineflayer_engine::protocol::address::ResolvableAddr as _;
-
-    let address = address
-        .resolve()
-        .await
-        .map_err(|e| Error::Connect(e.to_string()))?;
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    // app construction (default plugins + the dig-abort reconciler) lives
-    // in `client_app` so tests run the production wiring — see its contract
-    let mut app = crate::client_app::app();
-    let (ecs_lock, start_running_systems, _appexit_rx) =
-        mineflayer_engine::start_ecs_runner(app.main_mut());
-    start_running_systems();
-    let client = mineflayer_engine::Client::start_client(mineflayer_engine::StartClientOpts {
-        ecs_lock,
-        account,
-        connect_opts: mineflayer_engine::join::ConnectOpts {
-            address,
-            server_proxy: proxy.clone(),
-            sessionserver_proxy: proxy,
-        },
-        event_sender: Some(tx),
-    })
-    .await;
-    Ok((client, rx))
+/// The engine's client plugins as the port runs them. Auto-reconnect is
+/// off: it reconnects 5 s after any disconnect, our own `disconnect()`
+/// included, which would break `end`/`quit`/`kicked`. The swarm plugins
+/// are off: a bot is one client. [`crate::interact::DigAbortPlugin`] is on.
+pub(crate) fn client_plugins() -> PluginGroupBuilder {
+    ClientPlugins
+        .build()
+        .disable::<AutoReconnectPlugin>()
+        .disable::<SwarmPlugin>()
+        .disable::<SwarmChatPlugin>()
+        .add(crate::interact::DigAbortPlugin)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mineflayer_engine::{BlockPos, core::direction::Direction, mining::MiningQueued};
+
+    /// D-log: the crate never installs a global subscriber. The engine's
+    /// `log` feature adds a log plugin that does, and a dependent's own
+    /// `tracing_subscriber::…::init()` after `connect` then panics.
+    /// The check reads process-global state: no unit test in this crate
+    /// may install a global subscriber.
+    #[test]
+    fn the_production_app_installs_no_global_subscriber() {
+        let mut app = mineflayer_engine::app::App::new();
+        app.add_plugins(client_plugins());
+        app.finish();
+        assert!(!tracing::dispatcher::has_been_set());
+    }
+
+    /// The integration guarantee the dig-abort design rests on: a pending
+    /// start materialized in `Update` is cancelled by the reconciler inside
+    /// `GameTick`, before the mining chain runs — through the *production*
+    /// app (plugin presence + ordering), not a bare `World`.
+    #[test]
+    fn game_tick_cancels_an_aborted_dig_through_the_production_app() {
+        use crate::interact::dig::InteractShared;
+
+        let mut app = mineflayer_engine::app::App::new();
+        app.add_plugins(client_plugins());
+        app.finish();
+        let pos = BlockPos::new(9, 64, 9);
+        let mut shared = InteractShared::with_generation(1);
+        shared.mark_aborted_engine_dig(pos, 1);
+        let world = app.main_mut().world_mut();
+        let entity = world
+            .spawn((
+                shared,
+                MiningQueued {
+                    position: pos,
+                    direction: Direction::Down,
+                    force: true,
+                },
+            ))
+            .id();
+        world.run_schedule(mineflayer_engine::core::tick::GameTick);
+        assert!(
+            world.get::<MiningQueued>(entity).is_none(),
+            "the production GameTick must cancel an aborted dig's queued mine"
+        );
+    }
 
     #[test]
     fn builder_defaults() {

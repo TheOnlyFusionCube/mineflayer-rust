@@ -257,9 +257,8 @@ pub(crate) fn reconcile_aborted_dig(world: &mut World) {
     }
 }
 
-/// Installs [`reconcile_aborted_dig`]; added by the bot bootstrap
-/// (`BotBuilder::connect` mirrors the engine's `StartClientOpts::new` and adds
-/// this plugin before the ECS runner starts).
+/// Installs [`reconcile_aborted_dig`]; `client_plugins` in
+/// `src/bot/connection.rs` adds it to the engine bootstrap.
 pub(crate) struct DigAbortPlugin;
 
 impl Plugin for DigAbortPlugin {
