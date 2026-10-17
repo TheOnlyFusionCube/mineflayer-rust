@@ -31,7 +31,7 @@ use mineflayer_engine::{
     registry::builtin::ItemKind,
 };
 
-use crate::bot::{with_component, with_component_mut};
+use crate::bot::{TickStream, with_component, with_component_mut};
 use crate::{Bot, BotEvent, Error, Result, inventory::EquipDest, windows::Item};
 
 /// Upstream `mineflayer-auto-eat`'s default `bannedFood` — foods with
@@ -556,23 +556,10 @@ impl AutoEat<'_> {
 /// when the monitor ends, so a cancelled or disconnected driver exits
 /// silently.
 ///
-/// `shutdown` is the disconnect signal: the `TickBroadcast` sender is a
-/// World resource kept alive by the `Client` the driver holds, so
-/// `ticks.recv()` can never observe `Closed` — without this arm the loop
-/// would park forever after the bridge exits.
-async fn drive(bot: Bot, cancel: Arc<AtomicBool>, mut shutdown: tokio::sync::watch::Receiver<()>) {
-    let mut ticks = bot.client.get_tick_broadcaster();
-    let _ = shutdown.borrow_and_update();
-    loop {
-        tokio::select! {
-            r = ticks.recv() => {
-                match r {
-                    Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
-            }
-            _ = shutdown.changed() => return,
-        }
+/// `shutdown` is the disconnect signal (see [`TickStream`]).
+async fn drive(bot: Bot, cancel: Arc<AtomicBool>, shutdown: tokio::sync::watch::Receiver<()>) {
+    let mut ticks = TickStream::new(&bot.client, shutdown);
+    while ticks.next().await {
         if cancel.load(atomic::Ordering::Relaxed) {
             return;
         }

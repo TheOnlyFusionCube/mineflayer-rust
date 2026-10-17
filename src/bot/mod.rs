@@ -42,11 +42,8 @@ pub struct Bot {
     pub(crate) _alive: Option<watch::Sender<()>>,
     /// The bridge's shutdown signal: its sender lives in the bridge task
     /// and drops when the bridge exits (disconnect, or every `Bot`
-    /// handle gone), resolving `changed()` for every receiver. The
-    /// tick-driven driver tasks (`pathfinder` follow/dynamic watchers,
-    /// `pvp::drive`) select on it — their `TickBroadcast` receiver can
-    /// never report `Closed` because the sender is a World resource kept
-    /// alive by the `Client` handle the driver itself holds.
+    /// handle gone), resolving `changed()` for every receiver. Driver
+    /// tasks wait on it through [`TickStream`].
     pub(crate) shutdown: watch::Receiver<()>,
     /// Per-domain state shared with the bridge task; `Bot` method blocks
     /// reach domains through `self.shared` (see [`BotShared`]).
@@ -110,6 +107,41 @@ pub(crate) struct BotShared {
     pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
     /// Scoreboard/team/boss-bar state — see `scoreboard::ScoreboardState`.
     pub scoreboard: Arc<Mutex<crate::scoreboard::ScoreboardState>>,
+}
+
+/// The game ticks a driver task loops on.
+///
+/// The shutdown signal is what ends a driver: the `TickBroadcast` sender is
+/// a World resource kept alive by the `Client` the driver holds, so the tick
+/// channel never closes while the driver runs, and without the signal a
+/// driver would wait forever after the bridge exits.
+pub(crate) struct TickStream {
+    ticks: broadcast::Receiver<()>,
+    shutdown: watch::Receiver<()>,
+}
+
+impl TickStream {
+    pub(crate) fn new(
+        client: &mineflayer_engine::Client,
+        mut shutdown: watch::Receiver<()>,
+    ) -> Self {
+        // mark the initial value seen so only the sender's drop resolves
+        let _ = shutdown.borrow_and_update();
+        Self {
+            ticks: client.get_tick_broadcaster(),
+            shutdown,
+        }
+    }
+
+    /// Wait for the next tick. `false` once the bridge has shut down or the
+    /// tick channel closed. The channel holds one tick, so a slow driver
+    /// loses ticks, not its loop.
+    pub(crate) async fn next(&mut self) -> bool {
+        tokio::select! {
+            r = self.ticks.recv() => !matches!(r, Err(broadcast::error::RecvError::Closed)),
+            _ = self.shutdown.changed() => false,
+        }
+    }
 }
 
 /// Storage rules 1 and 2: read a component on the client entity. `None`

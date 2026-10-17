@@ -23,7 +23,7 @@ use mineflayer_engine::{
     entity::{Attributes, Position, dimensions::EntityDimensions, metadata::Health},
 };
 
-use crate::bot::{with_component, with_component_mut};
+use crate::bot::{TickStream, with_component, with_component_mut};
 use crate::{
     Bot, BotEvent, Error, Result,
     pathfinder::{Goal, Movements},
@@ -351,36 +351,21 @@ impl Pvp<'_> {
 /// made the loop stale); a stale or cancelled driver exits silently so
 /// the event can never double-fire.
 ///
-/// `shutdown` is the disconnect signal: the `TickBroadcast` sender is a
-/// World resource kept alive by the `Client` the driver holds, so
-/// `ticks.recv()` can never observe `Closed` — without this arm the loop
-/// would park forever after the bridge exits.
+/// `shutdown` is the disconnect signal (see [`TickStream`]); the loop ends
+/// on it and reports the end.
 async fn drive(
     bot: Bot,
     entity: EntityRef,
     cancel: Arc<AtomicBool>,
-    mut shutdown: tokio::sync::watch::Receiver<()>,
+    shutdown: tokio::sync::watch::Receiver<()>,
 ) {
-    let mut ticks = bot.client.get_tick_broadcaster();
-    let _ = shutdown.borrow_and_update();
+    let mut ticks = TickStream::new(&bot.client, shutdown);
     // upstream `timeToNextAttack` — attack() resets it to 0, each tick
     // decrements, and `=== -1` attempts a swing
     let mut time_to_next_attack: i64 = 0;
     let mut was_in_range = false;
     let mut rng = seed_rng(&entity);
-    loop {
-        tokio::select! {
-            r = ticks.recv() => {
-                match r {
-                    Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-                }
-            }
-            _ = shutdown.changed() => {
-                report_end_if_ours(&bot, &cancel);
-                return;
-            }
-        }
+    while ticks.next().await {
         if cancel.load(atomic::Ordering::Relaxed) {
             return;
         }
@@ -454,6 +439,7 @@ async fn drive(
         bot.emit_event(BotEvent::AttackedTarget);
         time_to_next_attack = rate.ticks(cooldown_ticks(&bot), &mut rng);
     }
+    report_end_if_ours(&bot, &cancel);
 }
 
 /// The held weapon's cooldown in ticks — the `getCooldown(heldItem)`

@@ -82,7 +82,7 @@ pub use movements::Movements;
 use movements::*;
 pub(crate) use tracking::{PathTracker, bridge_events};
 
-use crate::bot::{with_component, with_component_mut};
+use crate::bot::{TickStream, with_component, with_component_mut};
 use crate::{Bot, BotEvent, Error, Result, windows::Item, world::Block};
 
 /// Cost added to an edge that enters a `blocks_to_avoid` block — the same
@@ -815,26 +815,15 @@ fn follow_driver(
     issue_gen: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticks = client.get_tick_broadcaster();
-        let mut shutdown = bot.shutdown.clone();
-        // mark the initial value seen so only the sender's drop resolves
-        let _ = shutdown.borrow_and_update();
+        let mut ticks = TickStream::new(&client, bot.shutdown.clone());
         let mut last_target: Option<BlockPos> = None;
         // the goal was just issued — a drop observed on the first poll
         // is a fresh one
         let mut was_live = true;
         let mut despawned = false;
         loop {
-            tokio::select! {
-                r = ticks.recv() => {
-                    match r {
-                        // capacity-1 broadcast — a scheduling stall loses
-                        // ticks, not the follow; only a dead channel exits
-                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(broadcast::error::RecvError::Closed) => return,
-                    }
-                }
-                _ = shutdown.changed() => return,
+            if !ticks.next().await {
+                return;
             }
             if cancel.load(atomic::Ordering::Relaxed) {
                 break;
@@ -909,26 +898,17 @@ fn dynamic_watcher(
     goal: Arc<dyn EngineGoal>,
     movements: Movements,
     cancel: Arc<AtomicBool>,
-    mut shutdown: watch::Receiver<()>,
+    shutdown: watch::Receiver<()>,
     issue_gen: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticks = client.get_tick_broadcaster();
-        let _ = shutdown.borrow_and_update();
+        let mut ticks = TickStream::new(&client, shutdown);
         // the goal was just issued — a drop observed on the first poll
         // is a fresh one
         let mut was_live = true;
         loop {
-            tokio::select! {
-                r = ticks.recv() => {
-                    match r {
-                        // capacity-1 broadcast — a scheduling stall loses
-                        // ticks, not the watcher; only a dead channel exits
-                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(broadcast::error::RecvError::Closed) => return,
-                    }
-                }
-                _ = shutdown.changed() => return,
+            if !ticks.next().await {
+                return;
             }
             if cancel.load(atomic::Ordering::Relaxed) {
                 break;
