@@ -33,6 +33,7 @@ use mineflayer_engine::{
     registry::builtin::Attribute,
 };
 
+use crate::bot::{with_component, with_component_mut};
 use crate::{
     Bot, Error, Result,
     inventory::{EquipDest, QUICK_BAR_START},
@@ -73,26 +74,6 @@ struct ToolState {
     /// `chestLocations` — positions of chests `getFromChest` may pull
     /// tools from.
     chest_locations: Vec<BlockPos>,
-}
-
-/// Read from the [`ToolState`] component; `None` pre-spawn.
-fn tool_state<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&ToolState) -> R) -> Option<R> {
-    let ecs = client.ecs.read();
-    let entity = ecs.get_entity(client.entity).ok()?;
-    entity.get::<ToolState>().map(f)
-}
-
-/// Run `f` against [`ToolState`], inserting a default one first.
-fn tool_state_mut<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&mut ToolState) -> R,
-) -> Option<R> {
-    let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
-    if entity.get::<ToolState>().is_none() {
-        entity.insert(ToolState::default());
-    }
-    entity.get_mut::<ToolState>().map(|mut c| f(&mut c))
 }
 
 /// `block.canHarvest(itemType)` — whether `stack` produces drops
@@ -221,18 +202,19 @@ impl Tool<'_> {
     /// `bot.tool.chestLocations` — the chest positions `getFromChest`
     /// may pull tools from (upstream's public array).
     pub fn chest_locations(&self) -> Vec<BlockPos> {
-        tool_state(&self.bot.client, |s| s.chest_locations.clone()).unwrap_or_default()
+        with_component::<ToolState, _>(&self.bot.client, |s| s.chest_locations.clone())
+            .unwrap_or_default()
     }
 
     /// Replace `chestLocations`.
     pub fn set_chest_locations(&self, locations: Vec<BlockPos>) {
-        tool_state_mut(&self.bot.client, |s| s.chest_locations = locations);
+        with_component_mut::<ToolState, _>(&self.bot.client, |s| s.chest_locations = locations);
     }
 
     /// `chestLocations.push(pos)` — upstream mutates the array
     /// directly; same effect.
     pub fn add_chest_location(&self, pos: BlockPos) {
-        tool_state_mut(&self.bot.client, |s| s.chest_locations.push(pos));
+        with_component_mut::<ToolState, _>(&self.bot.client, |s| s.chest_locations.push(pos));
     }
 
     /// `bot.tool.equipForBlock(block)` — the default-options call.

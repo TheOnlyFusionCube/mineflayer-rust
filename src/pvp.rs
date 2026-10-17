@@ -23,6 +23,7 @@ use mineflayer_engine::{
     entity::{Attributes, Position, dimensions::EntityDimensions, metadata::Health},
 };
 
+use crate::bot::{with_component, with_component_mut};
 use crate::{
     Bot, BotEvent, Error, Result,
     pathfinder::{Goal, Movements},
@@ -145,28 +146,6 @@ struct PvpState {
     opts: PvpOpts,
 }
 
-/// Read from the [`PvpState`] component. `None` when it or the entity
-/// doesn't exist.
-fn pvp_state<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&PvpState) -> R) -> Option<R> {
-    let ecs = client.ecs.read();
-    let entity = ecs.get_entity(client.entity).ok()?;
-    entity.get::<PvpState>().map(f)
-}
-
-/// Run `f` against [`PvpState`], inserting a default one first. `None`
-/// when the client entity is gone.
-fn pvp_state_mut<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&mut PvpState) -> R,
-) -> Option<R> {
-    let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
-    if entity.get::<PvpState>().is_none() {
-        entity.insert(PvpState::default());
-    }
-    entity.get_mut::<PvpState>().map(|mut c| f(&mut c))
-}
-
 /// Stop pathfinding only while our follow goal is still the installed
 /// one — a `set_goal` since `attack` (from the user, or another plugin)
 /// belongs to them and `stop()` mustn't kill it.
@@ -216,11 +195,14 @@ impl Pvp<'_> {
         }
         // upstream `if (target === this.target) return;` — no goal reset,
         // no new driver, no `startedAttacking`
-        let current = pvp_state(&bot.client, |s| s.target.as_ref().map(|t| t.id())).flatten();
+        let current =
+            with_component::<PvpState, _>(&bot.client, |s| s.target.as_ref().map(|t| t.id()))
+                .flatten();
         if current == Some(entity.id()) {
             return Ok(());
         }
-        let opts = pvp_state(&bot.client, |s| s.opts.clone()).unwrap_or_default();
+        let opts =
+            with_component::<PvpState, _>(&bot.client, |s| s.opts.clone()).unwrap_or_default();
         // upstream: `if (this.movements) pathfinder.setMovements(this.movements)`
         if let Some(movements) = opts.movements {
             bot.pathfinder().set_movements(movements);
@@ -234,7 +216,7 @@ impl Pvp<'_> {
             true,
         )?;
         let cancel = Arc::new(AtomicBool::new(false));
-        let recorded = pvp_state_mut(&bot.client, |s| {
+        let recorded = with_component_mut::<PvpState, _>(&bot.client, |s| {
             // a retarget retires the previous driver — it sees the flag or
             // the replaced cancel and exits silently
             if let Some(old) = s.cancel.replace(cancel.clone()) {
@@ -287,7 +269,7 @@ impl Pvp<'_> {
     /// `bot.pvp.target` — the entity the loop is driving at, `None` when
     /// idle.
     pub fn target(&self) -> Option<EntityRef> {
-        pvp_state(&self.bot.client, |s| s.target.clone()).flatten()
+        with_component::<PvpState, _>(&self.bot.client, |s| s.target.clone()).flatten()
     }
 
     /// `bot.pvp.followRange` — how close the follow goal gets (default 2).
@@ -341,7 +323,7 @@ impl Pvp<'_> {
     /// Clear the target + retire the driver flag; the target when an
     /// attack was running. Shared by `stop`/`force_stop`.
     fn take_target(&self) -> Option<EntityRef> {
-        pvp_state_mut(&self.bot.client, |s| {
+        with_component_mut::<PvpState, _>(&self.bot.client, |s| {
             if let Some(cancel) = s.cancel.take() {
                 cancel.store(true, atomic::Ordering::Relaxed);
             }
@@ -352,13 +334,14 @@ impl Pvp<'_> {
 
     /// Read an opts field through the component (defaults pre-spawn).
     fn opts<R>(&self, f: impl FnOnce(&PvpOpts) -> R) -> R {
-        let opts = pvp_state(&self.bot.client, |s| s.opts.clone()).unwrap_or_default();
+        let opts =
+            with_component::<PvpState, _>(&self.bot.client, |s| s.opts.clone()).unwrap_or_default();
         f(&opts)
     }
     /// Mutate an opts field; a silent no-op pre-spawn (there's no state
     /// to attach it to yet).
     fn set_opts(&self, f: impl FnOnce(&mut PvpOpts)) {
-        pvp_state_mut(&self.bot.client, |s| f(&mut s.opts));
+        with_component_mut::<PvpState, _>(&self.bot.client, |s| f(&mut s.opts));
     }
 }
 
@@ -429,7 +412,7 @@ async fn drive(
         };
         // opts are read live each tick, like upstream's per-tick field
         // reads — mid-fight retunes take effect immediately
-        let (view_distance, attack_range, rate) = pvp_state(&bot.client, |s| {
+        let (view_distance, attack_range, rate) = with_component::<PvpState, _>(&bot.client, |s| {
             (
                 s.opts.view_distance,
                 s.opts.attack_range,
@@ -500,7 +483,7 @@ fn seed_rng(entity: &EntityRef) -> u64 {
 /// `stop()`/retarget that beat the driver here already owns the outcome,
 /// so a stale driver exits silently.
 fn report_end_if_ours(bot: &Bot, cancel: &Arc<AtomicBool>) {
-    let ended = pvp_state_mut(&bot.client, |s| {
+    let ended = with_component_mut::<PvpState, _>(&bot.client, |s| {
         let mine = s.cancel.as_ref().is_some_and(|c| Arc::ptr_eq(c, cancel));
         if mine {
             s.cancel = None;
@@ -761,7 +744,7 @@ mod tests {
         // attack, but Position is enough for the distance check
         let target = spawn_target(&bot, 200., 0.);
         let cancel = Arc::new(AtomicBool::new(false));
-        pvp_state_mut(&bot.client, |s| {
+        with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.cancel = Some(cancel.clone());
             s.target = Some(target.clone());
         });
@@ -791,7 +774,7 @@ mod tests {
         let bot = tick_bot();
         let target = spawn_target(&bot, 50., 0.);
         let cancel = Arc::new(AtomicBool::new(false));
-        pvp_state_mut(&bot.client, |s| {
+        with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.cancel = Some(cancel.clone());
             s.target = Some(target.clone());
         });
@@ -837,7 +820,7 @@ mod tests {
         let mut rx = bot.events();
         let target = spawn_target(&bot, 5., 0.);
         let cancel = Arc::new(AtomicBool::new(false));
-        pvp_state_mut(&bot.client, |s| {
+        with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.cancel = Some(cancel.clone());
             s.target = Some(target.clone());
         });

@@ -10,6 +10,7 @@ use std::{sync::Arc, time::Duration};
 
 use mineflayer_engine::{
     core::{position::ChunkPos, registry_holder::RegistryHolder},
+    ecs::component::{Component, Mutable},
     world::WorldName,
 };
 use parking_lot::{Mutex, RwLock};
@@ -109,6 +110,33 @@ pub(crate) struct BotShared {
     pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
     /// Scoreboard/team/boss-bar state — see `scoreboard::ScoreboardState`.
     pub scoreboard: Arc<Mutex<crate::scoreboard::ScoreboardState>>,
+}
+
+/// Storage rules 1 and 2: read a component on the client entity. `None`
+/// when the entity or the component does not exist.
+///
+/// lock rule: `f` runs while the ECS lock is held, so it must not take a
+/// domain lock.
+pub(crate) fn with_component<T: Component, R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&T) -> R,
+) -> Option<R> {
+    let ecs = client.ecs.read();
+    ecs.get_entity(client.entity).ok()?.get::<T>().map(f)
+}
+
+/// Storage rule 2: change a component on the client entity, created with
+/// its default on first use. `None` when the entity does not exist.
+///
+/// lock rule: as for [`with_component`].
+pub(crate) fn with_component_mut<T: Component<Mutability = Mutable> + Default, R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut T) -> R,
+) -> Option<R> {
+    let mut ecs = client.ecs.write();
+    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
+    let mut component = entity.entry::<T>().or_default().into_mut();
+    Some(f(&mut component))
 }
 
 /// Lock rule (see docs/history/PORT-PLAN.md, B9). Two lock families meet here:

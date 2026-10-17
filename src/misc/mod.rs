@@ -31,6 +31,7 @@ use tokio::sync::{broadcast, oneshot};
 mod creative;
 pub use creative::Creative;
 
+use crate::bot::with_component_mut;
 use crate::{Bot, BotEvent, Error, Result};
 
 /// Facade-kept bot state, stored as an ECS component on the client entity.
@@ -549,22 +550,6 @@ impl From<&Settings> for ClientInformation {
     }
 }
 
-/// Shared `MiscState` accessor — lazily inserts the component.
-fn misc_mut<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&mut MiscState) -> R,
-) -> Result<R> {
-    let mut ecs = client.ecs.write();
-    let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
-        return Err(Error::NotConnected);
-    };
-    if entity.get_mut::<MiscState>().is_none() {
-        entity.insert(MiscState::default());
-    }
-    let mut state = entity.get_mut::<MiscState>().unwrap();
-    Ok(f(&mut state))
-}
-
 impl Bot {
     /// `bot.settings` — reads back the `ClientInformation` component the engine
     /// stores (so a builder `view_distance` and later `set_settings` calls
@@ -599,7 +584,8 @@ impl Bot {
         let difficulty = settings.difficulty;
         self.client
             .set_client_information(ClientInformation::from(&settings));
-        misc_mut(&self.client, |m| m.difficulty = difficulty)?;
+        with_component_mut::<MiscState, _>(&self.client, |m| m.difficulty = difficulty)
+            .ok_or(Error::NotConnected)?;
         Ok(())
     }
 
@@ -734,12 +720,13 @@ impl Bot {
             return Err(Error::NotConnected);
         }
         let (cancel_tx, mut cancel_rx) = oneshot::channel();
-        misc_mut(&self.client, |m| {
+        with_component_mut::<MiscState, _>(&self.client, |m| {
             if let Some(prev) = m.fishing.take() {
                 let _ = prev.send(());
             }
             m.fishing = Some(cancel_tx);
-        })?;
+        })
+        .ok_or(Error::NotConnected)?;
 
         // subscribe before casting so the bobber spawn can't be missed
         let mut rx = self.subscribe();
@@ -809,7 +796,7 @@ impl Bot {
             }
         };
 
-        let _ = misc_mut(&self.client, |m| m.fishing = None);
+        let _ = with_component_mut::<MiscState, _>(&self.client, |m| m.fishing = None);
         result
     }
 }

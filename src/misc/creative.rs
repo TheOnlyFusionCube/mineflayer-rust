@@ -14,7 +14,8 @@ use mineflayer_engine::{
 };
 use tokio::sync::broadcast;
 
-use super::misc_mut;
+use super::MiscState;
+use crate::bot::with_component_mut;
 use crate::{Bot, BotEvent, Error, Result};
 
 impl Bot {
@@ -46,7 +47,7 @@ struct CreativeSlotGuard {
 
 impl Drop for CreativeSlotGuard {
     fn drop(&mut self) {
-        let _ = misc_mut(&self.client, |m| {
+        let _ = with_component_mut::<MiscState, _>(&self.client, |m| {
             m.creative_slots_in_flight.remove(&self.slot);
         });
     }
@@ -77,7 +78,10 @@ impl Creative {
         if same {
             return Ok(());
         }
-        let in_flight = misc_mut(&self.client, |m| !m.creative_slots_in_flight.insert(slot))?;
+        let in_flight = with_component_mut::<MiscState, _>(&self.client, |m| {
+            !m.creative_slots_in_flight.insert(slot)
+        })
+        .ok_or(Error::NotConnected)?;
         if in_flight {
             return Err(Error::Cancelled(format!(
                 "Setting slot {slot} cancelled due to calling bot.creative.set_inventory_slot({slot}, ...) again"
@@ -224,10 +228,13 @@ impl Creative {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::misc::misc_mut;
+    use crate::misc::MiscState;
 
     fn slot_flagged(bot: &Bot, slot: u16) -> bool {
-        misc_mut(bot.client(), |m| m.creative_slots_in_flight.contains(&slot)).unwrap_or(false)
+        with_component_mut::<MiscState, _>(bot.client(), |m| {
+            m.creative_slots_in_flight.contains(&slot)
+        })
+        .unwrap_or(false)
     }
 
     /// A cancelled `set_inventory_slot` releases its slot flag — a

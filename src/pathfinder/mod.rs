@@ -71,7 +71,6 @@ use mineflayer_engine::{
     world::ChunkStorage,
 };
 use tokio::sync::{broadcast, watch};
-use tracing::warn;
 
 mod goal;
 mod movements;
@@ -83,6 +82,7 @@ pub use movements::Movements;
 use movements::*;
 pub(crate) use tracking::{PathTracker, bridge_events};
 
+use crate::bot::{with_component, with_component_mut};
 use crate::{Bot, BotEvent, Error, Result, windows::Item, world::Block};
 
 /// Cost added to an edge that enters a `blocks_to_avoid` block — the same
@@ -203,40 +203,6 @@ impl Default for PathfinderFacade {
     }
 }
 
-/// Run `f` against the [`PathfinderFacade`] component, inserting a default
-/// one first if the client entity lacks it. `None` when the entity is gone.
-///
-/// lock rule: `f` runs while the ECS lock is held — it must not take any
-/// domain lock (never take a domain lock while an ECS guard is alive).
-fn facade_mut<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&mut PathfinderFacade) -> R,
-) -> Option<R> {
-    let mut ecs = client.ecs.write();
-    let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
-        warn!("pathfinder facade is missing — the client entity is gone");
-        return None;
-    };
-    if entity.get::<PathfinderFacade>().is_none() {
-        entity.insert(PathfinderFacade::default());
-    }
-    entity.get_mut::<PathfinderFacade>().map(|mut c| f(&mut c))
-}
-
-/// Read from the [`PathfinderFacade`] component. `None` when it or the
-/// entity doesn't exist yet.
-///
-/// lock rule: `f` runs while the ECS lock is held — it must not take any
-/// domain lock.
-fn facade<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&PathfinderFacade) -> R,
-) -> Option<R> {
-    let ecs = client.ecs.read();
-    let entity = ecs.get_entity(client.entity).ok()?;
-    entity.get::<PathfinderFacade>().map(f)
-}
-
 /// Publish the `Movements` constraints into `CustomPathfinderState` so
 /// [`movements_move`] sees them during the next search.
 ///
@@ -338,7 +304,7 @@ impl Pathfinder<'_> {
                             // (a previous goal's update, or an aborted
                             // calc's `noPath` report) — skip it.
                             if matches!(status, PathStatus::NoPath | PathStatus::Timeout)
-                                && let Some(err) = facade(&client, |f| {
+                                && let Some(err) = with_component::<PathfinderFacade, _>(&client, |f| {
                                     (f.set_gen == my_gen)
                                         .then_some(f.last_failure)
                                         .flatten()
@@ -354,7 +320,7 @@ impl Pathfinder<'_> {
                         Ok(BotEvent::GoalUpdated { .. }) => {
                             // a `set_goal` after ours — our own event is
                             // skipped because `set_gen` is still ours
-                            if facade(&client, |f| f.set_gen) != Some(my_gen) {
+                            if with_component::<PathfinderFacade, _>(&client, |f| f.set_gen) != Some(my_gen) {
                                 return Err(PathError::GoalChanged.into());
                             }
                         }
@@ -376,7 +342,7 @@ impl Pathfinder<'_> {
                     // `Timeout` leaves the goal installed (upstream's
                     // surviving `stateGoal`) with only `last_failure`
                     // recording the outcome
-                    match facade(&client, |f| {
+                    match with_component::<PathfinderFacade, _>(&client, |f| {
                         (f.set_gen, f.goal.is_some(), f.last_failure)
                     }) {
                         // a `set_goal` after ours — the `goal_updated`
@@ -431,7 +397,7 @@ impl Pathfinder<'_> {
         // the facade write lands BEFORE the ECS patch — same interleave
         // argument as `stop()` (N-3): an ownerless installed goal is
         // silent, an ownerless clear edge is a phantom `NoPath`
-        let set_gen = facade_mut(&client, |f| {
+        let set_gen = with_component_mut::<PathfinderFacade, _>(&client, |f| {
             cancel_watcher(f);
             // `newGoal !== goal` — upstream's identity check wouldn't
             // reject a goto when the identical goal is re-issued, so an
@@ -470,7 +436,7 @@ impl Pathfinder<'_> {
         }
         let result = self.issue(goal, dynamic, movements);
         if result.is_err() {
-            facade_mut(&client, |f| f.goal = None);
+            with_component_mut::<PathfinderFacade, _>(&client, |f| f.goal = None);
         }
         result.map(|_| set_gen)
     }
@@ -486,14 +452,15 @@ impl Pathfinder<'_> {
         // (the engine's `goto_listener` keeps the last event, and a stale
         // goal would later emit a spurious `path_stop`).
         let (issue_gen, think_timeout) =
-            facade(&client, |f| (f.goal_gen, f.think_timeout)).unwrap_or_default();
+            with_component::<PathfinderFacade, _>(&client, |f| (f.goal_gen, f.think_timeout))
+                .unwrap_or_default();
         let opts = movements.to_opts().max_timeout(think_timeout);
         match goal {
             Goal::Follow { entity, range } => {
                 let cancel = Arc::new(AtomicBool::new(false));
                 // set_movements re-issues through here too — always retire
                 // the previous watcher before starting a new one
-                facade_mut(&client, |f| {
+                with_component_mut::<PathfinderFacade, _>(&client, |f| {
                     cancel_watcher(f);
                     f.watcher_cancel = Some(cancel.clone());
                 });
@@ -520,7 +487,7 @@ impl Pathfinder<'_> {
                 client.start_goto_with_opts(SharedGoal(engine_goal.clone()), opts);
                 if dynamic {
                     let cancel = Arc::new(AtomicBool::new(false));
-                    facade_mut(&client, |f| {
+                    with_component_mut::<PathfinderFacade, _>(&client, |f| {
                         cancel_watcher(f);
                         f.watcher_cancel = Some(cancel.clone());
                     });
@@ -548,14 +515,14 @@ impl Pathfinder<'_> {
         // upstream: `if (!stateGoal && path.length === 0) return` — an
         // idle stop emits nothing
         let active = !client.is_goto_target_reached()
-            || facade(client, |f| f.goal.is_some()).unwrap_or(false);
+            || with_component::<PathfinderFacade, _>(client, |f| f.goal.is_some()).unwrap_or(false);
         // the facade write lands BEFORE the engine's stop handler runs:
         // the opposite order lets a bridge tick see `calc_finished &&
         // goal_cleared` with the facade goal still set and report a
         // phantom `NoPath` a pending `goto` would trust over `PathStopped`
         // (N-3). This order shows an ownerless installed goal — every arm
         // gates on the facade goal, so it's silent.
-        let stopped = facade_mut(client, |f| {
+        let stopped = with_component_mut::<PathfinderFacade, _>(client, |f| {
             cancel_watcher(f);
             f.last_failure = None;
             f.goal.take()
@@ -588,13 +555,14 @@ impl Pathfinder<'_> {
     /// `bot.pathfinder.goal` — the goal `set_goal` last installed
     /// (upstream's `stateGoal`), `None` once it's reached or stopped.
     pub fn goal(&self) -> Option<Goal> {
-        facade(self.client(), |f| f.goal.clone()).flatten()
+        with_component::<PathfinderFacade, _>(self.client(), |f| f.goal.clone()).flatten()
     }
 
     /// `bot.pathfinder.movements` — the current `Movements` config
     /// (upstream defaults until `set_movements` runs).
     pub fn movements(&self) -> Movements {
-        facade(self.client(), |f| f.movements.clone()).unwrap_or_default()
+        with_component::<PathfinderFacade, _>(self.client(), |f| f.movements.clone())
+            .unwrap_or_default()
     }
 
     /// `bot.pathfinder.setMovements(movements)` — replaces the config and,
@@ -604,7 +572,7 @@ impl Pathfinder<'_> {
         let client = self.client().clone();
         sync_constraints(&client, &movements);
         let was_executing = client.is_executing_path();
-        let goal_and_dynamic = facade_mut(&client, |f| {
+        let goal_and_dynamic = with_component_mut::<PathfinderFacade, _>(&client, |f| {
             f.movements = movements.clone();
             // re-issuing is a new goal generation — watchers still
             // holding the previous generation stop instead of
@@ -631,14 +599,15 @@ impl Pathfinder<'_> {
     /// The engine as `PathfinderOpts::max_timeout`; also the NoPath-vs-Timeout
     /// threshold the bridge classifies a failed search against.
     pub fn think_timeout(&self) -> Duration {
-        facade(self.client(), |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT)
+        with_component::<PathfinderFacade, _>(self.client(), |f| f.think_timeout)
+            .unwrap_or(DEFAULT_THINK_TIMEOUT)
     }
 
     /// `bot.pathfinder.thinkTimeout = ms` — affects goals issued from
     /// this point on (upstream mutates the live search context; ours is
     /// read at issue time).
     pub fn set_think_timeout(&self, timeout: Duration) {
-        facade_mut(self.client(), |f| f.think_timeout = timeout);
+        with_component_mut::<PathfinderFacade, _>(self.client(), |f| f.think_timeout = timeout);
     }
 
     /// `bot.pathfinder.isMining()` — whether the bot is currently mining
@@ -877,7 +846,10 @@ fn follow_driver(
             let live = pathfinder_live(&client);
             let fresh_drop = was_live && !live;
             was_live = live;
-            if facade(&client, |f| f.goal.is_some() && f.goal_gen == issue_gen) != Some(true) {
+            if with_component::<PathfinderFacade, _>(&client, |f| {
+                f.goal.is_some() && f.goal_gen == issue_gen
+            }) != Some(true)
+            {
                 // reached (non-dynamic), stopped, or replaced — whoever
                 // cleared or superseded it already reported the outcome;
                 // a goal_gen check alone isn't enough: `goal.is_some()` on
@@ -895,8 +867,8 @@ fn follow_driver(
             last_target = Some(block_pos);
             // every issue reads the live think_timeout — a
             // `set_think_timeout` mid-follow must reach re-issues
-            let think_timeout =
-                facade(&client, |f| f.think_timeout).unwrap_or(DEFAULT_THINK_TIMEOUT);
+            let think_timeout = with_component::<PathfinderFacade, _>(&client, |f| f.think_timeout)
+                .unwrap_or(DEFAULT_THINK_TIMEOUT);
             client.start_goto_with_opts(
                 SharedGoal(Arc::new(goals::RadiusGoal::new(pos, range))),
                 movements.to_opts().max_timeout(think_timeout),
@@ -909,7 +881,7 @@ fn follow_driver(
         // Report `path_stop` only if the goal is still ours: a
         // reach/stop/replace that beat us to the facade already owns the
         // outcome (emitting again would double `path_stop`).
-        let stopped = facade_mut(&client, |f| {
+        let stopped = with_component_mut::<PathfinderFacade, _>(&client, |f| {
             if f.goal_gen == issue_gen {
                 f.goal.take()
             } else {
@@ -979,7 +951,7 @@ fn dynamic_watcher(
             if fresh_drop {
                 continue;
             }
-            let Some(think_timeout) = facade(&client, |f| {
+            let Some(think_timeout) = with_component::<PathfinderFacade, _>(&client, |f| {
                 (f.goal.is_some() && f.goal_gen == issue_gen).then_some(f.think_timeout)
             })
             .flatten() else {
@@ -1096,7 +1068,7 @@ mod tests {
             .spawn(Position::new(Vec3::new(5., 64., 0.)))
             .id();
         let target = client.entity_ref_for(target_entity);
-        facade_mut(&client, |f| {
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
             f.goal = Some(Goal::Follow {
                 entity: target.clone(),
                 range: 2.,
@@ -1157,7 +1129,7 @@ mod tests {
         tokio::select! {
             r = &mut *goto => panic!("goto resolved before its goal was installed: {r:?}"),
             _ = async {
-                while facade(client, |f| f.goal.is_none()).unwrap_or(true) {
+                while with_component::<PathfinderFacade, _>(client, |f| f.goal.is_none()).unwrap_or(true) {
                     tokio::task::yield_now().await;
                 }
             } => {}
@@ -1188,11 +1160,11 @@ mod tests {
         };
         let mut goto = std::pin::pin!(pf.goto(mk(&client)));
         await_install(&mut goto, &client).await;
-        let my_gen = facade(&client, |f| f.set_gen);
+        let my_gen = with_component::<PathfinderFacade, _>(&client, |f| f.set_gen);
 
         pf2.set_goal(mk(&client), false).unwrap();
         assert_eq!(
-            facade(&client, |f| f.set_gen),
+            with_component::<PathfinderFacade, _>(&client, |f| f.set_gen),
             my_gen,
             "an identical re-issue bumped set_gen"
         );
@@ -1313,7 +1285,7 @@ mod tests {
 
         // play the bridge's failure outcome: goal cleared, failure
         // recorded — the goto's tick arm must surface it
-        facade_mut(&client, |f| {
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
             f.goal = None;
             f.last_failure = Some(PathError::NoPath);
         });
@@ -1345,10 +1317,12 @@ mod tests {
 
         // play the bridge's budget outcome: the goal survives with the
         // timeout recorded — the goto's tick arm must still surface it
-        facade_mut(&client, |f| {
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
             f.last_failure = Some(PathError::Timeout);
         });
-        assert!(facade(&client, |f| f.goal.is_some()).unwrap_or(false));
+        assert!(
+            with_component::<PathfinderFacade, _>(&client, |f| f.goal.is_some()).unwrap_or(false)
+        );
         let ticks = crate::test_util::tick_sender(&client);
         while ticks.send(()).is_err() {
             tokio::task::yield_now().await;

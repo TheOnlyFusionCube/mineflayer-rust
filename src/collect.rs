@@ -30,6 +30,7 @@ use mineflayer_engine::{
 };
 use tokio::sync::broadcast;
 
+use crate::bot::{with_component, with_component_mut};
 use crate::{
     Bot, BotEvent, Error, Result,
     pathfinder::{Goal, Movements},
@@ -140,33 +141,10 @@ impl Default for CollectState {
     }
 }
 
-/// Read from the [`CollectState`] component; `None` pre-spawn.
-fn collect_state<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&CollectState) -> R,
-) -> Option<R> {
-    let ecs = client.ecs.read();
-    let entity = ecs.get_entity(client.entity).ok()?;
-    entity.get::<CollectState>().map(f)
-}
-
-/// Run `f` against [`CollectState`], inserting a default one first.
-fn collect_state_mut<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&mut CollectState) -> R,
-) -> Option<R> {
-    let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
-    if entity.get::<CollectState>().is_none() {
-        entity.insert(CollectState::default());
-    }
-    entity.get_mut::<CollectState>().map(|mut c| f(&mut c))
-}
-
 /// `true` when `generation` went stale — `cancel_task` or a newer
 /// non-`append` collect retired this run (or the state itself is gone).
 fn stale(client: &mineflayer_engine::Client, generation: u64) -> bool {
-    collect_state(client, |s| s.generation != generation).unwrap_or(true)
+    with_component::<CollectState, _>(client, |s| s.generation != generation).unwrap_or(true)
 }
 
 /// What [`CollectBlock::collect`] digs up — the `target` argument.
@@ -311,42 +289,43 @@ impl CollectBlock<'_> {
     /// `bot.collectBlock.chestLocations` — chests a full inventory may
     /// be emptied into mid-collect (upstream's public array).
     pub fn chest_locations(&self) -> Vec<BlockPos> {
-        collect_state(&self.bot.client, |s| s.chest_locations.clone()).unwrap_or_default()
+        with_component::<CollectState, _>(&self.bot.client, |s| s.chest_locations.clone())
+            .unwrap_or_default()
     }
 
     /// Replace `chestLocations`.
     pub fn set_chest_locations(&self, locations: Vec<BlockPos>) {
-        collect_state_mut(&self.bot.client, |s| s.chest_locations = locations);
+        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.chest_locations = locations);
     }
 
     /// `chestLocations.push(pos)`.
     pub fn add_chest_location(&self, pos: BlockPos) {
-        collect_state_mut(&self.bot.client, |s| s.chest_locations.push(pos));
+        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.chest_locations.push(pos));
     }
 
     /// `bot.collectBlock.itemFilter` — the chest-deposit filter
     /// (upstream's default keeps tools, weapons, and armor).
     pub fn item_filter(&self) -> ItemFilter {
-        collect_state(&self.bot.client, |s| s.item_filter.clone())
+        with_component::<CollectState, _>(&self.bot.client, |s| s.item_filter.clone())
             .unwrap_or_else(default_item_filter)
     }
 
     /// Replace `itemFilter`.
     pub fn set_item_filter(&self, filter: ItemFilter) {
-        collect_state_mut(&self.bot.client, |s| s.item_filter = filter);
+        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.item_filter = filter);
     }
 
     /// `bot.collectBlock.movements` — applied to the pathfinder on
     /// `collect` (default `Some(Movements::default())`; `None` leaves
     /// the pathfinder's config alone).
     pub fn movements(&self) -> Option<Movements> {
-        collect_state(&self.bot.client, |s| s.movements.clone())
+        with_component::<CollectState, _>(&self.bot.client, |s| s.movements.clone())
             .unwrap_or_else(|| Some(Movements::default()))
     }
 
     /// Set `movements`.
     pub fn set_movements(&self, movements: Option<Movements>) {
-        collect_state_mut(&self.bot.client, |s| s.movements = movements);
+        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.movements = movements);
     }
 
     /// `bot.collectBlock.collect(target)` — the default-options call.
@@ -385,7 +364,7 @@ impl CollectBlock<'_> {
         // upstream's `await this.cancelTask()` does; append shares its
         // generation (and its fate under a later cancel)
         let Some((generation, chest_locations, item_filter, movements)) =
-            collect_state_mut(&bot.client, |s| {
+            with_component_mut::<CollectState, _>(&bot.client, |s| {
                 if !opts.append {
                     s.generation += 1;
                 }
@@ -417,7 +396,9 @@ impl CollectBlock<'_> {
                 opts.ignore_no_path,
             )
             .await;
-        collect_state_mut(&bot.client, |s| s.active = s.active.saturating_sub(1));
+        with_component_mut::<CollectState, _>(&bot.client, |s| {
+            s.active = s.active.saturating_sub(1)
+        });
         // upstream emits collectBlock_finished from `finally` — on
         // success, error, and cancel alike
         bot.emit_event(BotEvent::CollectBlockFinished);
@@ -597,7 +578,7 @@ impl CollectBlock<'_> {
         // subscribe before the state check so a run finishing between
         // the two can't lose its `finished` event
         let mut rx = bot.subscribe();
-        let active = collect_state_mut(&bot.client, |s| {
+        let active = with_component_mut::<CollectState, _>(&bot.client, |s| {
             if s.active == 0 {
                 return false;
             }

@@ -97,7 +97,7 @@ pub(crate) fn bridge_events(
                     PathError::NoPath
                 };
                 client.stop_pathfinding();
-                facade_mut(client, |f| {
+                with_component_mut::<PathfinderFacade, _>(client, |f| {
                     if f.goal_gen == facade_gen {
                         f.last_failure = Some(error);
                         cancel_watcher(f);
@@ -129,7 +129,7 @@ pub(crate) fn bridge_events(
                 tracker.search_spent += *elapsed;
                 if tracker.search_spent >= think_timeout && !tracker.timeout_reported {
                     tracker.timeout_reported = true;
-                    facade_mut(client, |f| {
+                    with_component_mut::<PathfinderFacade, _>(client, |f| {
                         if f.goal_gen == facade_gen {
                             f.last_failure = Some(PathError::Timeout);
                         }
@@ -155,7 +155,7 @@ pub(crate) fn bridge_events(
                     .zip(self_position(client))
                     .is_some_and(|(goal, pos)| goal.is_end(client, pos));
                 if satisfied_now {
-                    let reached = facade_mut(client, |f| {
+                    let reached = with_component_mut::<PathfinderFacade, _>(client, |f| {
                         if f.goal_gen == facade_gen {
                             f.goal.take()
                         } else {
@@ -177,7 +177,8 @@ pub(crate) fn bridge_events(
             // reported itself; only a stop from elsewhere (a world
             // change, an engine-internal drop) still finds the facade
             // goal present — take it and report.
-            let stopped = facade_mut(client, |f| f.goal.take()).flatten();
+            let stopped =
+                with_component_mut::<PathfinderFacade, _>(client, |f| f.goal.take()).flatten();
             if let Some(goal) = stopped {
                 out.push(BotEvent::PathStop { goal: Some(goal) });
             }
@@ -221,7 +222,7 @@ mod tests {
 
     fn follow_goal_facade(client: &mineflayer_engine::Client) -> Goal {
         let goal = follow_at(client, Vec3::new(500., 64., 0.));
-        facade_mut(client, |f| {
+        with_component_mut::<PathfinderFacade, _>(client, |f| {
             f.goal = Some(goal.clone());
             f.goal_gen = 1;
             f.set_gen = 1;
@@ -260,7 +261,7 @@ mod tests {
             "a failed search is a status, not a stop"
         );
         assert_eq!(
-            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            with_component::<PathfinderFacade, _>(&client, |f| (f.goal.is_none(), f.last_failure)),
             Some((true, Some(PathError::NoPath))),
             "facade goal must be cleared with the failure recorded"
         );
@@ -276,7 +277,9 @@ mod tests {
             pathfinder::Pathfinder::default(),
         ));
         follow_goal_facade(&client);
-        facade_mut(&client, |f| f.think_timeout = Duration::from_millis(10));
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
+            f.think_timeout = Duration::from_millis(10)
+        });
         let mut tracker = PathTracker::default();
 
         let out = bridge_events(&client, &mut tracker, &path_found(Vec::new(), true, 50));
@@ -291,7 +294,7 @@ mod tests {
             "expected a timeout path_update, got {out:?}"
         );
         assert_eq!(
-            facade(&client, |f| (f.goal.is_none(), f.last_failure)),
+            with_component::<PathfinderFacade, _>(&client, |f| (f.goal.is_none(), f.last_failure)),
             Some((true, Some(PathError::Timeout)))
         );
     }
@@ -322,7 +325,9 @@ mod tests {
             )),
             "expected a success path_update, got {out:?}"
         );
-        assert!(facade(&client, |f| f.goal.is_some()).unwrap_or(false));
+        assert!(
+            with_component::<PathfinderFacade, _>(&client, |f| f.goal.is_some()).unwrap_or(false)
+        );
     }
 
     /// A partial path reports `partial` and leaves the goal installed.
@@ -366,7 +371,9 @@ mod tests {
             pathfinder::Pathfinder::default(),
         ));
         follow_goal_facade(&client);
-        facade_mut(&client, |f| f.think_timeout = Duration::from_millis(10));
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
+            f.think_timeout = Duration::from_millis(10)
+        });
         let mut tracker = PathTracker::default();
         let has_timeout = |out: &[BotEvent]| {
             out.iter().any(|e| {
@@ -401,7 +408,7 @@ mod tests {
             "expected the timeout report, got {out:?}"
         );
         assert_eq!(
-            facade(&client, |f| (f.goal.is_some(), f.last_failure)),
+            with_component::<PathfinderFacade, _>(&client, |f| (f.goal.is_some(), f.last_failure)),
             Some((true, Some(PathError::Timeout))),
             "the surviving stateGoal stays installed"
         );
@@ -426,7 +433,7 @@ mod tests {
         ));
         let goal = follow_at(&client, Vec3::new(500., 64., 0.));
         let watcher_cancel = Arc::new(AtomicBool::new(false));
-        facade_mut(&client, |f| {
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
             f.goal = Some(goal);
             f.dynamic = true;
             f.goal_gen = 1;
@@ -458,7 +465,7 @@ mod tests {
         }
         assert!(timed_out, "the timeout status must report");
         assert_eq!(
-            facade(&client, |f| (
+            with_component::<PathfinderFacade, _>(&client, |f| (
                 f.goal.is_some(),
                 f.last_failure,
                 f.watcher_cancel.is_some()
@@ -477,7 +484,7 @@ mod tests {
             Position::new(Vec3::new(0., 64., 0.)),
             pathfinder::Pathfinder::default(),
         ));
-        facade_mut(&client, |f| {
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
             // a YGoal the bot is already standing on
             f.goal = Some(Goal::Y { y: 64 });
             f.goal_gen = 1;
@@ -496,7 +503,9 @@ mod tests {
             "expected goal_reached, got {out:?}"
         );
         assert!(!out.iter().any(|e| matches!(e, BotEvent::PathUpdate { .. })));
-        assert!(facade(&client, |f| f.goal.is_none()).unwrap_or(false));
+        assert!(
+            with_component::<PathfinderFacade, _>(&client, |f| f.goal.is_none()).unwrap_or(false)
+        );
     }
 
     /// A `dynamic` goal's reach is the watcher's business — the facade
@@ -507,7 +516,7 @@ mod tests {
             Position::new(Vec3::new(0., 64., 0.)),
             pathfinder::Pathfinder::default(),
         ));
-        facade_mut(&client, |f| {
+        with_component_mut::<PathfinderFacade, _>(&client, |f| {
             f.goal = Some(Goal::Y { y: 64 });
             f.dynamic = true;
             f.goal_gen = 1;
@@ -521,7 +530,9 @@ mod tests {
             &Event::Pathfinder(PathEvent::GoalReached),
         );
         assert!(out.is_empty(), "dynamic reach must be silent, got {out:?}");
-        assert!(facade(&client, |f| f.goal.is_some()).unwrap_or(false));
+        assert!(
+            with_component::<PathfinderFacade, _>(&client, |f| f.goal.is_some()).unwrap_or(false)
+        );
     }
 
     /// A stop the port initiated (`stop()`, the follow driver) cleared
@@ -563,7 +574,9 @@ mod tests {
                 .any(|e| matches!(e, BotEvent::PathStop { goal: Some(_) })),
             "expected path_stop with the goal, got {out:?}"
         );
-        assert!(facade(&client, |f| f.goal.is_none()).unwrap_or(false));
+        assert!(
+            with_component::<PathfinderFacade, _>(&client, |f| f.goal.is_none()).unwrap_or(false)
+        );
     }
 
     /// Non-pathfinder events stay inert.

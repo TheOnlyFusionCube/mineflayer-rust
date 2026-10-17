@@ -31,6 +31,7 @@ use mineflayer_engine::{
     registry::builtin::ItemKind,
 };
 
+use crate::bot::{with_component, with_component_mut};
 use crate::{Bot, BotEvent, Error, Result, inventory::EquipDest, windows::Item};
 
 /// Upstream `mineflayer-auto-eat`'s default `bannedFood` — foods with
@@ -198,31 +199,6 @@ struct AutoEatState {
     driver: Option<Arc<AtomicBool>>,
 }
 
-/// Read from the [`AutoEatState`] component. `None` when it or the
-/// entity doesn't exist.
-fn auto_eat_state<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&AutoEatState) -> R,
-) -> Option<R> {
-    let ecs = client.ecs.read();
-    let entity = ecs.get_entity(client.entity).ok()?;
-    entity.get::<AutoEatState>().map(f)
-}
-
-/// Run `f` against [`AutoEatState`], inserting a default one first.
-/// `None` when the client entity is gone.
-fn auto_eat_state_mut<R>(
-    client: &mineflayer_engine::Client,
-    f: impl FnOnce(&mut AutoEatState) -> R,
-) -> Option<R> {
-    let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
-    if entity.get::<AutoEatState>().is_none() {
-        entity.insert(AutoEatState::default());
-    }
-    entity.get_mut::<AutoEatState>().map(|mut c| f(&mut c))
-}
-
 /// The `bot.autoEat` namespace — a borrowed view onto the [`Bot`], like
 /// [`Bot::pvp`]. Upstream's plugin is always attached once loaded; ours
 /// materializes its state on first use, so `bot.auto_eat()` needs no
@@ -242,25 +218,25 @@ impl Bot {
 impl AutoEat<'_> {
     /// `bot.autoEat.opts` — a snapshot of the current options.
     pub fn opts(&self) -> AutoEatOpts {
-        auto_eat_state(&self.bot.client, |s| s.opts.clone()).unwrap_or_default()
+        with_component::<AutoEatState, _>(&self.bot.client, |s| s.opts.clone()).unwrap_or_default()
     }
 
     /// `bot.autoEat.setOpts(partial)` — replace the options. Read
     /// [`AutoEat::opts`], change fields, and write back for the
     /// partial-update form upstream's merge gives.
     pub fn set_opts(&self, opts: AutoEatOpts) {
-        auto_eat_state_mut(&self.bot.client, |s| s.opts = opts);
+        with_component_mut::<AutoEatState, _>(&self.bot.client, |s| s.opts = opts);
     }
 
     /// `bot.autoEat.enabled` — whether the per-tick monitor is running.
     pub fn enabled(&self) -> bool {
-        auto_eat_state(&self.bot.client, |s| s.enabled).unwrap_or(false)
+        with_component::<AutoEatState, _>(&self.bot.client, |s| s.enabled).unwrap_or(false)
     }
 
     /// `bot.autoEat.isEating` — an eat is in flight (manual or
     /// monitor-driven).
     pub fn is_eating(&self) -> bool {
-        auto_eat_state(&self.bot.client, |s| s.is_eating).unwrap_or(false)
+        with_component::<AutoEatState, _>(&self.bot.client, |s| s.is_eating).unwrap_or(false)
     }
 
     /// `bot.autoEat.foodsByName[name]` analog — the vanilla food data
@@ -276,7 +252,7 @@ impl AutoEat<'_> {
     /// like upstream; the driver retires on [`AutoEat::disable_auto`] or
     /// disconnect.
     pub fn enable_auto(&self) {
-        let spawned = auto_eat_state_mut(&self.bot.client, |s| {
+        let spawned = with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             if s.enabled {
                 return None;
             }
@@ -301,7 +277,7 @@ impl AutoEat<'_> {
     /// `bot.autoEat.disableAuto()` — stop the monitor; an eat already in
     /// flight finishes normally, like upstream removing the listener.
     pub fn disable_auto(&self) {
-        auto_eat_state_mut(&self.bot.client, |s| {
+        with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             s.enabled = false;
             if let Some(cancel) = s.driver.take() {
                 cancel.store(true, atomic::Ordering::Relaxed);
@@ -322,7 +298,7 @@ impl AutoEat<'_> {
     /// and the call returns `Err` under `strict_errors`.
     pub async fn eat(&self, opts: EatOpts) -> Result<()> {
         let cancel = Arc::new(AtomicBool::new(false));
-        match auto_eat_state_mut(&self.bot.client, |s| {
+        match with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             if s.is_eating {
                 return false;
             }
@@ -336,7 +312,7 @@ impl AutoEat<'_> {
         let result = self.run_eat(opts, &cancel).await;
         // upstream leaks _eating on the equip-failure throw; releasing it
         // on every path is strictly better
-        auto_eat_state_mut(&self.bot.client, |s| {
+        with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             s.is_eating = false;
             s.eat_cancel = None;
         });
@@ -347,7 +323,7 @@ impl AutoEat<'_> {
     /// with `Eating manually canceled!` and releases the item use), a
     /// no-op when nothing is eating.
     pub fn cancel_eat(&self) {
-        let in_flight = auto_eat_state_mut(&self.bot.client, |s| {
+        let in_flight = with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             if let Some(cancel) = &s.eat_cancel {
                 cancel.store(true, atomic::Ordering::Relaxed);
                 true
@@ -374,22 +350,23 @@ impl AutoEat<'_> {
     /// resolve the food, equip it, activate, wait, restore, report.
     async fn run_eat(&self, opts: EatOpts, cancel: &Arc<AtomicBool>) -> Result<()> {
         let bot = self.bot;
-        let (offhand, equip_old, priority, timeout, strict) = auto_eat_state(&bot.client, |s| {
-            (
-                opts.offhand.unwrap_or(s.opts.offhand),
-                opts.equip_old_item.unwrap_or(s.opts.return_to_last_item),
-                opts.priority.unwrap_or(s.opts.priority),
-                s.opts.eating_timeout,
-                s.opts.strict_errors,
-            )
-        })
-        .unwrap_or((
-            false,
-            true,
-            FoodPriority::default(),
-            Duration::from_millis(3000),
-            true,
-        ));
+        let (offhand, equip_old, priority, timeout, strict) =
+            with_component::<AutoEatState, _>(&bot.client, |s| {
+                (
+                    opts.offhand.unwrap_or(s.opts.offhand),
+                    opts.equip_old_item.unwrap_or(s.opts.return_to_last_item),
+                    opts.priority.unwrap_or(s.opts.priority),
+                    s.opts.eating_timeout,
+                    s.opts.strict_errors,
+                )
+            })
+            .unwrap_or((
+                false,
+                true,
+                FoodPriority::default(),
+                Duration::from_millis(3000),
+                true,
+            ));
 
         let Some(food) = self.resolve_food(opts.food.as_ref(), priority) else {
             return Err(Error::NotFound(
@@ -422,7 +399,7 @@ impl AutoEat<'_> {
         // `eat_cancel` goes live with the wait — upstream's
         // `_rejectionBinding` only exists during `buildEatingListener`,
         // so a `cancel_eat` before this point is a silent no-op there too
-        auto_eat_state_mut(&bot.client, |s| s.eat_cancel = Some(cancel.clone()));
+        with_component_mut::<AutoEatState, _>(&bot.client, |s| s.eat_cancel = Some(cancel.clone()));
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
@@ -507,10 +484,11 @@ impl AutoEat<'_> {
     /// non-banned items of `items`, sorted by `priority` descending.
     /// Ties keep the earlier slot (upstream's sort is stable).
     pub fn find_best_choices(&self, items: &[Item], priority: FoodPriority) -> Vec<Item> {
-        // `auto_eat_state` is read-only — fall back to the real defaults
+        // the read does not insert the component — fall back to the defaults
         // when no state component was ever inserted
-        let banned = auto_eat_state(&self.bot.client, |s| s.opts.banned_food.clone())
-            .unwrap_or_else(|| AutoEatOpts::default().banned_food);
+        let banned =
+            with_component::<AutoEatState, _>(&self.bot.client, |s| s.opts.banned_food.clone())
+                .unwrap_or_else(|| AutoEatOpts::default().banned_food);
         let mut choices: Vec<(Item, f32)> = items
             .iter()
             .filter(|i| !banned.iter().any(|b| b == i.name()))
@@ -601,9 +579,9 @@ async fn drive(bot: Bot, cancel: Arc<AtomicBool>, mut shutdown: tokio::sync::wat
         // upstream statusCheck: `(bot.food < opts.minHunger ||
         // bot.health < opts.minHealth) && !isEating` → eat. `eat` gates
         // on is_eating itself, so only the thresholds are read here.
-        let Some((min_hunger, min_health)) =
-            auto_eat_state(&bot.client, |s| (s.opts.min_hunger, s.opts.min_health))
-        else {
+        let Some((min_hunger, min_health)) = with_component::<AutoEatState, _>(&bot.client, |s| {
+            (s.opts.min_hunger, s.opts.min_health)
+        }) else {
             continue;
         };
         if bot.food() < min_hunger || bot.health() < min_health {
