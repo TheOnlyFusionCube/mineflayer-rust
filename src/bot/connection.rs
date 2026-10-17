@@ -2,12 +2,9 @@
 //! connection bootstrap.
 
 use mineflayer_engine::{
-    ClientInformation, ClientPlugins, StartClientOpts,
-    app::{PluginGroup, PluginGroupBuilder},
-    auto_reconnect::AutoReconnectPlugin,
+    ClientInformation, StartClientOpts,
     entity::HumanoidArm,
     protocol::{address::ResolvableAddr as _, connect::Proxy},
-    swarm::{SwarmChatPlugin, SwarmPlugin},
 };
 
 use super::*;
@@ -314,8 +311,8 @@ impl BotBuilder {
             .map_err(|_| Error::Runtime("bot thread exited during connect".into()))?
     }
 
-    /// Join the server through the engine's bootstrap with
-    /// [`client_plugins`], and wire up the event bridge. Runs inside the bot
+    /// Join the server through the engine's bootstrap, and wire up the
+    /// event bridge. Runs inside the bot
     /// thread's `LocalSet` (the engine requires it for `Client::join`).
     async fn connect_engine(builder: BotBuilder) -> Result<Bot> {
         let account = match builder.auth {
@@ -335,8 +332,7 @@ impl BotBuilder {
             .await
             .map_err(|e| Error::Connect(e.to_string()))?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (opts, _app_exit) =
-            StartClientOpts::new_with_plugins(account, address, Some(tx), client_plugins());
+        let opts = StartClientOpts::new(account, address, Some(tx));
         let opts = match builder.proxy.clone() {
             Some(proxy) => opts.proxy(proxy),
             None => opts,
@@ -388,18 +384,6 @@ impl BotBuilder {
     }
 }
 
-/// The engine's client plugins as the port runs them. Auto-reconnect is
-/// off: it reconnects 5 s after any disconnect, our own `disconnect()`
-/// included, which would break `end`/`quit`/`kicked`. The swarm plugins
-/// are off: a bot is one client.
-pub(crate) fn client_plugins() -> PluginGroupBuilder {
-    ClientPlugins
-        .build()
-        .disable::<AutoReconnectPlugin>()
-        .disable::<SwarmPlugin>()
-        .disable::<SwarmChatPlugin>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,7 +396,7 @@ mod tests {
     #[test]
     fn the_production_app_installs_no_global_subscriber() {
         let mut app = mineflayer_engine::app::App::new();
-        app.add_plugins(client_plugins());
+        app.add_plugins(mineflayer_engine::ClientPlugins);
         app.finish();
         assert!(!tracing::dispatcher::has_been_set());
     }

@@ -8,7 +8,7 @@ pub use mineflayer_core::tick::GameTick;
 // this is necessary to make the macros that reference bevy_ecs work
 pub use crate::ecs as bevy_ecs;
 pub use crate::{
-    Client, ClientBuilder, Event,
+    Client, Event,
     ecs::{component::Component, resource::Resource},
     pathfinder::PathfinderClientExt,
 };

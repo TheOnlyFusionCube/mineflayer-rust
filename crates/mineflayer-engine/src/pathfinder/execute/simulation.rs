@@ -43,11 +43,14 @@ use crate::{
 ///
 /// ```
 /// use mineflayer_engine::{
-///     pathfinder::execute::simulation::SimulationPathfinderExecutionPlugin, swarm::prelude::*,
+///     ClientPlugins, app::PluginGroup,
+///     pathfinder::execute::simulation::SimulationPathfinderExecutionPlugin,
 /// };
 ///
-/// let builder = SwarmBuilder::new().add_plugins(SimulationPathfinderExecutionPlugin);
-/// // ...
+/// let plugins = ClientPlugins
+///     .build()
+///     .add(SimulationPathfinderExecutionPlugin);
+/// // pass `plugins` to `StartClientOpts::new_with_plugins`
 /// ```
 ///
 /// [`DefaultPathfinderExecutionPlugin`]: super::DefaultPathfinderExecutionPlugin

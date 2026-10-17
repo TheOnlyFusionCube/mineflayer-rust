@@ -43,9 +43,7 @@ The engine is a renamed copy of an upstream project (`LICENSE`,
    `crates/mineflayer-engine/src/client_impl/mod.rs` still contains each
    default plugin group, and that `StartClientOpts::new_with_plugins` still
    builds the app from its argument (local engine change 12).
-2. Make sure that each plugin that `client_plugins` in
-   `src/bot/connection.rs` disables still exists in the engine.
-3. Make sure that the start handler in
+2. Make sure that the start handler in
    `crates/mineflayer-client/src/plugins/mining.rs` still skips the
    start messages that `CancelMiningEvent` cut off (local engine change
    13). Run `cargo test -p mineflayer-client --features log --test main cancel_mining`.

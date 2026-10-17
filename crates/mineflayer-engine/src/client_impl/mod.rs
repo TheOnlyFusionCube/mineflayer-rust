@@ -36,7 +36,6 @@ use crate::{
     bot::DefaultBotPlugins,
     entity_ref::EntityRef,
     events::{Event, LocalPlayerEvents},
-    swarm::DefaultSwarmPlugins,
 };
 
 pub mod attack;
@@ -50,8 +49,8 @@ pub mod movement;
 
 /// A Minecraft client instance that can interact with the world.
 ///
-/// To make a new client, use either `ClientBuilder` or
-/// [`Client::join`].
+/// To make a new client, use [`Client::join`] or
+/// [`StartClientOpts::new_with_plugins`] with [`Client::start_client`].
 ///
 /// Note that `Client` is inaccessible from systems (i.e. plugins), but you can
 /// achieve everything that client can do with ECS events.
@@ -72,8 +71,8 @@ pub struct Client {
     pub ecs: Arc<RwLock<bevy_ecs::world::World>>,
 }
 
-/// Every plugin [`Client::join`] builds its app from: [`DefaultPlugins`],
-/// [`DefaultBotPlugins`], and [`DefaultSwarmPlugins`]. Pass
+/// Every plugin [`Client::join`] builds its app from: [`DefaultPlugins`]
+/// and [`DefaultBotPlugins`]. Pass
 /// `ClientPlugins.build()` with plugins added or disabled to
 /// [`StartClientOpts::new_with_plugins`] to change the set.
 pub struct ClientPlugins;
@@ -83,7 +82,6 @@ impl PluginGroup for ClientPlugins {
         PluginGroupBuilder::start::<Self>()
             .add_group(DefaultPlugins)
             .add_group(DefaultBotPlugins)
-            .add_group(DefaultSwarmPlugins)
     }
 }
 
@@ -286,47 +284,11 @@ impl Client {
         });
     }
 
-    /// End the entire client or swarm, and return from
-    /// [`ClientBuilder::start`] or [`SwarmBuilder::start`].
+    /// End the entire client: stop its ECS runner.
     ///
     /// You should typically avoid calling this if you intend on creating the
-    /// client again, because creating an entirely new swarm can be a
-    /// relatively expensive process.
-    ///
-    /// If you only want to change the server that the bots are connecting to,
-    /// it may be better to access the client's internal [`Swarm`] and call
-    /// [`Swarm::add_with_opts`] with a different server address.
-    ///
-    /// For convenience, this is also duplicated on `Swarm` as [`Swarm::exit`].
-    ///
-    /// [`ClientBuilder::start`]: crate::ClientBuilder::start
-    /// [`SwarmBuilder::start`]: crate::swarm::SwarmBuilder::start
-    /// [`Swarm`]: crate::swarm::Swarm
-    /// [`Swarm::add_with_opts`]: crate::swarm::Swarm::add_with_opts
-    /// [`Swarm::exit`]: crate::swarm::Swarm::exit
-    ///
-    /// ```no_run
-    /// // a bot that joins a server and prints "done!" when it's disconnected or if it fails to connect.
-    /// use mineflayer_engine::{NoState, prelude::*};
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let account = Account::offline("bot");
-    ///     ClientBuilder::new()
-    ///         .set_handler(handle)
-    ///         .start(account, "localhost")
-    ///         .await;
-    ///     println!("done!");
-    /// }
-    /// async fn handle(bot: Client, event: Event, _state: NoState) -> eyre::Result<()> {
-    ///     match event {
-    ///         Event::Disconnect(_) | Event::ConnectionFailed(_) => {
-    ///             bot.exit();
-    ///         }
-    ///         _ => {}
-    ///     }
-    ///     Ok(())
-    /// }
-    /// ```
+    /// client again, because creating an entirely new app is a relatively
+    /// expensive process.
     pub fn exit(&self) {
         self.ecs.write().write_message(AppExit::Success);
     }
@@ -573,7 +535,7 @@ mod tests {
     use bevy_app::{App, PluginGroup};
 
     use super::ClientPlugins;
-    use crate::{auto_reconnect::AutoReconnectPlugin, pathfinder::PathfinderPlugin};
+    use crate::{auto_respawn::AutoRespawnPlugin, pathfinder::PathfinderPlugin};
 
     struct Extra;
     impl bevy_app::Plugin for Extra {
@@ -588,11 +550,11 @@ mod tests {
         app.add_plugins(
             ClientPlugins
                 .build()
-                .disable::<AutoReconnectPlugin>()
+                .disable::<AutoRespawnPlugin>()
                 .add(Extra),
         );
         assert!(app.is_plugin_added::<PathfinderPlugin>());
         assert!(app.is_plugin_added::<Extra>());
-        assert!(!app.is_plugin_added::<AutoReconnectPlugin>());
+        assert!(!app.is_plugin_added::<AutoRespawnPlugin>());
     }
 }

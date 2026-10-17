@@ -64,10 +64,9 @@ merge; plan item E2 keeps this list current):
     upstream mineflayer's `lastClosedWindow`). `Player::slot_for_inventory_index`
     maps `set_player_inventory` slots. Tests:
     `mineflayer-client/tests/simulation/inventory_packets.rs`.
-12. (A4) `ClientPlugins` (the three default plugin groups) and
+12. (A4) `ClientPlugins` (the default plugin groups) and
     `StartClientOpts::new_with_plugins` let a caller add and disable
-    plugins without a copy of the bootstrap; `swarm` exports
-    `SwarmPlugin` and `SwarmChatPlugin` so that they can be disabled.
+    plugins without a copy of the bootstrap.
 13. (A5) `CancelMiningEvent` (an entity event, mining plugin) drops a
     queued start, also a `StartMiningBlockEvent` written before it and
     not read yet, and aborts live mining. The start handler skips start
@@ -79,6 +78,12 @@ merge; plan item E2 keeps this list current):
     `tags/mod.rs`, so the generated file stays as upstream makes it. Its
     test reads the statics out of `items.rs` and fails when a tag has no
     entry, so add the new names after a merge that adds tags.
+15. (E4) Removed modules the port and the engine tests do not use: `swarm`
+    (with `SwarmBuilder`, the swarm plugins, and its prelude), `builder`
+    (`ClientBuilder`, which wrapped `SwarmBuilder`), `join_opts`
+    (`JoinOpts`), `auto_reconnect`, and the `NoState`/`HandleFn` handler
+    types. `ClientPlugins` is `DefaultPlugins` and `DefaultBotPlugins`. An
+    upstream merge drops its changes to these files.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
@@ -129,11 +134,13 @@ on first use for plugin-analog state; `BotShared` for everything else. See
 ## Architecture
 
 **D-bootstrap. The port joins through the engine bootstrap.**
-`connect` calls `StartClientOpts::new_with_plugins` with `client_plugins()`
-(`src/bot/connection.rs`): the engine's `ClientPlugins` without
-auto-reconnect and the swarm plugins. The port does not mirror the
-engine's plugin list (plan item A4, 2026-10-17). A dig abort uses the
-engine's `CancelMiningEvent` (A5), so the port adds no plugin.
+`connect` calls `StartClientOpts::new` (`src/bot/connection.rs`), the same
+app `Client::join` builds. The port does not mirror the engine's plugin
+list (plan item A4, 2026-10-17). A dig abort uses the engine's
+`CancelMiningEvent` (A5), so the port adds no plugin, and the engine no
+longer has the auto-reconnect and swarm plugins the port used to disable
+(E4). `StartClientOpts::new_with_plugins` stays for a plugin the port
+may need later.
 
 **D-bridge. One ordered observer list.** Every domain observer runs inside
 the bridge task, so derived events follow their source packet and a
