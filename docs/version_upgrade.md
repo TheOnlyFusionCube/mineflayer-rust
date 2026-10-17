@@ -19,8 +19,14 @@ The engine is a renamed copy of an upstream project (`LICENSE`,
 4. Apply the rename table in D-engine to the diff.
 5. Apply the renamed diff to `crates/`. Resolve each conflict by hand.
    Keep the local changes (clippy fixes, the `McBuf` derive shorthand).
-6. Change the base commit in `LICENSE` and in D-engine.
-7. Change `[workspace.package] version` in `Cargo.toml` to the new engine
+6. Do not run a code generator. The repository does not contain one
+   (D-codegen). The registry, block, item component, entity metadata,
+   language, and packet files come with the renamed diff. Do not edit these
+   files by hand unless the change is in the D-engine list.
+7. Examine each local change in the D-engine list in `docs/decisions.md`.
+   Apply the change again if the renamed diff removed it.
+8. Change the base commit in `LICENSE` and in D-engine.
+9. Change `[workspace.package] version` in `Cargo.toml` to the new engine
    version (the `+mcX.Y` part gives the Minecraft version).
 
 ## 2. Compile

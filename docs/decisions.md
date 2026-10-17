@@ -44,6 +44,18 @@ merge; plan item E2 keeps this list current):
    `mineflayer-auth.json`; the packet-log env var is
    `MINEFLAYER_DO_NOT_CUT_OFF_PACKET_LOGS`.
 
+**D-codegen. The code generator stays upstream-only** (plan item E1,
+2026-10-16). The repository does not contain `codegen/`. The generated
+files (registry, blocks, item components, entity metadata, language,
+packets) are Python output from the upstream project. At each upgrade they
+arrive with the renamed upstream diff (`docs/version_upgrade.md` §1), and
+they stay byte-identical to upstream apart from the D-engine rename table.
+Local changes inside a generated file belong to the list above and are
+examined again after each merge (plan item E2). Reasons: no second copy of
+the generator to keep in step, and no drift between the local output and
+the upstream output. Cost if wrong: copy `codegen/` into the repository,
+change the scripts to write the `mineflayer-*` names, and regenerate.
+
 **D-toolchain. Nightly `2026-10-01` and `-Znext-solver=no`.** The engine
 crates need nightly. The nightly current at scaffold time stopped with an
 internal compiler error on the entity crate, and the next-gen trait solver
