@@ -1,16 +1,18 @@
 # The verify gate (scripts/verify.sh: fmt, clippy, clippy with `live`,
 # port and engine unit tests and doctests, build, docs) on every push and
-# pull request.
-# The live tests are not run here: they need the local fixture server and
-# a Java runtime (scripts/live-server.sh).
+# pull request, and the live suite on a schedule and by hand.
 name: verify
 
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
 
 jobs:
   verify:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,3 +30,46 @@ jobs:
 
       - name: Verify
         run: bash scripts/verify.sh
+
+  # The live suite against the local fixture server (scripts/live-server.sh):
+  # the only test of the port and the engine together on the wire. The
+  # fixture is an offline-mode server on localhost; nothing connects to
+  # Mojang session servers or public servers. The script downloads the
+  # server jar from Mojang's release manifest, so the jar is cached.
+  live:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      # the server release needs Java 25; with it installed the script does
+      # not download a JRE into .live/jdk/
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      # the jar follows the Minecraft version in the engine's version, which
+      # Cargo.lock carries
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .live/server.jar
+            .live/jar-version.txt
+          key: live-server-${{ hashFiles('Cargo.lock') }}
+
+      - name: Start the fixture on a reset world
+        run: bash scripts/live-server.sh reset
+
+      - name: Live suite
+        run: cargo test --features live --no-fail-fast -- --ignored --test-threads=1
+
+      - name: Stop the fixture
+        if: always()
+        run: bash scripts/live-server.sh stop

@@ -99,6 +99,10 @@ cargo test --features live --no-fail-fast -- --ignored --test-threads=1
 ./scripts/live-server.sh stop
 ```
 
+CI (`.github/workflows/verify.yml`) runs the same three commands in the
+`live` job, daily and on manual dispatch, with Java 25 installed and the
+server jar cached.
+
 Examples can be pointed at the same fixture
 (`cargo run --example digger -- localhost 25566`). Never point them at real
 Mojang endpoints or public servers without `-- online` auth and your own
