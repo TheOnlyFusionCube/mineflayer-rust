@@ -1087,4 +1087,165 @@ mod tests {
         // and the bridge retired the drivers
         assert!(shutdown_rx.changed().await.is_err());
     }
+
+    fn label(event: &BotEvent) -> String {
+        match event {
+            BotEvent::Packet(_) => "Packet".to_string(),
+            BotEvent::Death => "Death".to_string(),
+            BotEvent::Health => "Health".to_string(),
+            BotEvent::Spawn => "Spawn".to_string(),
+            BotEvent::Respawn => "Respawn".to_string(),
+            BotEvent::GameStateChanged => "GameStateChanged".to_string(),
+            BotEvent::Message { .. } => "Message".to_string(),
+            BotEvent::MessageStr { .. } => "MessageStr".to_string(),
+            BotEvent::ActionBar(_) => "ActionBar".to_string(),
+            BotEvent::NoteHeard { .. } => "NoteHeard".to_string(),
+            BotEvent::ChestLidMove { .. } => "ChestLidMove".to_string(),
+            BotEvent::End(_) => "End".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// F3: pin the bridge's cross-domain emission order.
+    ///
+    /// Only the bridge loop states this order today. Within one engine
+    /// event: `translate`'s direct events are sent one by one, each
+    /// followed immediately by what `misc::after_event` derives from it
+    /// (a `SetHealth` packet: `Packet`, then `Health`, then the lifecycle
+    /// `Spawn`); then the held domain lists go out in a fixed order —
+    /// movement, pathfinder, entity, windows, window types, world (a
+    /// chest `BlockEvent`'s `ChestLidMove` is decoded before `translate`
+    /// but sent last). A later refactor (B1) must keep this order or
+    /// change it on purpose; upstream `ref/mineflayer/lib/plugins/health.js`
+    /// emits `health` before the re-arm `spawn`, which `Packet -> Health ->
+    /// Spawn` preserves.
+    #[tokio::test]
+    async fn bridge_emission_order() {
+        use mineflayer_engine::{
+            block::BlockState,
+            core::position::{BlockPos, ChunkPos},
+            local_player::WorldHolder,
+            protocol::packets::game::{
+                c_block_event::ClientboundBlockEvent,
+                c_set_action_bar_text::ClientboundSetActionBarText,
+            },
+            registry::builtin::BlockKind,
+            world::{Chunk, PartialChunkStorage, World},
+        };
+
+        // A live entity (the misc decode writes `MiscState`) over a small
+        // loaded world (the world decode needs `WorldHolder` + chunks to
+        // resolve the chest).
+        let client = crate::test_util::live_entity_client(());
+        let mut world = World::default();
+        let mut partial = PartialChunkStorage::default();
+        for x in -1..=1 {
+            for z in -1..=1 {
+                partial.set(
+                    &ChunkPos { x, z },
+                    Some(Chunk::default()),
+                    &mut world.chunks,
+                );
+            }
+        }
+        let chest_pos = BlockPos::new(1, 64, 1);
+        world
+            .chunks
+            .set_block_state(chest_pos, BlockState::from(BlockKind::Chest));
+        let shared_world = std::sync::Arc::new(parking_lot::RwLock::new(world));
+        client
+            .ecs
+            .write()
+            .entity_mut(client.entity)
+            .insert(WorldHolder::new(client.entity, shared_world.clone()));
+
+        let (events_tx, _) = tokio::sync::broadcast::channel(64);
+        let shared = crate::bot::BotShared::new(events_tx);
+        let mut rx = shared.events.subscribe();
+        let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_alive_tx, alive_rx) = watch::channel(());
+        let (shutdown_tx, _shutdown_rx) = watch::channel(());
+        spawn(
+            client,
+            input_rx,
+            shared,
+            BridgeOptions {
+                client_information: None,
+                brand: None,
+                check_timeout_interval: std::time::Duration::from_secs(30),
+                packet_events: true,
+            },
+            alive_rx,
+            shutdown_tx,
+        );
+
+        // A death so the health packet exercises the re-arm path.
+        input_tx.send(Event::Death(None)).unwrap();
+        // SetHealth above zero while dead: Spawn (lifecycle) + Health (misc).
+        input_tx.send(set_health(20.0)).unwrap();
+        input_tx.send(respawn_packet()).unwrap();
+        input_tx
+            .send(packet_event(ClientboundGamePacket::SetActionBarText(
+                ClientboundSetActionBarText {
+                    text: mineflayer_engine::FormattedText::from("bar!"),
+                },
+            )))
+            .unwrap();
+        // A note block (misc NoteHeard) and a chest (world ChestLidMove).
+        input_tx
+            .send(packet_event(ClientboundGamePacket::BlockEvent(
+                ClientboundBlockEvent {
+                    pos: BlockPos::new(0, 64, 0),
+                    action_id: 0,
+                    action_parameter: 8,
+                    block: BlockKind::NoteBlock,
+                },
+            )))
+            .unwrap();
+        input_tx
+            .send(packet_event(ClientboundGamePacket::BlockEvent(
+                ClientboundBlockEvent {
+                    pos: chest_pos,
+                    action_id: 1,
+                    action_parameter: 1,
+                    block: BlockKind::Chest,
+                },
+            )))
+            .unwrap();
+        drop(input_tx);
+
+        let mut seen = Vec::new();
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("the bridge stalled")
+                .expect("broadcast channel closed");
+            let is_end = matches!(event, BotEvent::End(_));
+            seen.push(event);
+            if is_end {
+                break;
+            }
+        }
+
+        let labels: Vec<String> = seen.iter().map(label).collect();
+        let expected = [
+            "Death",            // Event::Death
+            "Packet",           // set_health
+            "Health",           // misc, straight after its Packet
+            "Spawn",            // lifecycle re-arm (dead -> alive)
+            "Packet",           // respawn
+            "Respawn",          // lifecycle
+            "GameStateChanged", // world decode of the same respawn
+            "Packet",           // action bar
+            "Message",          // chat family (packet_side_events)
+            "MessageStr",
+            "ActionBar",
+            "Packet",       // note block
+            "NoteHeard",    // misc, straight after its Packet
+            "Packet",       // chest block event
+            "ChestLidMove", // world list, after the six held lists
+            "End",          // fallback on channel close
+        ];
+        assert_eq!(labels, expected, "emission order changed: {seen:#?}");
+    }
 }
