@@ -218,29 +218,37 @@ pub(crate) fn spawn(
             }
         };
         debug!(reason = exit_reason, ended = state.ended, "bridge exit");
-        // The engine stopped feeding events or all `Bot` handles are gone —
-        // shut the client down so the ECS runner doesn't leak. Dropping
-        // the shutdown sender retires driver tasks parked on
-        // `ticks.recv()` — that broadcast's sender lives in the World,
-        // which their own `Client` handle keeps alive, so the channel
-        // never closes on its own.
-        //
-        // The channel can close without a `Disconnect`/`ConnectionFailed`
-        // event (the engine's runner just stops), so emit the same `End` a
-        // local close would ("socketClosed", or the stored quit reason)
-        // before retiring the drivers — an `end` wait must never hang on
-        // a signal that never comes.
-        if !state.ended {
-            state.ended = true;
-            let reason = quit_reason
-                .lock()
-                .take()
-                .unwrap_or_else(|| "socketClosed".to_string());
-            let _ = events.send(BotEvent::End(reason));
-        }
-        drop(shutdown);
-        client.exit();
+        exit(&mut state, &quit_reason, &events, shutdown, &client);
     });
+}
+
+/// The engine stopped feeding events or all `Bot` handles are gone — shut
+/// the client down so the ECS runner doesn't leak. Dropping the shutdown
+/// sender retires driver tasks parked on `ticks.recv()` — that broadcast's
+/// sender lives in the World, which their own `Client` handle keeps
+/// alive, so the channel never closes on its own.
+///
+/// The channel can close without a `Disconnect`/`ConnectionFailed` event
+/// (the engine's runner just stops), so emit the same `End` a local close
+/// would ("socketClosed", or the stored quit reason) before retiring the
+/// drivers — an `end` wait must never hang on a signal that never comes.
+fn exit(
+    state: &mut BridgeState,
+    quit_reason: &Mutex<Option<String>>,
+    events: &tokio::sync::broadcast::Sender<BotEvent>,
+    shutdown: watch::Sender<()>,
+    client: &mineflayer_engine::Client,
+) {
+    if !state.ended {
+        state.ended = true;
+        let reason = quit_reason
+            .lock()
+            .take()
+            .unwrap_or_else(|| "socketClosed".to_string());
+        let _ = events.send(BotEvent::End(reason));
+    }
+    drop(shutdown);
+    client.exit();
 }
 
 /// Bridge bookkeeping that doesn't fit in the events themselves.
