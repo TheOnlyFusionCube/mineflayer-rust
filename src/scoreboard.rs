@@ -15,8 +15,9 @@ use mineflayer_engine::{
     protocol::packets::game::{
         ClientboundGamePacket,
         c_boss_event::{self, BossBarColor, BossBarOverlay},
-        c_set_display_objective::DisplaySlot,
-        c_set_objective, c_set_player_team,
+        c_reset_score,
+        c_set_display_objective::{self, DisplaySlot},
+        c_set_objective, c_set_player_team, c_set_score,
     },
 };
 
@@ -364,197 +365,227 @@ pub(crate) fn handle(
     packet: &ClientboundGamePacket,
 ) -> Option<Vec<BotEvent>> {
     Some(match packet {
-        ClientboundGamePacket::SetObjective(p) => match &p.method {
-            c_set_objective::Method::Add {
-                display_name,
-                render_type: _,
-                number_format: _,
-            } => {
-                let name = p.objective_name.clone();
-                let scoreboard = ScoreBoard {
-                    name: name.clone(),
-                    title: display_name.clone(),
-                    items_map: HashMap::new(),
-                };
-                state.scoreboards.insert(name, scoreboard.clone());
-                vec![BotEvent::ScoreboardCreated(scoreboard)]
-            }
-            c_set_objective::Method::Remove => {
-                let mut events = Vec::new();
-                if let Some(scoreboard) = state.scoreboards.remove(&p.objective_name) {
-                    events.push(BotEvent::ScoreboardDeleted(scoreboard));
-                }
-                // display slots referencing the dead objective are dropped too
-                state.display_slots.retain(|_, n| *n != p.objective_name);
-                events
-            }
-            c_set_objective::Method::Change {
-                display_name,
-                render_type: _,
-                number_format: _,
-            } => {
-                let Some(scoreboard) = state.scoreboards.get_mut(&p.objective_name) else {
-                    // upstream emits 'error' for updates to unknown objectives
-                    return Some(vec![BotEvent::Error(format!(
-                        "Received update for unknown objective {}",
-                        p.objective_name
-                    ))]);
-                };
-                scoreboard.set_title(display_name.clone());
-                vec![BotEvent::ScoreboardTitleChanged(scoreboard.clone())]
-            }
-        },
-        ClientboundGamePacket::SetScore(p) => {
-            let Some(scoreboard) = state.scoreboards.get_mut(&p.objective_name) else {
-                return Some(vec![]);
-            };
-            let item = ScoreItem {
-                name: p.owner.clone(),
-                // the wire field is a signed VarInt the engine reads as u32 —
-                // `as i32` un-wraps it, so -1 arrives as -1 not 0xFFFFFFFF
-                value: p.score as i32,
-                display: p.display.clone(),
-            };
-            scoreboard.items_map.insert(p.owner.clone(), item.clone());
-            vec![BotEvent::ScoreUpdated {
-                scoreboard: scoreboard.clone(),
-                item,
-            }]
-        }
-        ClientboundGamePacket::ResetScore(p) => {
-            // `objective_name: None` means "remove this owner wherever it
-            // appears" — upstream scans every scoreboard and removes the
-            // first match.
-            let scoreboard = match &p.objective_name {
-                Some(name) => state.scoreboards.get_mut(name),
-                None => state
-                    .scoreboards
-                    .values_mut()
-                    .find(|sb| sb.items_map.contains_key(&p.owner)),
-            };
-            let Some(scoreboard) = scoreboard else {
-                return Some(vec![]);
-            };
-            let Some(item) = scoreboard.remove(&p.owner) else {
-                return Some(vec![]);
-            };
-            vec![BotEvent::ScoreRemoved {
-                scoreboard: scoreboard.clone(),
-                item,
-            }]
-        }
-        ClientboundGamePacket::SetDisplayObjective(p) => {
-            let slot = ScoreboardSlot::from(p.slot);
-            // upstream binds a slot only when the objective is already
-            // known — a display packet for a never-created objective
-            // leaves the slot empty there (no retroactive resolution)
-            let Some(scoreboard) = state.scoreboards.get(&p.objective_name) else {
-                return Some(vec![]);
-            };
-            let previous_board = state
-                .display_slots
-                .get(&slot)
-                .and_then(|name| state.scoreboards.get(name))
-                .cloned();
-            let scoreboard = scoreboard.clone();
-            state.display_slots.insert(slot, p.objective_name.clone());
-            vec![BotEvent::ScoreboardPosition {
-                slot,
-                scoreboard,
-                previous_board,
-            }]
-        }
-        ClientboundGamePacket::SetPlayerTeam(p) => match &p.method {
-            c_set_player_team::Method::Add((params, players)) => {
-                let mut team = Team::new(p.name.clone(), params.clone());
-                for player in players {
-                    team.members.insert(player.clone());
-                    state.team_map.insert(player.clone(), p.name.clone());
-                }
-                state.teams.insert(p.name.clone(), team.clone());
-                vec![BotEvent::TeamCreated(team)]
-            }
-            c_set_player_team::Method::Remove => {
-                let Some(team) = state.teams.remove(&p.name) else {
-                    return Some(vec![]);
-                };
-                for member in &team.members {
-                    state.team_map.remove(member);
-                }
-                vec![BotEvent::TeamRemoved(team)]
-            }
-            c_set_player_team::Method::Change(params) => {
-                let Some(team) = state.teams.get_mut(&p.name) else {
-                    return Some(vec![]);
-                };
-                team.update(params.clone());
-                vec![BotEvent::TeamUpdated(team.clone())]
-            }
-            c_set_player_team::Method::Join(players) => {
-                let Some(team) = state.teams.get_mut(&p.name) else {
-                    return Some(vec![]);
-                };
-                for player in players {
-                    team.members.insert(player.clone());
-                    state.team_map.insert(player.clone(), p.name.clone());
-                }
-                vec![BotEvent::TeamMemberAdded(team.clone())]
-            }
-            c_set_player_team::Method::Leave(players) => {
-                let Some(team) = state.teams.get_mut(&p.name) else {
-                    return Some(vec![]);
-                };
-                for player in players {
-                    team.members.remove(player);
-                    state.team_map.remove(player);
-                }
-                vec![BotEvent::TeamMemberRemoved(team.clone())]
-            }
-        },
-        ClientboundGamePacket::BossEvent(p) => match &p.operation {
-            c_boss_event::Operation::Add(add) => {
-                let bar = BossBar::from_add(p.id.to_string(), add.clone());
-                state.boss_bars.insert(p.id.to_string(), bar.clone());
-                vec![BotEvent::BossBarCreated(bar)]
-            }
-            c_boss_event::Operation::Remove => match state.boss_bars.remove(&p.id.to_string()) {
-                Some(bar) => vec![BotEvent::BossBarDeleted(bar)],
-                None => vec![],
-            },
-            c_boss_event::Operation::UpdateProgress(progress) => {
-                let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
-                    return Some(vec![]);
-                };
-                bar.health = *progress;
-                vec![BotEvent::BossBarUpdated(bar.clone())]
-            }
-            c_boss_event::Operation::UpdateName(name) => {
-                let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
-                    return Some(vec![]);
-                };
-                bar.title = name.clone();
-                vec![BotEvent::BossBarUpdated(bar.clone())]
-            }
-            c_boss_event::Operation::UpdateStyle(style) => {
-                let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
-                    return Some(vec![]);
-                };
-                bar.dividers = overlay_notches(style.overlay);
-                bar.color = style.color;
-                vec![BotEvent::BossBarUpdated(bar.clone())]
-            }
-            c_boss_event::Operation::UpdateProperties(props) => {
-                let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
-                    return Some(vec![]);
-                };
-                bar.darken_sky = props.darken_screen;
-                bar.dragon_bar = props.play_music;
-                bar.create_fog = props.create_world_fog;
-                vec![BotEvent::BossBarUpdated(bar.clone())]
-            }
-        },
+        ClientboundGamePacket::SetObjective(p) => objective(state, p),
+        ClientboundGamePacket::SetScore(p) => set_score(state, p),
+        ClientboundGamePacket::ResetScore(p) => reset_score(state, p),
+        ClientboundGamePacket::SetDisplayObjective(p) => display_objective(state, p),
+        ClientboundGamePacket::SetPlayerTeam(p) => team(state, p),
+        ClientboundGamePacket::BossEvent(p) => boss_bar(state, p),
         _ => return None,
     })
+}
+
+fn objective(
+    state: &mut ScoreboardState,
+    p: &c_set_objective::ClientboundSetObjective,
+) -> Vec<BotEvent> {
+    match &p.method {
+        c_set_objective::Method::Add {
+            display_name,
+            render_type: _,
+            number_format: _,
+        } => {
+            let name = p.objective_name.clone();
+            let scoreboard = ScoreBoard {
+                name: name.clone(),
+                title: display_name.clone(),
+                items_map: HashMap::new(),
+            };
+            state.scoreboards.insert(name, scoreboard.clone());
+            vec![BotEvent::ScoreboardCreated(scoreboard)]
+        }
+        c_set_objective::Method::Remove => {
+            let mut events = Vec::new();
+            if let Some(scoreboard) = state.scoreboards.remove(&p.objective_name) {
+                events.push(BotEvent::ScoreboardDeleted(scoreboard));
+            }
+            // display slots referencing the dead objective are dropped too
+            state.display_slots.retain(|_, n| *n != p.objective_name);
+            events
+        }
+        c_set_objective::Method::Change {
+            display_name,
+            render_type: _,
+            number_format: _,
+        } => {
+            let Some(scoreboard) = state.scoreboards.get_mut(&p.objective_name) else {
+                // upstream emits 'error' for updates to unknown objectives
+                return vec![BotEvent::Error(format!(
+                    "Received update for unknown objective {}",
+                    p.objective_name
+                ))];
+            };
+            scoreboard.set_title(display_name.clone());
+            vec![BotEvent::ScoreboardTitleChanged(scoreboard.clone())]
+        }
+    }
+}
+
+fn set_score(state: &mut ScoreboardState, p: &c_set_score::ClientboundSetScore) -> Vec<BotEvent> {
+    let Some(scoreboard) = state.scoreboards.get_mut(&p.objective_name) else {
+        return vec![];
+    };
+    let item = ScoreItem {
+        name: p.owner.clone(),
+        // the wire field is a signed VarInt the engine reads as u32 —
+        // `as i32` un-wraps it, so -1 arrives as -1 not 0xFFFFFFFF
+        value: p.score as i32,
+        display: p.display.clone(),
+    };
+    scoreboard.items_map.insert(p.owner.clone(), item.clone());
+    vec![BotEvent::ScoreUpdated {
+        scoreboard: scoreboard.clone(),
+        item,
+    }]
+}
+
+fn reset_score(
+    state: &mut ScoreboardState,
+    p: &c_reset_score::ClientboundResetScore,
+) -> Vec<BotEvent> {
+    // `objective_name: None` means "remove this owner wherever it
+    // appears" — upstream scans every scoreboard and removes the
+    // first match.
+    let scoreboard = match &p.objective_name {
+        Some(name) => state.scoreboards.get_mut(name),
+        None => state
+            .scoreboards
+            .values_mut()
+            .find(|sb| sb.items_map.contains_key(&p.owner)),
+    };
+    let Some(scoreboard) = scoreboard else {
+        return vec![];
+    };
+    let Some(item) = scoreboard.remove(&p.owner) else {
+        return vec![];
+    };
+    vec![BotEvent::ScoreRemoved {
+        scoreboard: scoreboard.clone(),
+        item,
+    }]
+}
+
+fn display_objective(
+    state: &mut ScoreboardState,
+    p: &c_set_display_objective::ClientboundSetDisplayObjective,
+) -> Vec<BotEvent> {
+    let slot = ScoreboardSlot::from(p.slot);
+    // upstream binds a slot only when the objective is already
+    // known — a display packet for a never-created objective
+    // leaves the slot empty there (no retroactive resolution)
+    let Some(scoreboard) = state.scoreboards.get(&p.objective_name) else {
+        return vec![];
+    };
+    let previous_board = state
+        .display_slots
+        .get(&slot)
+        .and_then(|name| state.scoreboards.get(name))
+        .cloned();
+    let scoreboard = scoreboard.clone();
+    state.display_slots.insert(slot, p.objective_name.clone());
+    vec![BotEvent::ScoreboardPosition {
+        slot,
+        scoreboard,
+        previous_board,
+    }]
+}
+
+fn team(
+    state: &mut ScoreboardState,
+    p: &c_set_player_team::ClientboundSetPlayerTeam,
+) -> Vec<BotEvent> {
+    match &p.method {
+        c_set_player_team::Method::Add((params, players)) => {
+            let mut team = Team::new(p.name.clone(), params.clone());
+            for player in players {
+                team.members.insert(player.clone());
+                state.team_map.insert(player.clone(), p.name.clone());
+            }
+            state.teams.insert(p.name.clone(), team.clone());
+            vec![BotEvent::TeamCreated(team)]
+        }
+        c_set_player_team::Method::Remove => {
+            let Some(team) = state.teams.remove(&p.name) else {
+                return vec![];
+            };
+            for member in &team.members {
+                state.team_map.remove(member);
+            }
+            vec![BotEvent::TeamRemoved(team)]
+        }
+        c_set_player_team::Method::Change(params) => {
+            let Some(team) = state.teams.get_mut(&p.name) else {
+                return vec![];
+            };
+            team.update(params.clone());
+            vec![BotEvent::TeamUpdated(team.clone())]
+        }
+        c_set_player_team::Method::Join(players) => {
+            let Some(team) = state.teams.get_mut(&p.name) else {
+                return vec![];
+            };
+            for player in players {
+                team.members.insert(player.clone());
+                state.team_map.insert(player.clone(), p.name.clone());
+            }
+            vec![BotEvent::TeamMemberAdded(team.clone())]
+        }
+        c_set_player_team::Method::Leave(players) => {
+            let Some(team) = state.teams.get_mut(&p.name) else {
+                return vec![];
+            };
+            for player in players {
+                team.members.remove(player);
+                state.team_map.remove(player);
+            }
+            vec![BotEvent::TeamMemberRemoved(team.clone())]
+        }
+    }
+}
+
+fn boss_bar(state: &mut ScoreboardState, p: &c_boss_event::ClientboundBossEvent) -> Vec<BotEvent> {
+    match &p.operation {
+        c_boss_event::Operation::Add(add) => {
+            let bar = BossBar::from_add(p.id.to_string(), add.clone());
+            state.boss_bars.insert(p.id.to_string(), bar.clone());
+            vec![BotEvent::BossBarCreated(bar)]
+        }
+        c_boss_event::Operation::Remove => match state.boss_bars.remove(&p.id.to_string()) {
+            Some(bar) => vec![BotEvent::BossBarDeleted(bar)],
+            None => vec![],
+        },
+        c_boss_event::Operation::UpdateProgress(progress) => {
+            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+                return vec![];
+            };
+            bar.health = *progress;
+            vec![BotEvent::BossBarUpdated(bar.clone())]
+        }
+        c_boss_event::Operation::UpdateName(name) => {
+            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+                return vec![];
+            };
+            bar.title = name.clone();
+            vec![BotEvent::BossBarUpdated(bar.clone())]
+        }
+        c_boss_event::Operation::UpdateStyle(style) => {
+            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+                return vec![];
+            };
+            bar.dividers = overlay_notches(style.overlay);
+            bar.color = style.color;
+            vec![BotEvent::BossBarUpdated(bar.clone())]
+        }
+        c_boss_event::Operation::UpdateProperties(props) => {
+            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+                return vec![];
+            };
+            bar.darken_sky = props.darken_screen;
+            bar.dragon_bar = props.play_music;
+            bar.create_fog = props.create_world_fog;
+            vec![BotEvent::BossBarUpdated(bar.clone())]
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,12 @@
 //! and the entity `BotEvent`s the engine does not raise itself.
 
 use super::*;
+use mineflayer_engine::protocol::packets::game::{
+    ClientboundAnimate, ClientboundDamageEvent, ClientboundEntityEvent,
+    ClientboundPlayerInfoUpdate, ClientboundRemoveEntities, ClientboundRemoveMobEffect,
+    ClientboundSetEntityLink, ClientboundSetEquipment, ClientboundUpdateAttributes,
+    ClientboundUpdateMobEffect,
+};
 
 // ---------------------------------------------------------------------------
 // Event bridging (bridge.rs calls `observe_event` for every engine `Event`)
@@ -195,24 +201,7 @@ impl EntityTracker {
                 .map(BotEvent::EntitySpawn)
                 .into_iter()
                 .collect(),
-            RemoveEntities(p) => {
-                let mut out = Vec::new();
-                for &id in &p.entity_ids {
-                    // Resolve before `forget` clears our record — EntityGone
-                    // and (if it was our vehicle) Dismounted both carry the
-                    // stale handle, like upstream's dead entity object.
-                    let entity = self.resolve(client, id);
-                    let own_vehicle_gone = self.forget(self_id, id);
-                    out.push(BotEvent::EntityGone {
-                        entity: entity.clone(),
-                        id,
-                    });
-                    if own_vehicle_gone.is_some() {
-                        out.push(BotEvent::Dismounted { vehicle: entity });
-                    }
-                }
-                out
-            }
+            RemoveEntities(p) => self.removed(client, p, self_id),
             MoveEntityPos(p) => self.moved(client, p.entity_id),
             MoveEntityPosRot(p) => self.moved(client, p.entity_id),
             MoveEntityRot(p) => self.moved(client, p.entity_id),
@@ -220,170 +209,24 @@ impl EntityTracker {
             EntityPositionSync(p) => self.moved(client, p.id),
             RotateHead(p) => self.moved(client, p.entity_id),
             SetEntityData(p) => self.metadata_update(client, p.id, &p.packed_items.0, self_id),
-            Animate(p) => {
-                let Some(entity) = self.resolve(client, p.id) else {
-                    return vec![];
-                };
-                match p.action {
-                    AnimationAction::SwingMainHand => vec![BotEvent::EntitySwingArm(entity)],
-                    AnimationAction::Hurt => vec![BotEvent::EntityHurt {
-                        entity,
-                        source: None,
-                    }],
-                    AnimationAction::WakeUp => vec![BotEvent::EntityWake(entity)],
-                    // upstream maps animation 3 to `entityEat`; modern
-                    // protocol says this is the off-hand swing (see parity)
-                    AnimationAction::SwingOffHand => vec![BotEvent::EntityEat(entity)],
-                    AnimationAction::CriticalHit => vec![BotEvent::EntityCriticalEffect(entity)],
-                    AnimationAction::MagicCriticalHit => {
-                        vec![BotEvent::EntityMagicCriticalEffect(entity)]
-                    }
-                }
-            }
-            EntityEvent(p) => {
-                let Some(entity) = self.resolve(client, p.entity_id) else {
-                    return vec![];
-                };
-                match entity_status_kind(p.event_id) {
-                    Some(StatusKind::Hurt) => vec![BotEvent::EntityHurt {
-                        entity,
-                        source: None,
-                    }],
-                    Some(StatusKind::Dead) => vec![BotEvent::EntityDead(entity)],
-                    Some(StatusKind::Taming) => vec![BotEvent::EntityTaming(entity)],
-                    Some(StatusKind::Tamed) => vec![BotEvent::EntityTamed(entity)],
-                    Some(StatusKind::ShakingOffWater) => {
-                        vec![BotEvent::EntityShakingOffWater(entity)]
-                    }
-                    Some(StatusKind::EatingGrass) => vec![BotEvent::EntityEatingGrass(entity)],
-                    Some(StatusKind::HandSwap) => {
-                        // upstream swaps the stored equipment's main/off hand
-                        if let Some(equipment) = self.equipment.get_mut(&p.entity_id) {
-                            let main = equipment.remove(&EquipmentSlot::Mainhand);
-                            let off = equipment.remove(&EquipmentSlot::Offhand);
-                            if let Some(item) = off {
-                                equipment.insert(EquipmentSlot::Mainhand, item);
-                            }
-                            if let Some(item) = main {
-                                equipment.insert(EquipmentSlot::Offhand, item);
-                            }
-                        }
-                        vec![BotEvent::EntityHandSwap(entity)]
-                    }
-                    None => vec![],
-                }
-            }
-            DamageEvent(p) => {
-                let Some(entity) = self.resolve(client, p.entity_id) else {
-                    return vec![];
-                };
-                let source = p
-                    .source_cause_id
-                    .0
-                    .map(MinecraftEntityId::from)
-                    .and_then(|id| self.resolve(client, id));
-                vec![BotEvent::EntityHurt { entity, source }]
-            }
-            SetEquipment(p) => {
-                let slots = self.equipment.entry(p.entity_id).or_default();
-                for (slot, item) in &p.slots.slots {
-                    slots.insert(*slot, item.clone());
-                }
-                self.resolve(client, p.entity_id)
-                    .map(BotEvent::EntityEquip)
-                    .into_iter()
-                    .collect()
-            }
-            UpdateAttributes(p) => {
-                let attributes = self.attributes.entry(p.entity_id).or_default();
-                for snapshot in &p.values {
-                    attributes.insert(snapshot.attribute, snapshot.clone());
-                }
-                self.resolve(client, p.entity_id)
-                    .map(BotEvent::EntityAttributes)
-                    .into_iter()
-                    .collect()
-            }
-            UpdateMobEffect(p) => {
-                self.effects
-                    .entry(p.entity_id)
-                    .or_default()
-                    .insert(p.mob_effect, p.data.clone());
-                self.resolve(client, p.entity_id)
-                    .map(|entity| BotEvent::EntityEffect {
-                        entity,
-                        effect: p.mob_effect,
-                        data: p.data.clone(),
-                    })
-                    .into_iter()
-                    .collect()
-            }
-            RemoveMobEffect(p) => {
-                // upstream emits the tracked effect object and falls back to
-                // `{id, amplifier: -1, duration: -1}` when the effect was
-                // never seen — the remove packet carries only the kind.
-                let data = self
-                    .effects
-                    .get_mut(&p.entity_id)
-                    .and_then(|effects| effects.remove(&p.effect))
-                    .unwrap_or(MobEffectData {
-                        amplifier: -1,
-                        duration: -1,
-                        ..Default::default()
-                    });
-                self.resolve(client, p.entity_id)
-                    .map(|entity| BotEvent::EntityEffectEnd {
-                        entity,
-                        effect: p.effect,
-                        data,
-                    })
-                    .into_iter()
-                    .collect()
-            }
+            Animate(p) => self.animated(client, p),
+            EntityEvent(p) => self.status(client, p),
+            DamageEvent(p) => self.damaged(client, p),
+            SetEquipment(p) => self.equipped(client, p),
+            UpdateAttributes(p) => self.attributes_updated(client, p),
+            UpdateMobEffect(p) => self.effect_added(client, p),
+            RemoveMobEffect(p) => self.effect_removed(client, p),
             TakeItemEntity(p) => vec![BotEvent::PlayerCollect {
                 collector: self.resolve(client, p.player_id),
                 collected: self.resolve(client, MinecraftEntityId::from(p.item_id)),
             }],
-            SetEntityLink(p) => {
-                let Some(entity) = self.resolve(client, p.source_id) else {
-                    return vec![];
-                };
-                if p.dest_id == MinecraftEntityId(-1) {
-                    let vehicle = self
-                        .vehicle_of
-                        .remove(&p.source_id)
-                        .and_then(|id| self.resolve(client, id));
-                    vec![BotEvent::EntityDetach { entity, vehicle }]
-                } else {
-                    self.vehicle_of.insert(p.source_id, p.dest_id);
-                    let vehicle = self.resolve(client, p.dest_id);
-                    vec![BotEvent::EntityAttach { entity, vehicle }]
-                }
-            }
+            SetEntityLink(p) => self.linked(client, p),
             SetPassengers(p) => self.set_passengers(client, p.vehicle, &p.passengers, self_id),
             ChangeDifficulty(p) => {
                 self.difficulty = Some(p.difficulty);
                 vec![]
             }
-            PlayerInfoUpdate(p) => {
-                for entry in &p.entries {
-                    // upstream rebuilds the player object on add_player —
-                    // a re-add without chat keys clears them here too
-                    if p.actions.add_player {
-                        self.chat_sessions.remove(&entry.profile.uuid);
-                    }
-                    if let Some(session) = &entry.chat_session {
-                        self.chat_sessions.insert(
-                            entry.profile.uuid,
-                            ProfileKeys {
-                                public_key: session.profile_public_key.key.clone(),
-                                signature: session.profile_public_key.key_signature.clone(),
-                            },
-                        );
-                    }
-                }
-                vec![]
-            }
+            PlayerInfoUpdate(p) => self.player_info_updated(p),
             PlayerInfoRemove(p) => {
                 for uuid in &p.profile_ids {
                     self.chat_sessions.remove(uuid);
@@ -398,6 +241,226 @@ impl EntityTracker {
             }
             _ => vec![],
         }
+    }
+
+    fn removed(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundRemoveEntities,
+        self_id: Option<MinecraftEntityId>,
+    ) -> Vec<BotEvent> {
+        let mut out = Vec::new();
+        for &id in &p.entity_ids {
+            // Resolve before `forget` clears our record — EntityGone
+            // and (if it was our vehicle) Dismounted both carry the
+            // stale handle, like upstream's dead entity object.
+            let entity = self.resolve(client, id);
+            let own_vehicle_gone = self.forget(self_id, id);
+            out.push(BotEvent::EntityGone {
+                entity: entity.clone(),
+                id,
+            });
+            if own_vehicle_gone.is_some() {
+                out.push(BotEvent::Dismounted { vehicle: entity });
+            }
+        }
+        out
+    }
+
+    fn animated(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundAnimate,
+    ) -> Vec<BotEvent> {
+        let Some(entity) = self.resolve(client, p.id) else {
+            return vec![];
+        };
+        match p.action {
+            AnimationAction::SwingMainHand => vec![BotEvent::EntitySwingArm(entity)],
+            AnimationAction::Hurt => vec![BotEvent::EntityHurt {
+                entity,
+                source: None,
+            }],
+            AnimationAction::WakeUp => vec![BotEvent::EntityWake(entity)],
+            // upstream maps animation 3 to `entityEat`; modern
+            // protocol says this is the off-hand swing (see parity)
+            AnimationAction::SwingOffHand => vec![BotEvent::EntityEat(entity)],
+            AnimationAction::CriticalHit => vec![BotEvent::EntityCriticalEffect(entity)],
+            AnimationAction::MagicCriticalHit => {
+                vec![BotEvent::EntityMagicCriticalEffect(entity)]
+            }
+        }
+    }
+
+    fn status(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundEntityEvent,
+    ) -> Vec<BotEvent> {
+        let Some(entity) = self.resolve(client, p.entity_id) else {
+            return vec![];
+        };
+        match entity_status_kind(p.event_id) {
+            Some(StatusKind::Hurt) => vec![BotEvent::EntityHurt {
+                entity,
+                source: None,
+            }],
+            Some(StatusKind::Dead) => vec![BotEvent::EntityDead(entity)],
+            Some(StatusKind::Taming) => vec![BotEvent::EntityTaming(entity)],
+            Some(StatusKind::Tamed) => vec![BotEvent::EntityTamed(entity)],
+            Some(StatusKind::ShakingOffWater) => {
+                vec![BotEvent::EntityShakingOffWater(entity)]
+            }
+            Some(StatusKind::EatingGrass) => vec![BotEvent::EntityEatingGrass(entity)],
+            Some(StatusKind::HandSwap) => {
+                // upstream swaps the stored equipment's main/off hand
+                if let Some(equipment) = self.equipment.get_mut(&p.entity_id) {
+                    let main = equipment.remove(&EquipmentSlot::Mainhand);
+                    let off = equipment.remove(&EquipmentSlot::Offhand);
+                    if let Some(item) = off {
+                        equipment.insert(EquipmentSlot::Mainhand, item);
+                    }
+                    if let Some(item) = main {
+                        equipment.insert(EquipmentSlot::Offhand, item);
+                    }
+                }
+                vec![BotEvent::EntityHandSwap(entity)]
+            }
+            None => vec![],
+        }
+    }
+
+    fn damaged(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundDamageEvent,
+    ) -> Vec<BotEvent> {
+        let Some(entity) = self.resolve(client, p.entity_id) else {
+            return vec![];
+        };
+        let source = p
+            .source_cause_id
+            .0
+            .map(MinecraftEntityId::from)
+            .and_then(|id| self.resolve(client, id));
+        vec![BotEvent::EntityHurt { entity, source }]
+    }
+
+    fn equipped(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundSetEquipment,
+    ) -> Vec<BotEvent> {
+        let slots = self.equipment.entry(p.entity_id).or_default();
+        for (slot, item) in &p.slots.slots {
+            slots.insert(*slot, item.clone());
+        }
+        self.resolve(client, p.entity_id)
+            .map(BotEvent::EntityEquip)
+            .into_iter()
+            .collect()
+    }
+
+    fn attributes_updated(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundUpdateAttributes,
+    ) -> Vec<BotEvent> {
+        let attributes = self.attributes.entry(p.entity_id).or_default();
+        for snapshot in &p.values {
+            attributes.insert(snapshot.attribute, snapshot.clone());
+        }
+        self.resolve(client, p.entity_id)
+            .map(BotEvent::EntityAttributes)
+            .into_iter()
+            .collect()
+    }
+
+    fn effect_added(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundUpdateMobEffect,
+    ) -> Vec<BotEvent> {
+        self.effects
+            .entry(p.entity_id)
+            .or_default()
+            .insert(p.mob_effect, p.data.clone());
+        self.resolve(client, p.entity_id)
+            .map(|entity| BotEvent::EntityEffect {
+                entity,
+                effect: p.mob_effect,
+                data: p.data.clone(),
+            })
+            .into_iter()
+            .collect()
+    }
+
+    fn effect_removed(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundRemoveMobEffect,
+    ) -> Vec<BotEvent> {
+        // upstream emits the tracked effect object and falls back to
+        // `{id, amplifier: -1, duration: -1}` when the effect was
+        // never seen — the remove packet carries only the kind.
+        let data = self
+            .effects
+            .get_mut(&p.entity_id)
+            .and_then(|effects| effects.remove(&p.effect))
+            .unwrap_or(MobEffectData {
+                amplifier: -1,
+                duration: -1,
+                ..Default::default()
+            });
+        self.resolve(client, p.entity_id)
+            .map(|entity| BotEvent::EntityEffectEnd {
+                entity,
+                effect: p.effect,
+                data,
+            })
+            .into_iter()
+            .collect()
+    }
+
+    fn linked(
+        &mut self,
+        client: &mineflayer_engine::Client,
+        p: &ClientboundSetEntityLink,
+    ) -> Vec<BotEvent> {
+        let Some(entity) = self.resolve(client, p.source_id) else {
+            return vec![];
+        };
+        if p.dest_id == MinecraftEntityId(-1) {
+            let vehicle = self
+                .vehicle_of
+                .remove(&p.source_id)
+                .and_then(|id| self.resolve(client, id));
+            vec![BotEvent::EntityDetach { entity, vehicle }]
+        } else {
+            self.vehicle_of.insert(p.source_id, p.dest_id);
+            let vehicle = self.resolve(client, p.dest_id);
+            vec![BotEvent::EntityAttach { entity, vehicle }]
+        }
+    }
+
+    fn player_info_updated(&mut self, p: &ClientboundPlayerInfoUpdate) -> Vec<BotEvent> {
+        for entry in &p.entries {
+            // upstream rebuilds the player object on add_player —
+            // a re-add without chat keys clears them here too
+            if p.actions.add_player {
+                self.chat_sessions.remove(&entry.profile.uuid);
+            }
+            if let Some(session) = &entry.chat_session {
+                self.chat_sessions.insert(
+                    entry.profile.uuid,
+                    ProfileKeys {
+                        public_key: session.profile_public_key.key.clone(),
+                        signature: session.profile_public_key.key_signature.clone(),
+                    },
+                );
+            }
+        }
+        vec![]
     }
 
     pub(super) fn moved(
