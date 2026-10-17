@@ -12,19 +12,10 @@
 //! `Movements`, watcher cancellation) lives in the `PathfinderFacade` ECS
 //! component on the client entity.
 //!
-//! Events are a tick-aligned diff of the `Pathfinder`/`ExecutingPath`/
-//! `PathfinderFacade` components — the engine's `PathFoundEvent`/
-//! `StopPathfindingEvent` are ECS messages that never reach the `Event`
-//! stream, so the bridge diffs once per `Tick` (the same cadence upstream's
-//! `physicsTick` monitor uses). Two failure classes need care beyond
-//! edge detection:
+//! Path events come from the engine's `Event::Pathfinder` stream (path
+//! found with path/is_partial/elapsed, goal reached, stopped) — see
+//! `tracking`. One piece of bookkeeping needs care beyond translation:
 //!
-//! - the engine runs its whole goto chain per Update (~17 ms) while ticks
-//!   land per GameTick (50 ms), so a fast-failing search can install
-//!   and drop inside one gap — no `is_calculating`/goal edges survive.
-//!   The bridge flags a *steady-state wedge* instead: facade goal set
-//!   while the ECS shows no goal, no calc, and no path, persisting past
-//!   `WEDGE_GRACE`.
 //! - upstream's `thinkTimeout` bounds one A* end-to-end, but the engine
 //!   splits the search into a fresh `max_timeout` per repath, so the
 //!   budget is tracked cumulatively per goal issue — partial progress
@@ -62,14 +53,14 @@ use std::{
 };
 
 use mineflayer_engine::{
-    BlockPos, EntityRef, Event, Vec3, ecs as bevy_ecs,
+    BlockPos, EntityRef, Event, PathEvent, Vec3, ecs as bevy_ecs,
     ecs::prelude::Component,
     entity::{
         ActiveEffects, Attributes, FluidOnEyes, Physics, Position, inventory::Inventory,
         mining::get_mine_progress,
     },
     pathfinder::{
-        self, CalculatePathCtx, ExecutingPath, PathfinderClientExt, PathfinderOpts, calculate_path,
+        self, CalculatePathCtx, PathfinderClientExt, PathfinderOpts, calculate_path,
         custom_state::CustomPathfinderState,
         goals::{self, Goal as EngineGoal},
         mining::MiningCache,
@@ -103,14 +94,6 @@ const AVOID_STEP_COST: f32 = 100.0;
 /// and the bridge applies it cumulatively across repaths (see
 /// [`bridge_events`]) since upstream's sliced A* shares one budget.
 const DEFAULT_THINK_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// How long the facade-goal-without-any-ECS-goal signature must persist
-/// before it's a failed search rather than a `GotoEvent` still waiting
-/// for the next Update pass to pick it up. The engine drains the goto
-/// message every Update (~17 ms), so a transient wedge clears in one
-/// tick; >2 GameTicks means the goal already installed and dropped
-/// inside a tick gap no edge-detection could see.
-const WEDGE_GRACE: Duration = Duration::from_millis(100);
 
 /// Upstream's `results.status` on `path_update` — the A* outcome a search
 /// produced (`pf-goto.js` reads it to settle a pending `goto`).
@@ -1163,30 +1146,6 @@ mod tests {
             entity: client.entity_ref_for(target_entity),
             range: 1.,
         }
-    }
-
-    /// Flip the engine's `Pathfinder` state like the search lifecycle does:
-    /// `goal` + `is_calculating` while a search is in flight, both
-    /// cleared when an empty result comes back (`retry_on_no_path=false`
-    /// on every facade-issued goto).
-    pub(super) fn set_searching(client: &mineflayer_engine::Client, searching: bool) {
-        let mut ecs = client.ecs.write();
-        let mut entity = ecs.get_entity_mut(client.entity).unwrap();
-        let mut pf = entity.get_mut::<pathfinder::Pathfinder>().unwrap();
-        pf.is_calculating = searching;
-        pf.goal =
-            searching.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn EngineGoal>);
-    }
-
-    /// Plant just the installed ECS goal (no `is_calculating`) — the
-    /// brief window between the engine draining a `GotoEvent` and the
-    /// search task starting, and the state a watcher re-issue leaves
-    /// when its own search dies hidden.
-    pub(super) fn set_goal_installed(client: &mineflayer_engine::Client, installed: bool) {
-        let mut ecs = client.ecs.write();
-        let mut entity = ecs.get_entity_mut(client.entity).unwrap();
-        entity.get_mut::<pathfinder::Pathfinder>().unwrap().goal =
-            installed.then(|| Arc::new(goals::XZGoal { x: 500, z: 0 }) as Arc<dyn EngineGoal>);
     }
 
     /// Drive `goto` until its goal is installed — `set_goal` runs on the
