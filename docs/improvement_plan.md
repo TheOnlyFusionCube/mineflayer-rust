@@ -1,1073 +1,684 @@
-# mineflayer-rs: holistic improvement plan
+# mineflayer-rs: holistic improvement plan (second plan)
 
 Language: ASD-STE100 (Simplified Technical English).
-Baseline: commit `26c4322` on `main`.
+Baseline: commit `7a2bc95` on `main`.
 Date: 2026-10-16.
 
 ## 0. Information about this plan
 
 ### 0.1 Purpose
 
-This plan gives the work that makes the port more correct, safer, and easier to use and maintain.
-The plan does not add new mineflayer features.
-The binding specification is still `docs/api-parity.md`.
+This plan gives the work that makes the port simpler, safer, and easier
+to maintain. The plan does not add new mineflayer features. The binding
+specification is still `docs/api-parity.md`.
+
+The first plan is complete. It is in git at commit `775ba66`
+(`docs/improvement_plan.md`).
 
 ### 0.2 Sources of the findings
 
-The findings come from these sources:
+The findings come from the code quality audit in `docs/reviews/`:
 
-1. A direct review of all production code in `src/` at the baseline commit.
-2. The earlier reviews in `.superpowers/sdd/finish-port-plan/` and `/tmp/mineflayer-thermo/`.
-3. Measurements: `cargo doc`, line counts, and searches of the source.
+1. `audit_summary.md` gives the verdict and the findings F1 to F8.
+2. `01_engine_boundary.md` to `05_tests_docs_tooling.md` give the
+   evidence, the measurements, and the worked proposals.
 
-Each finding has a file and line reference.
-A finding with the mark **(confirm first)** is a likely defect.
-Before you change the code for such a finding, write a test that shows the defect.
+Each work item names its finding and its detail file. Read the detail
+file before you start the work item.
 
-### 0.3 Priority codes
+### 0.3 The main idea of this plan
+
+Before commit `ed84001`, the engine was a third-party dependency. The
+port could not change it. Thus the port corrected engine gaps from the
+outside. These corrections are the most difficult code in the port.
+
+Now the engine is in `crates/`, and the port owns it. Phase A moves each
+correction into the engine crate that owns the behavior. Then Phase A
+removes the correction from the port. The other phases make the port
+code smaller and more regular.
+
+### 0.4 Priority codes
 
 | Code | Meaning |
 |---|---|
-| P1 | Defect. The bot can show incorrect behavior, stop, or keep a connection open after use. Do this work first. |
-| P2 | Risk to users or to maintenance. Do this work after P1. |
-| P3 | Quality improvement. Do this work when time is available. |
+| P1 | The item removes a heuristic, a write into engine state, or a copy of engine code. Do this work first. |
+| P2 | The item removes repeated code or makes a boundary clear. Do this work after P1. |
+| P3 | The item is a quality improvement. Do this work when time is available. |
 
 Effort is in half-days (HD). One HD is approximately four hours.
 
-### 0.4 General warnings and cautions
+### 0.5 General warnings and cautions
 
-**WARNING:** Do not remove the `[patch.crates-io]` table in `Cargo.toml`.
-If you remove it, each `bot.attack()` call causes a server kick.
-Remove the table only after azalea publishes a release that contains commit `ddef371`.
+**WARNING:** Do not change the order of the domain observers in
+`src/bridge.rs` before you write the order test in item F3. Users can
+depend on the order of events. A changed order can cause incorrect bot
+behavior without a test failure.
 
 **CAUTION:** Do not change the toolchain pin in `rust-toolchain.toml`.
-Do not remove `-Znext-solver=no` from `.cargo/config.toml`.
-Newer nightly compilers stop with an internal compiler error on azalea.
+Do not remove `-Znext-solver=no` from `.cargo/config.toml`. Newer
+nightly compilers stop with an internal compiler error on the engine
+crates.
 
-**CAUTION:** Do not change the order of the observers in `src/bridge.rs`.
-The order keeps derived events after their source packet.
+**CAUTION:** Do not rename game data that contains the word "azalea"
+(blocks, sound events, tags, language strings). It is Minecraft data. It
+is not the name of the upstream project.
 
-**CAUTION:** Do not replace `client_app::app()` with `Client::join`.
-The dig-abort plugin must be in the same app as the mining systems.
+**CAUTION:** Each change to `crates/` makes the next upstream merge more
+difficult. Keep each engine change small. Put each engine change in its
+own commit. Record each engine change in the list in item E2.
 
-### 0.5 Rules for each work item
+### 0.6 Rules for each work item
 
 1. Do one work item in one commit series.
 2. Write the regression test before you change the production code.
-3. Run `scripts/verify.sh`. All steps must pass.
-4. If the item changes behavior on the wire, run the related live test.
-5. Update the related rows in `docs/api-parity.md` in the same commit.
+3. Run `scripts/verify.sh`. All seven steps must pass.
+4. If the item changes behavior on the wire, reset the fixture and run
+   the live suite:
+   `bash scripts/live-server.sh reset`, then
+   `cargo test --features live --no-fail-fast -- --ignored --test-threads=1`.
+5. If the item changes a public API, update the related rows in
+   `docs/api-parity.md` and `CHANGELOG.md` in the same commit.
+6. If the item changes the engine, add an engine-level test. Use the
+   simulation harness in `crates/mineflayer-client/src/test_utils/`.
 
 ## 1. Baseline state
 
 | Item | Value |
 |---|---|
-| Production source (before the first `#[cfg(test)]`) | approximately 17,000 lines in 30 files |
-| Largest production files | `pathfinder.rs` (1,886), `window_types.rs` (1,499), `entity.rs` (1,323), `inventory.rs` (1,080) |
-| Unit tests | 243 tests and 2 doctests |
-| Live tests | 12 test binaries, 14 tests, against a local offline server |
-| Parity rows | 344 ported, 122 diverges, 49 wontfix, 11 additive |
-| `BotEvent` variants | 124 |
-| `Error::Operation(String)` sites | 117 |
-| `.lock().unwrap()` and `.read()/.write().unwrap()` sites | 81 |
-| `rustdoc` warnings | 10 |
-| Continuous integration | none (no remote, no `.github/`) |
-| `LICENSE` file | none |
-| Size of `target/` | 35 GB |
+| Port production source | approximately 17,000 lines in 40 files |
+| Engine source (`crates/`) | 122,646 lines in 21 crates |
+| Largest port production files | `pathfinder/mod.rs` (1,049), `craft.rs` (986), `world/mod.rs` (957) |
+| Port functions longer than 100 lines | 14 of 745 |
+| Port unit tests | 260 tests and 9 doctests |
+| Engine tests | 382 |
+| Live tests | 14 tests in one binary; 14 of 14 pass on a reset world |
+| ECS writes into the engine `Inventory` from `windows/tracker.rs` | 7 |
+| Copies of the ECS state accessor pair | 11 functions in 6 modules |
+| Hand-written event waits beside `await_event` | 6 |
+| `BotEvent` variants | 123 |
+| Gate steps (`scripts/verify.sh`) | 7 |
+| Size of `target/` | 31 GB |
 
 ## 2. Summary of the work items
 
-| ID | Title | Priority | Effort |
-|---|---|---|---|
-| A1 | Internal waits take the bootstrap event receiver | P1 | 1 HD |
-| A2 | Background drivers keep the connection open | P1 | 1 HD |
-| A3 | `unequip(Hand)` can panic after a disconnect | P1 | 0.5 HD |
-| A4 | `transfer` accepts a count of zero or less | P1 | 0.5 HD |
-| A5 | User callbacks run while the world lock is held | P1 | 1 HD |
-| A6 | The bridge can stop without an `End` event | P2 | 0.5 HD |
-| A7 | `tab_complete` keeps an entry when the caller cancels | P3 | 0.5 HD |
-| A8 | Skin data parse uses regular expressions on JSON | P2 | 0.5 HD |
-| A9 | The entity tracker keeps old entries after a dimension change | P3 | 0.5 HD |
-| B1 | Typed errors in place of `Error::Operation(String)` | P2 | 3 HD |
-| B2 | `Error::Connect` holds an unrelated third-party error | P2 | 0.5 HD |
-| B3 | Public signatures use azalea types that are not re-exported | P2 | 1 HD |
-| B4 | Dependent crates do not receive the azalea patch | P1 | 0.5 HD |
-| B5 | Stringly and sentinel return types | P3 | 1.5 HD |
-| B6 | `async fn` that never waits | P3 | 0.5 HD |
-| B7 | One shared event-wait helper | P2 | 1.5 HD |
-| B8 | Lock poisoning policy | P2 | 1 HD |
-| B9 | Lock order rule | P2 | 1 HD |
-| C1 | Logs through `tracing` | P2 | 1.5 HD |
-| C2 | Event volume and ring capacity | P3 | 1 HD |
-| D1 | Remaining file decomposition | P3 | 5 HD |
-| D2 | One convention for domain state storage | P3 | 0.5 HD |
-| E1 | One live test binary with shared helpers | P2 | 1.5 HD |
-| E2 | Regression tests for the A items | P1 | in each A item |
-| E3 | More doctests on the main entry points | P3 | 1 HD |
-| E4 | One coverage measurement | P3 | 0.5 HD |
-| E5 | Live test flakes | P3 | 1 HD |
-| F1 | `rustdoc` warnings and a doc gate | P2 | 0.5 HD |
-| F2 | Incorrect comments | P3 | 0.5 HD |
-| F3 | Package metadata, `LICENSE`, and tracked junk files | P2 | 0.5 HD |
-| F4 | Continuous integration | P2 | 1 HD |
-| F5 | Old planning documents | P3 | 0.5 HD |
-| G1 | Performance measurements before changes | P3 | 1 HD |
-| G2 | Small performance corrections | P3 | 1 HD |
-| H1 | Remove the azalea patch when a release is available | P2 | 0.5 HD |
-| H2 | Toolchain pin review | P3 | 0.5 HD per review |
-| H3 | Reference checkout at the pinned revision | P3 | 0.5 HD |
-| H4 | Procedure for the next Minecraft version | P3 | 1 HD |
+| ID | Title | Finding | Priority | Effort |
+|---|---|---|---|---|
+| A1 | Pathfinder results as client events | F1 | P1 | 3 HD |
+| A2 | Correct the engine stop handler | F1 | P1 | 0.5 HD |
+| A3 | Correct the engine inventory packet handlers | F1 | P1 | 3 HD |
+| A4 | A plugin hook and plugin opt-outs in the engine bootstrap | F1 | P1 | 1.5 HD |
+| A5 | A cancel for queued mining | F1 | P1 | 1.5 HD |
+| A6 | Engine events for the remaining re-decodes | F1 | P3 | 3 HD |
+| B1 | One observer contract in the bridge | F2 | P2 | 2 HD |
+| B2 | The scoreboard is its own observer | F2 | P2 | 0.5 HD |
+| B3 | The misc observer takes the ECS lock only when it writes | F2 | P2 | 0.5 HD |
+| B4 | The bridge exit is its own function | F2 | P3 | 0.5 HD |
+| C1 | One ECS state accessor pair | F3 | P2 | 1 HD |
+| C2 | One tick stream for the drivers | F3 | P2 | 1 HD |
+| C3 | One event wait with a typed result | F3 | P2 | 1 HD |
+| C4 | Slot event helpers in the window tracker | F3 | P3 | 0.5 HD |
+| C5 | Remove the pass-through methods on `ChatShared` | F3 | P3 | 0.5 HD |
+| D1 | A generated tag lookup | F4 | P2 | 1 HD |
+| D2 | Split the packet reducers | F5 | P3 | 2 HD |
+| D3 | Shorten the remaining long functions | F5 | P3 | 1.5 HD |
+| D4 | Move `Bot::new` to the test utilities | F6 | P2 | 0.5 HD |
+| D5 | One atomic component insert in `connect` | F6 | P3 | 0.5 HD |
+| E1 | A decision about the engine code generator | F7 | P2 | 1 HD |
+| E2 | A list of local engine changes | F7 | P2 | 0.5 HD |
+| E3 | A publication policy for the engine crates | F7 | P3 | 0.5 HD |
+| E4 | Remove engine modules that the port does not use | F7 | P3 | 1.5 HD |
+| E5 | Engine build profile and documentation gate | F7 | P3 | 0.5 HD |
+| F1 | The live suite in continuous integration | F8 | P2 | 1.5 HD |
+| F2 | Engine tests for the Phase A items | F8 | P1 | in each A item |
+| F3 | A test for the event emission order | F2, F8 | P1 | 0.5 HD |
+| G1 | Move the historical documents | F8 | P3 | 0.5 HD |
+| G2 | Remove or document the model-delegation scripts | F8 | P3 | 0.5 HD |
+| G3 | Build directory size | F8 | P3 | 0.5 HD |
 
-Total effort: approximately 38 HD.
+Total effort: approximately 33 HD.
 
-## 3. Phase A: correctness defects
+## 3. Phase A: the engine boundary
 
-### A1. Internal waits take the bootstrap event receiver (P1)
+Detail file: `docs/reviews/01_engine_boundary.md`.
 
-**Problem.**
-`Bot::events()` gives the bootstrap receiver on the first call only (`src/bot/mod.rs:587`).
-That receiver holds the events from before `connect` returned: `Init`, `Login`, and the spawn events.
-Crate code also calls `self.events()` for its own waits.
-If crate code calls it first, the crate takes the bootstrap receiver.
-Then the first user subscriber does not receive `Init`, `Login`, or `Spawn`.
-Also, the crate wait reads old events from the bootstrap queue.
-An old `MessageStr` or `WindowOpen` can then complete the wrong wait.
+### A1. Pathfinder results as client events (P1)
 
-Production call sites:
-
-- `src/bot/mod.rs:671` (`wait_for_chunks_to_load`)
-- `src/chat.rs:688` (`await_message`)
-- `src/inventory.rs:336`, `:362`, `:411`, `:738`, `:748`, `:780`
-- `src/window_types.rs:664`, `:794`, `:827`, `:1117`, `:1172`, `:1360`
-- `src/craft.rs:934`, `:936`
-- `src/pathfinder.rs:764` (`goto`)
-- `src/misc/mod.rs:743`
-- `src/collect.rs:593`
+**Problem.** The engine sends path results as ECS messages
+(`PathFoundEvent`, `StopPathfindingEvent`). These messages do not go into
+the client `Event` stream. Thus the port compares component snapshots on
+each tick (`src/pathfinder/tracking.rs:74`, 297 lines). A fast search can
+start and fail between two ticks. Thus the port also uses a "wedge"
+heuristic with a grace time of 100 ms (`WEDGE_GRACE`) and a cumulative
+search budget.
 
 **Procedure.**
 
-1. Write a unit test. Call `await_message` with a short timeout before the first `events()` call.
-2. In the same test, call `events()`. Make sure that it receives the queued `Init` event.
-3. Make sure that the test fails on the baseline code.
-4. Add `pub(crate) fn subscribe(&self) -> broadcast::Receiver<BotEvent>` to `Bot`. It calls `self.shared.events.subscribe()`.
-5. Replace each production call site in the list with `subscribe()`.
-6. Keep `events()` for the public API only.
-7. Add a comment on `events()`. The comment tells crate authors to use `subscribe()`.
+1. Write an engine simulation test. Start a goto to a goal that the bot
+   cannot reach. Make sure that the test fails because no path event
+   arrives on the event channel.
+2. In `crates/mineflayer-engine/src/pathfinder/`, add the path events to
+   the client `Event` enum. Use one variant `Event::Pathfinder(PathEvent)`
+   with three cases: path found, goal reached, and pathfinding stopped.
+3. Put these fields in "path found": `is_partial`, the list of nodes,
+   and the time that the search used.
+4. Send each event from the system that already writes the related ECS
+   message.
+5. Make sure that the test from step 1 passes.
+6. In the port, translate `Event::Pathfinder` into `PathUpdate`,
+   `GoalReached`, and `PathStop`.
+7. Remove the snapshot struct, `wedge_since`, `WEDGE_GRACE`,
+   `saw_success`, and `timeout_reported` from `src/pathfinder/tracking.rs`.
+8. Keep the cumulative budget only if you keep upstream's "one budget
+   for each goal" behavior. If you keep it, calculate it as the sum of
+   the search times in the "path found" events.
+9. Replace the nine wedge tests with tests on the new translation.
 
-**Acceptance.**
+**Result.** The port has no heuristic for path results. The longest
+function in the port is removed.
 
-- The new test passes.
-- A search for `self.events()` and `bot.events()` in production code finds no crate-internal waits.
+### A2. Correct the engine stop handler (P1)
 
-**Status:** done. `Bot::subscribe` added; all production wait sites (including
-`interact/place.rs`, `collect.rs`, and `misc/creative.rs`, which the earlier
-list did not name) use it. The regression test fails on the baseline code
-(it consumed the bootstrap receiver) and passes after the change.
-
-### A2. Background drivers keep the connection open (P1) (confirm first)
-
-**Problem.**
-The `Bot` documentation says that the client disconnects when the last `Bot` handle drops (`src/bot/mod.rs:39`).
-Each `Bot` clone holds a clone of `_alive: watch::Sender<()>`.
-The bridge stops only when all `_alive` senders drop (`src/bridge.rs`, `alive.changed()`).
-These driver tasks hold a strong `Bot`:
-
-- `src/auto_eat.rs:288` (`drive`, runs until `disable_auto`)
-- `src/pvp.rs:246` (`drive`, runs until the target goes)
-- `src/pathfinder.rs:1316` (`follow_driver`)
-
-The drivers stop when the shutdown signal fires.
-The shutdown signal fires only when the bridge stops.
-Thus, when auto-eat is on, the connection does not close after the user drops all handles.
-The bot thread and its runtime also stay alive.
+**Problem.** The engine `handle_stop_pathfinding_event` does not reset
+`is_calculating`. If no `ExecutingPath` exists, it also does not clear
+`goal`. Thus the port calls `stop_pathfinding_patched`
+(`src/pathfinder/mod.rs:857`) at four sites. This function writes the two
+fields after each stop.
 
 **Procedure.**
 
-1. Write a test with `test_util::bot_with_shutdown`. Start the auto-eat driver. Drop all user handles.
-2. Make sure that the test shows that the alive channel stays open.
-3. Change `_alive` to `Option<watch::Sender<()>>`.
-4. Add a crate-private `Bot::driver_handle()`. It clones the `Bot` with `_alive` set to `None`.
-5. Give `driver_handle()` to each driver in the list.
-6. Make sure that each driver still stops on the shutdown signal.
+1. Write an engine test. Stop pathfinding while a calculation is in
+   progress and no path executes. Make sure that the test shows
+   `is_calculating == true` after the stop.
+2. Correct `handle_stop_pathfinding_event` so that it clears `goal` and
+   `is_calculating` in all cases.
+3. Replace each call to `stop_pathfinding_patched` with
+   `client.stop_pathfinding()` or `client.force_stop_pathfinding()`.
+4. Remove `stop_pathfinding_patched`.
 
-**Acceptance.**
+### A3. Correct the engine inventory packet handlers (P1)
 
-- The test shows that the bridge stops after the last user handle drops, also when a driver runs.
-- The existing driver tests pass without changes to their assertions.
+**Problem.** The engine inventory plugin does not apply these packet
+data. The port writes the data into the engine `Inventory` component
+from `src/windows/tracker.rs` (seven ECS writes):
 
-**Status:** done. `_alive` is an `Option`; `Bot::driver_handle()` clears it
-for the three drivers (auto-eat, pvp, pathfinder follow). The test holds a
-driver-style handle in a task, drops the last user handle, and shows that
-the alive channel closes (with a plain clone as the control that keeps it
-open). The existing driver tests pass unchanged.
-
-### A3. `unequip(Hand)` can panic after a disconnect (P1)
-
-**Problem.**
-`equip_empty` reads `inventory.slots().unwrap_or_default()` and then indexes `slots[QUICK_BAR_START + i]` (`src/inventory.rs:607`).
-When the `Inventory` component is not available, `slots` is empty.
-The index then causes a panic.
-`tool.rs:347`, `tool.rs:354`, and `pathfinder.rs:1140` index slot vectors too.
-Those three sites read the menu inside a component query, so the vector is never empty there.
+| Packet data | Port site |
+|---|---|
+| `carried_item` in `container_set_content` | `patch_carried`, `windows/tracker.rs:524` |
+| `state_id` in `set_slot` and `container_set_content` | `patch_state_id`, `windows/tracker.rs:552` |
+| `c_set_player_inventory` | `windows/tracker.rs:288` |
+| Window 0 `set_slot` for a slot that is not in the hotbar, while a container is open | `windows/tracker.rs:595` |
+| Content that arrives before `open_screen` | `windows/tracker.rs:194` |
 
 **Procedure.**
 
-1. Write a test with `test_util::despawned_client`. Call `unequip(EquipDest::Hand)`.
-2. Make sure that the test panics on the baseline code.
-3. Replace `unwrap_or_default()` with `.ok_or(Error::NotConnected)?`.
-4. Search for other `slots().unwrap_or_default()` sites that index the vector. Do the same change there.
+1. For each row in the table, write an engine simulation test. The test
+   sends the packet and examines the `Inventory` component. Make sure
+   that each test fails before you change the engine.
+2. Correct the inventory plugin in `crates/mineflayer-client/` so that
+   each test passes.
+3. Move `player_inventory_slot_to_window` from the port into the engine.
+4. Remove `patch_carried`, `patch_state_id`, `active_inventory_id`, and
+   the ECS writes from `src/windows/tracker.rs`.
+5. Keep the event logic in the tracker (`WindowUpdateSlot`,
+   `HeldItemChanged`, and the closed-window remap for events).
+6. After this item, the window tracker only reads the ECS. Examine the
+   lock rule in `src/bot/mod.rs:118`. If no other site holds a domain
+   lock while it takes the ECS lock, make the rule stricter and record
+   the change in `docs/decisions.md` (D-lock-order).
 
-**Acceptance.** The test returns `Error::NotConnected` and does not panic.
+**Result.** The cursor and the state id are correct for all engine
+users. The bridge does not write into engine state.
 
-**Status:** done. `equip_empty` uses `.ok_or(Error::NotConnected)?`. The
-baseline panicked on `slots[36]` with an empty vector; the test reproduces
-that and passes after the change. The other `slots().unwrap_or_default()`
-sites only iterate (no indexing), so they stay.
+### A4. A plugin hook and plugin opt-outs in the engine bootstrap (P1)
 
-### A4. `transfer` accepts a count of zero or less (P1)
-
-**Problem.**
-`transfer` reads `count` from `TransferOpts::effective_count()` (`src/inventory.rs:948`).
-A count of zero completes at once with no action.
-A negative count does not stop at zero.
-The loop moves and drops items until the source has no items.
-`toss`, `deposit`, and `withdraw` pass the user count to `transfer`.
-
-**Procedure.**
-
-1. Write a unit test for `transfer` with `count: Some(-1)` and with `count: Some(0)`.
-2. At the start of `transfer`, return an error when the count is less than 1.
-3. Record the behavior for zero in `docs/api-parity.md`. Compare it with upstream `transfer` first.
-
-**Acceptance.** A negative count returns an error. No click occurs.
-
-**Status:** done. A negative count returns
-`Operation("transfer count must be >= 0")` before any click. The planned
-"error when less than 1" was narrowed to negative only after the upstream
-comparison step: upstream's `count === 0` branch is a cleanup-only no-op
-(cursor cleanup, no clicks), and the parity row now records both
-behaviors (negative = divergence, zero = upstream no-op).
-
-### A5. User callbacks run while the world lock is held (P1) (confirm first)
-
-**Problem.**
-`WorldRef::find_blocks` with `BlockMatcher::Predicate` calls the user predicate inside `with_world` (`src/world.rs:131`).
-`WorldRef::raycast` with a matcher does the same (`src/world.rs:82`).
-`with_world` holds the `parking_lot` read lock on the shared world.
-If the predicate reads the world again, for example with `block.world.block_at(..)`, it takes a second read lock.
-A `parking_lot` read lock is not re-entrant when a writer waits.
-The crate already records this hazard in `src/entity.rs:783` and `:859`.
-Thus a user predicate can cause a deadlock of the bot.
+**Problem.** `src/client_app.rs` is a copy of the plugin list in the
+engine's `StartClientOpts::new`. The copy exists because the engine
+bootstrap has no plugin hook. `connect` also inserts
+`AutoReconnectDelay::new(Duration::MAX)` to stop the auto-reconnect
+plugin (`src/bot/connection.rs:343`).
 
 **Procedure.**
 
-1. Write a test that holds a read lock, queues a writer on another thread, and calls a predicate that reads again.
-2. Change `find_matching`. Collect `(BlockPos, BlockState)` pairs under the lock.
-3. Release the lock. Then run the user predicate on the collected pairs.
-4. Change `raycast`. Collect the traversed `(BlockPos, BlockState)` pairs under the lock. Run the matcher after the release.
-5. Keep the distance limit and the layer early exit. The collected list must stay bounded.
-6. Write the lock rule on `BlockMatcher::Predicate`: "The predicate runs without a world lock."
+1. Add an option to `StartClientOpts` (or to `Client::join`) that adds
+   plugins to the app before the runner starts.
+2. Add an option that disables plugins in the default plugin groups.
+3. In the port, call the engine bootstrap with `DigAbortPlugin` added.
+   Disable the auto-reconnect plugin and the swarm plugins.
+4. Remove `src/client_app.rs` and `join_engine` in
+   `src/bot/connection.rs`.
+5. Remove the `AutoReconnectDelay` insert.
+6. Move the test `game_tick_cancels_an_aborted_dig_through_the_production_app`
+   and the test `the_production_app_installs_no_global_subscriber` so
+   that they use the engine bootstrap.
+7. Update D-bootstrap in `docs/decisions.md`. The port does not mirror
+   the engine bootstrap any more.
 
-**Acceptance.** The test completes. The results of the existing `find_blocks` and `raycast` tests do not change.
+### A5. A cancel for queued mining (P1)
 
-**Status:** done. `find_matching_unlocked` collects one chunk's in-range
-cells under a short lock and runs the predicate after the release;
-`raycast_unlocked` collects the traversed cells under one lock and runs
-the matcher after the release (the collision-clip path for `None` keeps
-its early exit). The regression test queues a writer while the predicate
-is running: with the predicate under the lock it deadlocks (verified by
-a temporary in-lock scan — the test fails with the deadlock message) and
-passes now. All existing find_blocks/raycast results are unchanged.
+**Problem.** Engine mining has no cancel for a queued start. Thus the
+port has generation counters, an aborted-dig record, and an ECS system
+that removes `MiningQueued` in `GameTick` (`src/interact/dig.rs:93-279`).
 
-### A6. The bridge can stop without an `End` event (P2) (confirm first)
-
-**Problem.**
-The bridge loop stops when the azalea event channel closes (`src/bridge.rs`, `let Some(event) = event else { break }`).
-If the channel closes without `Event::Disconnect` or `Event::ConnectionFailed`, the bridge sends no `End`.
-The broadcast sender stays alive in `BotShared`, so receivers never see `Closed`.
-Waits without a timeout then wait until the shutdown signal, or forever.
+**Requirement.** Do item A4 first.
 
 **Procedure.**
 
-1. After the loop, before `drop(shutdown)`, examine `state.ended`.
-2. If `state.ended` is false, send `BotEvent::End` with the stored quit reason or `"socketClosed"`.
-3. Write a test. Close the azalea channel without a disconnect event. Make sure that one `End` arrives.
+1. Write an engine test. Queue a mining start, then send the cancel.
+   Make sure that the mining does not start.
+2. Add a cancel to the engine mining plugin. Use a new
+   `CancelMiningEvent`, or let `StopMiningBlockEvent` cancel a queued
+   start.
+3. In the port, send the cancel from `stop_digging` and from the dig
+   abort paths.
+4. Remove `reconcile_aborted_dig`, `AbortedEngineDig`, and
+   `DigAbortPlugin`. Keep the parts of `InteractShared` that
+   `last_dig_time` and the dig promise need.
+5. Run the live suite. The interact test covers dig, stop, and place.
 
-**Acceptance.** Each bridge exit sends exactly one `End` event.
+### A6. Engine events for the remaining re-decodes (P3)
 
-**Status:** done. After the loop, `spawn` emits `End` with the stored
-quit reason or `"socketClosed"` when `state.ended` is false, guarded so a
-`Disconnect` that already emitted stays the only `End`. The regression
-test closes the azalea channel with no disconnect event: baseline never
-delivers `End` (verified), the fixed bridge delivers exactly one and
-retires the driver shutdown sender.
-
-### A7. `tab_complete` keeps an entry when the caller cancels (P3)
-
-**Problem.**
-`tab_complete` removes its pending entry on timeout only (`src/chat.rs:705`).
-If the caller drops the future, the entry stays in `completion_pending`.
-The map grows with each cancelled call.
-
-**Procedure.**
-
-1. Add a small drop guard that removes the pending id.
-2. Write a test that drops the future and then examines the map.
-
-**Acceptance.** The map is empty after a cancelled call.
-
-**Status:** done. `PendingCompletion` is a drop guard that removes the id
-on every exit: reply, timeout, or a dropped future. The test
-`cancelled_tab_complete_leaves_no_pending_entry` fails without the guard
-and passes with it.
-
-### A8. Skin data parse uses regular expressions on JSON (P2)
-
-**Problem.**
-`skin_data` decodes the base64 `textures` value and reads it with three regular expressions (`src/entity.rs:1265`).
-The pattern `[^}]*` cannot cross a nested object.
-If `metadata` comes before `url` in the `SKIN` object, the parse does not find the URL.
-`serde_json` is already a direct dependency.
+**Problem.** The port decodes some packets again because the engine
+drops them or keeps the result inside the ECS. See rows B10 to B13 in
+`01_engine_boundary.md`: action bar, tab list, command suggestions,
+movement events, sleep and air changes, equipment, chat session keys,
+and armor attributes.
 
 **Procedure.**
 
-1. Add a test with `metadata` before `url`. Make sure that it fails on the baseline code.
-2. Replace the regular expressions with a `serde_json::Value` read of `textures.SKIN.url`, `textures.SKIN.metadata.model`, and `textures.CAPE.url`.
-3. Keep `base64_decode`. Its tests stay.
+1. Do this item only after Phase B. The observer contract makes the
+   change smaller.
+2. For each row, decide if an engine event makes the port code shorter.
+   If it does not, keep the port decode.
+3. For each engine event that you add, remove the port decode and its
+   per-tick diff.
 
-**Acceptance.** The old and the new skin tests pass.
+## 4. Phase B: the bridge
 
-**Status:** done. `skin_data` reads `textures.SKIN.url`,
-`textures.SKIN.metadata.model`, and `textures.CAPE.url` through
-`serde_json::Value`; the three regexes are gone. The metadata-before-url
-test fails on baseline (the regex stops at the metadata's `}`) and both
-skin tests pass now; `base64_decode` and its tests are untouched.
+Detail file: `docs/reviews/02_bridge_and_events.md`.
 
-### A9. The entity tracker keeps old entries after a dimension change (P3)
+### B1. One observer contract in the bridge (P2)
 
-**Problem.**
-`EntityTracker` clears its maps on `Event::Login` only (`src/entity.rs:127`).
-On a dimension change, the server does not send `RemoveEntities` for the old dimension.
-Thus `known`, `equipment`, `attributes`, `effects`, and the vehicle maps keep old entries.
-The maps grow with each dimension change.
-Upstream also clears `bot.entities` on `login` only, so the public behavior is the same.
+**Problem.** `bridge::spawn` calls seven domain observers with seven
+different signatures. The misc observer is different again: it reads
+translated `BotEvent`s, not engine events, and it sends on the channel
+itself.
 
-**Procedure.**
-
-1. On `ClientboundGamePacket::Respawn`, clear all tracker maps except the entries for the bot itself.
-2. Keep `chat_sessions` and `difficulty`. They do not belong to a dimension.
-3. Write a test: add entries, send a respawn packet, and examine the map sizes.
-
-**Acceptance.** The maps contain only the bot entries after a respawn.
-
-**Status:** done. `c_respawn` calls `EntityTracker::forget_other_entities`.
-It keeps the bot's own entries, `chat_sessions`, and `difficulty`, and
-clears the vehicle, passenger, and firework maps. The test
-`respawn_forgets_other_dimension_entities` covers it. The public
-behavior does not change.
-
-## 4. Phase B: public API and error model
-
-### B1. Typed errors in place of `Error::Operation(String)` (P2)
-
-**Problem.**
-The crate has 117 `Error::Operation(String)` sites.
-A caller must compare message text to identify an error.
-Upstream also uses message text, but a Rust caller expects a `match` on the variant.
+**Requirement.** Do item F3 first.
 
 **Procedure.**
 
-1. Make a table of the 117 sites. Put each site in one group: invalid argument, wrong state, server refusal, missing item, unsupported.
-2. Add one variant for each group. Each variant keeps the upstream message in a `message` field.
-3. Keep the `Display` text identical to the current text. Upstream-ported code that compares text continues to work.
-4. Change one domain module in each commit.
-5. Keep `#[non_exhaustive]` on `Error`.
+1. Add the struct `Observe` with the client, `BotShared`, and the
+   bridge-local state (movement, path, chest lids, player list).
+2. Give each domain one function with this signature:
+   `fn observe(cx: &mut Observe<'_>, event: &Event) -> Vec<BotEvent>`.
+3. Put the observers in one constant list in `src/bridge.rs`. The list
+   gives the emission order.
+4. Change the misc observer so that it reads the engine event, not the
+   translated `BotEvent`.
+5. Make sure that the order test from F3 passes. If the order changes,
+   compare it with upstream (`ref/mineflayer/lib/plugins/health.js` and
+   the other plugins). Record the decision in `docs/decisions.md`
+   (D-bridge).
+6. Remove the six separate send loops.
 
-**Acceptance.**
+### B2. The scoreboard is its own observer (P2)
 
-- No `Error::Operation(` site remains, or each remaining site has a comment that gives the reason.
-- All `Display` texts are unchanged. Add one test that compares texts for a sample of ten sites.
-
-**Status:** done. `Error::Operation` is removed. 116 sites now use one of
-six variants: `InvalidArgument` (bad input or wrong target kind),
-`InvalidState` (the bot state does not permit the call now), `NotFound`
-(a required item, block, chest, or trade is not available), `Failed`
-(server refusal, no answer, or time limit), `Cancelled` (a newer call or
-an explicit cancel), and `Unsupported`. The dig abort is
-`DigAborted(DigAbortReason)`, so the payload names the cause. Each variant
-keeps the old text as its `Display` output. The test
-`error::tests::typed_errors_keep_upstream_messages` compares ten texts.
-The change is one commit and not one commit for each module: the removal
-of `Operation` must compile in one step.
-
-### B2. `Error::Connect` holds an unrelated third-party error (P2)
-
-**Problem.**
-`Error::Connect` wraps `hickory_resolver::ResolveError` with `#[from]` (`src/error.rs`).
-That type is a third-party type in the public API. A change in hickory is a breaking change for this crate.
-`connect` also puts thread failures into this DNS type with `"...".into()` (`src/bot/mod.rs:418` and `:422`).
+**Problem.** `misc::handle_packet` sends scoreboard packets to
+`scoreboard::handle_for`. The scoreboard state is in `BotShared`, not in
+the misc domain.
 
 **Procedure.**
 
-1. Change `Connect` to hold a `String` message or a boxed `std::error::Error`.
-2. Add a `Runtime` variant for the failure to start the bot thread.
-3. Keep the `#[from]` conversion as a private `From` implementation, if it is necessary.
+1. Add the scoreboard to the observer list from B1.
+2. Remove the scoreboard call from `misc::handle_packet`.
 
-**Acceptance.** No hickory type is in the public API of `mineflayer::Error`.
+### B3. The misc observer takes the ECS lock only when it writes (P2)
 
-**Status:** done. `Error::Connect` holds a `String`; the `#[from]
-ResolveError` is gone (the resolve site maps the error to its message),
-and both bot-thread failures use the new `Error::Runtime(String)`. The
-regression test pins the payload type and both display formats.
-
-### B3. Public signatures use azalea types that are not re-exported (P2)
-
-**Problem.**
-Public functions use `BlockPos`, `EntityRef`, `Direction`, `MinecraftEntityId`, `InteractionHand`, `GameMode`, `Menu`, `FormattedText`, and other azalea types.
-`src/lib.rs` re-exports only some of them. The comment at `src/lib.rs:56` says that `BlockPos` is re-exported, but it is not.
-A user must add `azalea` as a direct dependency with the same version and the same patch.
-The examples import `azalea::Vec3` directly.
+**Problem.** `misc::handle_packet` (`src/misc/mod.rs:139`) takes the
+exclusive ECS write lock for each clientbound packet. Only
+`ResourcePackPush` changes the misc state. At the measured peak, the
+bridge takes this lock approximately 5,000 times each second.
 
 **Procedure.**
 
-1. Add `pub use azalea;` to `src/lib.rs`. Users then use `mineflayer::azalea::...` and receive the correct version.
-2. Add a `prelude` module. Put `Bot`, `BotEvent`, `Error`, `Result`, `BlockPos`, `Vec3`, `EntityRef`, and the main option types in it.
-3. Change the examples to import from `mineflayer::prelude`.
-4. Correct the comment at `src/lib.rs:56`.
+1. Make the events from the packet without a lock.
+2. Take the ECS write lock only for `ResourcePackPush`.
+3. Remove the branch that inserts `MiscState` if it is missing.
+   `connect` inserts it before the first packet.
+4. Measure the event rate again with `examples/event_rate.rs`. Record
+   the result in `docs/performance.md`.
 
-**Acceptance.** The examples compile without a direct `azalea::` path.
-
-**Status:** done. `pub use azalea;` re-exports the patched crate as
-`mineflayer::azalea`, and `BlockPos`, `EntityRef`, and `BlockKind` join
-the root re-exports (the old comment promised `BlockPos` without
-providing it). A `prelude` module carries the handle, events, errors,
-the common option types, and the azalea value types in signatures; all
-three examples import only `mineflayer::prelude::*` and build clean.
-
-### B4. Dependent crates do not receive the azalea patch (P1)
-
-**Problem.**
-Cargo applies `[patch.crates-io]` only in the root workspace.
-A crate that depends on `mineflayer` resolves the published azalea `0.16`.
-That version has the `ServerboundAttack` defect, so `bot.attack()` causes a kick again.
-The dependent crate must also use the same nightly toolchain and the `-Znext-solver=no` flag.
-The README does not tell users about these conditions.
+### B4. The bridge exit is its own function (P3)
 
 **Procedure.**
 
-1. Add a README section with the title "Use as a dependency".
-2. In that section, give the full `[patch.crates-io]` table, the toolchain file, and the `.cargo/config.toml` flag.
-3. Add a dependent test crate in `scripts/` or in a temporary directory. Make sure that the instructions work.
-4. Record the condition in the `Cargo.toml` comment above the patch table.
+1. Move the exit logic (fallback `End`, shutdown signal, `client.exit()`)
+   out of `bridge::spawn` into one function.
+2. Keep the A6 test from the first plan. It must pass without change.
 
-**Acceptance.** A new crate that follows the README compiles and attacks without a kick in the live fixture.
+## 5. Phase C: shared helpers
 
-**Status:** done. The README has a "Use as a dependency" section with the
-full patch table, the toolchain file, and the `.cargo/config.toml` flag,
-and `Cargo.toml`'s patch-table comment points at it. Verified with a
-temporary crate at `/tmp/dependent-check` (path dependency on this repo,
-the three files copied from the README): it builds, joins the fixture as
-two bots, attacks a spawned entity, and prints "PATCH-OK: attacked without
-a kick" with no kick or end event for 4 s after the attack.
+Detail file: `docs/reviews/03_domain_modules.md`.
 
-### B5. Stringly and sentinel return types (P3)
+### C1. One ECS state accessor pair (P2)
 
-**Problem.** These public items use a string or a default value where a type is clearer:
-
-| Item | Current | Proposed |
-|---|---|---|
-| `Bot::player_by_uuid(&str)` (`src/entity.rs`) | string UUID, compares `to_string()` of each player | `Uuid` argument |
-| `Bot::spawn_point()` (`src/world.rs:887`) | `BlockPos::default()` before the packet | `Option<BlockPos>` |
-| `Block::bounding_box()` (`src/world.rs`) | `"block"` or `"empty"` | enum, with a `as_str()` for parity |
-| `Bot::click_window(slot, mouse_button: u8, mode: u8)` | integer codes | keep, and add a typed overload that takes `ClickOperation` |
-| `Block::name()` | namespaced name, upstream has no namespace | keep, and add `short_name()` |
+**Problem.** Six modules have the same two functions: read a component
+on the client entity, or insert a default component and change it. There
+are eleven of these functions.
 
 **Procedure.**
 
-1. Change one item in each commit.
-2. Update the parity row for each item. Most rows change from `ported` to `diverges` with a note.
+1. Add one generic pair: `with_component::<T>` and
+   `with_component_mut::<T: Component + Default>`. Use
+   `EntityWorldMut::entry::<T>().or_default()` for the insert.
+2. Put the pair next to the storage rule in `src/bot/mod.rs`. If driver
+   tasks have only a `Client`, put the pair on an extension trait for
+   `Client`.
+3. Write the lock rule one time, on the pair: the closure runs while the
+   ECS lock is held, so it must not take a domain lock.
+4. Replace `tool_state`, `pvp_state`, `collect_state`, `auto_eat_state`,
+   `facade`, their `_mut` forms, and `misc_mut`.
+5. `misc_mut` returns `Err(NotConnected)`. Keep this at its call sites
+   with `.ok_or(Error::NotConnected)`.
 
-**Acceptance.** The examples and the live tests compile with the new types.
+### C2. One tick stream for the drivers (P2)
 
-**Status:** done, in four commits (B5.1 to B5.4).
-`player_by_uuid` takes a `Uuid` (re-exported as `mineflayer::Uuid`).
-`spawn_point` returns `Option<BlockPos>`. `bounding_box` returns the
-`BoundingBox` enum, and `as_str()` gives the upstream string. The new
-`Block::short_name` gives upstream's name without a namespace, and the
-examples use it. The new `click_window_operation` takes an azalea
-`ClickOperation` (re-exported). The integer and the typed click use one
-rule for the crafting wait. The examples and both clippy feature sets
-compile, and the parity rows are updated.
-
-### B6. `async fn` that never waits (P3)
-
-**Problem.**
-`update_held_item` (`src/inventory.rs:303`), `close_window` (`:447`), `activate_item` (`:630`), and `deactivate_item` (`:667`) are `async` but contain no `.await`.
-A caller must use `.await` without a reason.
+**Problem.** `follow_driver`, `dynamic_watcher`, `pvp::drive`, and
+`auto_eat::drive` start with the same tick and shutdown loop.
 
 **Procedure.**
 
-1. Decide one rule: keep `async` where upstream returns a `Promise`, or remove `async` where no wait occurs.
-2. Record the rule in the module documentation.
-3. Apply the rule to the four functions.
+1. Add a type `TickStream` with `async fn next(&mut self) -> bool`. It
+   returns `false` when the tick channel closes or the bridge shuts down.
+2. Move the explanation of the shutdown receiver from the `Bot` field
+   docs to `TickStream`.
+3. Change each driver to `while ticks.next().await { ... }`.
+4. Keep the end report of `pvp::drive` after its loop.
+5. Use `TickStream` in the `goto` wait and the `dig` wait if it makes
+   them shorter.
 
-**Acceptance.** Each `async fn` in the public API waits for something, or has a comment with the parity reason.
+### C3. One event wait with a typed result (P2)
 
-**Status:** done. The rule is in the `inventory` module documentation.
-The four functions are now plain `fn`. They are synchronous upstream too.
-`cancel_eat` now calls `deactivate_item` directly and does not start a
-task. A scan of every `pub async fn` found only these four with no wait.
-`cancel_task`, `fish`, and `goto` wait inside `tokio::select!`.
-
-### B7. One shared event-wait helper (P2)
-
-**Problem.**
-The crate has many hand-written receive loops. Each loop handles `Lagged`, `Closed`, `End`, and a timeout.
-Examples: `inventory.rs` `await_window_open`, `wait_for_slot_update`, `sync_window`; `chat.rs` `await_message_on`; `bot/mod.rs` `wait_for_chunks_to_load`.
-`window_types.rs:1453` already has `await_event(rx, timeout, predicate)`.
+**Problem.** `await_event` returns `Option`. A caller cannot tell a time
+limit from a closed stream. Thus six waits are written by hand.
 
 **Procedure.**
 
-1. Move `await_event` to a crate-private module, for example `src/bot/wait.rs`.
-2. Replace a loop with `await_event` only when the loop has the same terminal conditions.
-3. Do not change loops with different terminal conditions. Examples: the dig wait (ticks and generations) and `wait_for_chunks_to_load` (it examines state after each event).
-4. Do not make `wait_for_slot_update` call itself for each slot. The comment at `window_types.rs:1444` tells why.
+1. Change `await_event` to return `Result<BotEvent, WaitEnd>`. `WaitEnd`
+   has the cases `Timeout`, `Ended`, and `Closed`.
+2. Update the current callers. Keep their current errors.
+3. Replace the hand-written waits in `interact/place.rs` (two),
+   `Bot::wait_for_chunks_to_load`, `misc/creative.rs`,
+   `await_window_open`, and `chat::await_message_on`.
+4. For `wait_for_chunks_to_load`, use a predicate that examines the
+   world on each event.
 
-**Acceptance.** The number of hand-written receive loops decreases. All existing wait tests pass.
+### C4. Slot event helpers in the window tracker (P3)
 
-**Status:** done. `await_event` moved to `src/bot/wait.rs`
-(`crate::bot::wait`); `window_types` imports it. `sync_window` and
-`wait_for_slot_update` (inventory) kept the wait's exact terminal
-conditions and now call it — two hand-written loops gone. Loops with
-different conditions were left alone: `wait_for_chunks_to_load` (state
-check), the dig wait, the place/entity and creative waits (End keeps
-waiting there, or a timeout is a distinct error), `fish` (cancel arm),
-and `await_message_on` (End is not terminal upstream either). The plural
-`wait_for_slot_updates` stays a single consumer loop.
-
-### B8. Lock poisoning policy (P2)
-
-**Problem.**
-The crate has 81 `.lock().unwrap()`, `.read().unwrap()`, and `.write().unwrap()` sites on `std::sync` locks.
-If one bridge observer panics while it holds a domain lock, the lock becomes poisoned.
-Then each later call to that domain panics, also on user threads.
+**Requirement.** Do item A3 first. A3 removes some of the call sites.
 
 **Procedure.**
 
-1. Decide between two options. Record the decision in `docs/PORT-PLAN.md`, as the dependency rule says.
-   - Option 1: use `parking_lot::Mutex` and `RwLock`. azalea already compiles `parking_lot`. These locks have no poisoning.
-   - Option 2: keep `std::sync`. Add one helper that calls `unwrap_or_else(PoisonError::into_inner)`.
-2. Apply the decision to all 81 sites in one mechanical commit.
-3. Write one test that panics inside a domain lock and then calls the domain again.
+1. Add `WindowTracker::slot_update(window, slot, stack) -> BotEvent`.
+2. Add `WindowTracker::held_changed(client) -> BotEvent`.
+3. Add one function for the selected hotbar slot. Remove the three
+   copies of the closure.
+4. Replace the repeated blocks in `src/windows/tracker.rs`.
 
-**Acceptance.** The test does not panic on the second call.
+### C5. Remove the pass-through methods on `ChatShared` (P3)
 
-Note: Option 1 adds a direct dependency. Option 2 adds no dependency.
-
-**Status:** done, Option 1 (parking_lot) — the ruling is recorded in
-`docs/PORT-PLAN.md` (Constraints). Rationale: azalea's ECS lock — the one
-our locks interact with — is already parking_lot, the dependency is
-already in every build's graph, and "no poisoning" becomes a property of
-the type (`lock()` returns the guard; there is no `unwrap()` to
-reintroduce the class). All 81 single-line and the 26 multi-line
-`lock()/read()/write().unwrap()` sites are now plain calls; the test
-panics while holding the chat lock and then uses the domain again
-(second call works; `std::sync` would panic on the poisoned lock).
-
-### B9. Lock order rule (P2)
-
-**Problem.**
-The window observer holds the `WindowTracker` mutex and then takes `client.ecs.write()` (`src/windows/tracker.rs`, `OpenScreen`, `set_slot_events`, `SetPlayerInventory`).
-`Window::close` takes `ecs.write()`, releases it, and then takes the tracker mutex.
-No document gives the permitted lock order.
-A future change can add the reverse order and cause a deadlock.
+**Problem.** `ChatShared::add_pattern`, `remove_pattern`,
+`list_patterns`, `tablist`, and `store_tablist` only call the same
+method on a field.
 
 **Procedure.**
 
-1. Make a list of each place that holds two locks at the same time.
-2. Write one rule in `src/bot/mod.rs` next to `BotShared`. Example: "A domain lock can be held when you take the ECS lock. Do not take a domain lock while you hold the ECS lock."
-3. Correct each site that does not obey the rule.
-4. Add a comment at each site that holds two locks. The comment names the rule.
-
-**Acceptance.** Each two-lock site obeys the rule and has the comment.
-
-**Status:** done. The rule is documented next to `BotShared`
-(`src/bot/mod.rs`): a domain lock may be held while the ECS lock is
-taken, never the reverse, and a value needed from the ECS under a domain
-lock is copied out first. Audit: the allowed direction is the window
-observer (`set_slot_events`, `set_content_events`, SetHeldSlot,
-EntityEvent, Cooldown, OpenScreen + the `held_signature`/`held_item`/
-`active_inventory_id`/`patch_state_id` helpers), the world-state Time
-arm, and the entity-tracker packet path — all commented. `Window::close`,
-`SetPlayerInventory`, and `entity::players` drop the ECS guard before the
-domain lock (comments name the rule). The one violation,
-`pathfinder::sync_constraints`, took `CustomPathfinderState`'s lock while
-holding the ECS write guard (the search thread locks that state while
-holding nothing, so the orders crossed); it now copies the `Arc` out,
-drops the guard, then locks. No site takes a domain lock inside
-`facade`/`facade_mut` closures (noted at their definitions).
-
-## 5. Phase C: observability
-
-### C1. Logs through `tracing` (P2)
-
-**Problem.**
-The crate writes no logs. The parity rows `options.logErrors` and `options.hideErrors` are `wontfix` for this reason.
-The bridge drops unknown azalea events and decode failures without a record (`src/bridge.rs`, `_ => vec![]`; `src/world.rs`, brand decode).
-azalea already uses `tracing`, so the crate is already in the dependency graph.
-
-**Procedure.**
-
-1. Add `tracing` as a direct dependency. Record the ruling in `docs/PORT-PLAN.md`.
-2. Add `debug!` logs for: dropped azalea events, packet decode failures, keepalive timeout, bridge exit reason.
-3. Add `warn!` logs for: a domain state that is missing when the code expects it.
-4. Do not log chat text, tokens, or account data at `info` or higher.
-5. Change the `logErrors` and `hideErrors` parity rows. Use `diverges` with a note that names the `tracing` subscriber.
-
-**Acceptance.** A run of `examples/echo.rs` with a `tracing` subscriber shows the bridge exit reason.
-
-**Status:** done. `tracing` is a direct dependency (ruling in
-`docs/PORT-PLAN.md`); the crate emits only, never installs a subscriber.
-`debug!` logs: untranslated azalea events, brand-payload encode failure,
-server keepalive timeout, and the bridge exit reason (which exit arm
-fired + whether `End` was already sent). `warn!` logs: the client's
-`WorldHolder` missing, and the missing pathfinder facade. No chat text,
-tokens, or account data anywhere. `examples/echo.rs` installs an
-`RUST_LOG`-driven `tracing-subscriber`; against the fixture with
-`RUST_LOG=debug` the run logs `bridge exit reason="all Bot handles
-dropped" ended=true`. The `logErrors`/`hideErrors` parity rows are now
-`diverges` naming `tracing`.
-
-### C2. Event volume and ring capacity (P3)
-
-**Problem.**
-The bridge sends one `BotEvent::Packet` for each clientbound packet.
-A `ContainerSetContent` packet makes one `WindowUpdateSlot` event for each slot.
-The ring has 8,192 entries (`src/bot/mod.rs:140`).
-A slow subscriber receives `Lagged` and loses events. The crate cannot see this condition.
-
-**Procedure.**
-
-1. Do the measurement in G1 first.
-2. If the measured peak is near the capacity, add a builder option to turn off `BotEvent::Packet`.
-3. Write the capacity and the loss behavior in the `Bot::events` documentation.
-
-**Acceptance.** The documentation gives the capacity and the measured peak rate.
-
-**Status:** done. The G1 busy peak was 8,751 events/s, which is above the
-8,192-event capacity. The new `BotBuilder::packet_events(false)` keeps
-raw `BotEvent::Packet` off the stream (59% of the busy volume). The
-derived events still arrive. Two internal waits read raw packets, and they
-now use derived events: creative `set_inventory_slot` waits for
-`WindowUpdateSlot`, and `fish` waits for `EntitySpawn`, `EntityGone`, and
-`ParticleSpawned`. One new edge case: a full inventory resync before the
-server applies a creative write can now report "Server rejected". The
-`Bot::events` documentation gives the capacity, the loss behavior, and the
-measured rates. Tests: `packet_events_off_keeps_derived_events` and
-`fish_follows_derived_bobber_events`.
+1. Make the fields `pub(crate)` or merge `ChatPatterns` into
+   `ChatShared`.
+2. Remove the pass-through methods.
 
 ## 6. Phase D: structure
 
-### D1. Remaining file decomposition (P3)
+Detail file: `docs/reviews/03_domain_modules.md`.
 
-The thermo review gives the seams in `/tmp/mineflayer-thermo/03_structure_bootstrap.md`.
-That file is in `/tmp`. Copy it into `docs/` before the operating system removes it.
+### D1. A generated tag lookup (P2)
 
-Do these extractions in this sequence. Do one extraction in one commit series.
-Keep the public paths. Move the tests with their owner code.
-
-1. `src/bot/connection.rs`: `BotBuilder`, `Auth`, `connect`, `connect_azalea`, `join_azalea`.
-2. `src/pathfinder/`: `goals.rs`, `movements.rs`, and a private `tracking.rs` (`PathTracker`, `PathSnapshot`, `bridge_events`).
-3. `src/window_types/`: one private child for furnace, enchantment table, anvil, and villager. Put book and command block in one child.
-4. `src/entity/`: `tracker.rs` and `damage.rs`.
-5. `src/world/`: `tracker.rs` (`WorldState`, `LidCounts`, `observe_event`).
-6. `src/inventory/transfer.rs`: `TransferOpts`, `put_selected`, `toss_leftover`, `transfer`.
-
-**CAUTION:** Do not change behavior during an extraction.
-Do not change the tick order, the generation checks, or the observer order.
-
-Also, in `window_types`, add one private accessor for the window record.
-The code repeats `self.bot.shared.window_data.lock().unwrap().windows.get(&id)` many times.
-
-**Acceptance.** No production file has more than approximately 1,000 lines before its tests. `scripts/verify.sh` passes after each step.
-
-**Status:** done. The six extractions are in six commits (D1.1 to D1.6).
-The thermo notes are now in `docs/reviews/`. Changes from the plan:
-
-- The pathfinder goal child is `goal.rs`, not `goals.rs`. The parent
-  imports azalea's `pathfinder::goals` module, and the two names collide.
-- `window_types/book.rs` holds book editing and the command block.
-- The repeated window-record lookups use one private accessor,
-  `Bot::with_window_record`.
-
-Largest production parts after the change: `pathfinder/mod.rs` (1,031
-lines), `craft.rs` (972), and `world/mod.rs` (927). `craft.rs` was not in
-the plan.
-
-### D2. One convention for domain state storage (P3)
-
-**Problem.**
-Some domain state is in `BotShared` (`chat`, `world_state`, `entities`, `windows`, `window_data`, `recipes`).
-Other state is in ECS components (`MiscState`, `InteractShared`, `PathfinderFacade`, `ToolState`, `PvpState`, `CollectState`, `AutoEatState`).
-No document tells which location to use for new state.
+**Problem.** `craft::item_tag` (`src/craft.rs:492`) is a `match` with 207
+arms. It connects tag names to the static tags in the registry crate. The
+table does not change when a new Minecraft version adds a tag.
 
 **Procedure.**
 
-1. Write the rule in the `BotShared` documentation. Example: "Put state in an ECS component when an ECS system reads it or when it must disappear with the entity. Put other state in `BotShared`."
-2. Examine each current item against the rule. Move an item only if it breaks the rule.
+1. Add `pub fn by_name(name: &str) -> Option<&'static RegistryTag<ItemKind>>`
+   to `crates/mineflayer-registry/src/tags/items.rs`.
+2. If the code generator is in the repository (item E1), make the
+   generator write this function. If not, write it one time and record
+   it in the list in item E2.
+3. Write a test that finds each static tag by its name.
+4. Change `item_tag` to a namespace check and one call to `by_name`.
 
-**Acceptance.** The rule is written, and each item obeys it or has a comment with the reason.
+### D2. Split the packet reducers (P3)
 
-**Status:** done. The rule is on `BotShared` (`src/bot/mod.rs`) and has
-three cases: an ECS system or an ECS query reads the state, plugin state
-created on first use, or `BotShared` for all other state. One item broke
-the rule: `ScoreboardState` was an ECS component, but only the bridge
-writes it and no azalea component is read with it. It is now
-`BotShared::scoreboard`, so a scoreboard packet does not take the ECS
-write lock. The four plugin states have a comment that names rule 2.
-
-## 7. Phase E: tests
-
-### E1. One live test binary with shared helpers (P2)
-
-**Problem.**
-`Cargo.toml` declares 12 live test binaries. Each binary links azalea, which uses much time and disk space.
-Each file has its own copy of helpers such as `wait_for` and the username suffix.
-The binary names mix `-` and `_` (`live-chat`, `live_misc`).
+**Problem.** `entity::tracker::handle_packet` (217 lines),
+`scoreboard::handle` (197 lines), and `world::tracker::decode_packet`
+(126 lines) are each one large `match` over many packet kinds.
 
 **Procedure.**
 
-1. Make `tests/live/main.rs`. Declare each current file as a module.
-2. Move the shared helpers to `tests/live/common.rs`.
-3. Replace the 12 `[[test]]` entries with one entry, `name = "live"`, `required-features = ["live"]`.
-4. Update the README command and `scripts/` for the new name.
+1. For each reducer, keep a short dispatch `match`.
+2. Move each packet family into its own function. Use
+   `misc::handle_packet_state` as the model.
+3. Do not change behavior. The current unit tests must pass without
+   change.
 
-**Acceptance.** `cargo test --features live -- --ignored --test-threads=1` runs all 14 tests in one binary.
-
-**Status:** done. `tests/live/main.rs` declares the twelve former
-binaries as modules; `tests/live/common.rs` carries the shared helpers
-(`wait_for` — was copied in ten files, `collect_until`,
-`horizontal_distance`); `Cargo.toml` has one `[[test]] live` entry; the
-per-file doc comments name the one-binary command. The duplicated
-`until()` variants (craft polls at 100 ms, plugins at 150 ms) and the
-craft-only fresh-username `connect` stayed local — not identical. Live
-run: one `tests/live/main.rs` binary, 14 passed, 116 s.
-
-### E2. Regression tests for the A items (P1)
-
-Each A item gives its test. Do not merge an A item without its test.
-
-**Status:** done. Each of A1 to A9 has its regression test in its commit.
-The tests for A1, A3, A5, A6, and A8 were shown to fail on the baseline
-code, and the A7 test fails without its guard. The A2 test uses a control
-handle that keeps the channel open. The A4 and A9 tests were not run
-against the baseline code.
-
-### E3. More doctests on the main entry points (P3)
-
-**Problem.** The crate has two doctests. The main entry points have no compiled example.
+### D3. Shorten the remaining long functions (P3)
 
 **Procedure.**
 
-1. Add a `no_run` doctest to `Bot::events`, `Bot::dig`, `Pathfinder::goto`, `Bot::open_container`, `Bot::craft`, and `Bot::await_message`.
-2. Use only the `prelude` items from B3.
+1. `collect::run` (159 lines): move the vacuum phase and the deposit
+   phase into their own functions.
+2. `auto_eat::run_eat` (130 lines): move the off-hand path into its own
+   function.
+3. `bridge::translate` (139 lines): move the lifecycle arms (login,
+   spawn, death, disconnect) into one function.
+4. Do not split `inventory::transfer::transfer`. It follows the upstream
+   sequence step by step.
 
-**Acceptance.** `cargo test --doc` runs at least eight doctests.
+### D4. Move `Bot::new` to the test utilities (P2)
 
-**Status:** done. `cargo test --doc` runs 9 doctests. New `no_run`
-examples are on `Bot::events`, `Bot::dig`, `Pathfinder::goto`,
-`Bot::open_container`, `Bot::craft`, `Bot::chat`, and `Bot::equip_kind`.
-The `Bot::await_message` example now uses the prelude. Each example uses
-only `mineflayer::prelude::*` (and `regex` in one example).
-
-### E4. One coverage measurement (P3)
-
-**Procedure.**
-
-1. Run `cargo llvm-cov` one time on the unit tests. Do not add it to the gate.
-2. Record the line coverage for each module in `docs/`.
-3. Make a list of the uncovered branches in the bridge and in the A-item code.
-
-**Acceptance.** The coverage report is in `docs/` with the date and the commit.
-
-**Status:** done. The report is `docs/coverage.md`: 68.3% line coverage
-for the unit tests, with a table for each module. The lowest modules are
-the click-and-wait paths of the typed windows and of the inventory.
-`bot/wait.rs` has 0%. The report lists the uncovered branches in the
-bridge (the keepalive watchdog and `ConnectionFailed` have no test of any
-kind) and in the A-item code. Tools installed for the measurement:
-`cargo-llvm-cov` 0.9.1 and the `llvm-tools` component of the pinned
-toolchain.
-
-### E5. Live test flakes (P3)
-
-**Problem.**
-The finish report records two flakes: `live_misc` ("waiting for end" timeout) and `live-craft` ("crafting table never appeared").
+**Problem.** `Bot::new` is `pub` and hidden from the docs. Only unit
+tests call it (34 call sites in 16 files). It is the only reason for the
+field `Bot::_shutdown_tx`.
 
 **Procedure.**
 
-1. Add diagnostic output to the two waits: the last 20 events and the elapsed time.
-2. Run the full live suite ten times on a reset world. Record each failure.
-3. Correct the cause. Do not add a retry loop.
+1. Move the constructor to `crate::test_util` as `pub(crate)`.
+2. Remove the field `_shutdown_tx` and its documentation.
+3. Record the removal in `CHANGELOG.md` under "Breaking".
 
-**Acceptance.** Ten runs on a reset world pass without a failure.
+### D5. One atomic component insert in `connect` (P3)
 
-**Status:** done. Series 5 passed 10 of 10 on a reset world (14 tests per
-run, 107 to 122 s each). The two flakes in the finish report did not
-recur. Four earlier series found other causes, and each was corrected:
-
-1. Diagnostics (part 1): a timeout now gives the elapsed time and the last
-   20 non-packet events; the craft check also gives the inventory.
-2. `interact`: the dig phase digs down a shaft, so the bot stands in the
-   hole cell. The test now places the drop back with one pillar jump,
-   sent only near the jump apex (parts 2 and 3; the part-2 sideways exit
-   was wrong and was replaced).
-3. Fixture: each join went to a random point in a 21×21 area. The script
-   now sets `respawn_radius 0` over a localhost-only RCON after boot
-   (part 4). `world_blocks` also searches for the kind under the feet.
-4. `movement`: the look checks ran while Forward was held, and a server
-   position correction can replace the look. The bot now stops first. The
-   world spawn is in a bamboo jungle, so the heading sweep tries headings
-   with free collision shapes first (part 5).
-
-No retry loop was added.
-
-## 8. Phase F: documentation and tools
-
-### F1. `rustdoc` warnings and a doc gate (P2)
-
-**Problem.**
-`cargo doc --no-deps` gives 10 warnings.
-Six are unresolved links to `Bot` in `src/bot/event.rs` (lines 22, 237, 440, 443, 450, 458).
-Four are public documentation that links to private items (`WEDGE_GRACE`, `GetToBlockGoal`, `NearXZGoal`, `ScoreboardState`).
-`scripts/verify.sh` does not build the documentation.
+**Problem.** `BotBuilder::connect_engine` takes the ECS write lock three
+times to insert `AutoReconnectDelay`, `MiscState`, and `InteractShared`.
 
 **Procedure.**
 
-1. Correct the six links with `crate::Bot`.
-2. Remove the four links to private items, or change them to plain code text.
-3. Add a step to `scripts/verify.sh`: `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`.
+1. Insert the components as one bundle with one write lock.
+2. After item A4, remove `AutoReconnectDelay` from the bundle.
 
-**Acceptance.** The new verify step passes.
+## 7. Phase E: the engine fork
 
-**Status:** done. The six `Bot` links in `src/bot/event.rs` are now
-`crate::Bot` paths, and the links to private items (`Bot::subscribe`,
-`WEDGE_GRACE`, `GetToBlockGoal`, `NearXZGoal`, `ScoreboardState`) are
-plain code text. `verify.sh` gained a `doc` step
-(`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`); it passes with zero
-warnings.
+Detail file: `docs/reviews/04_engine_fork.md`.
 
-### F2. Incorrect comments (P3)
+### E1. A decision about the engine code generator (P2)
 
-**Problem.** These comments say that `parking_lot` is not a dependency. It is a dev-dependency:
-
-- `src/lib.rs:104`
-- `src/pathfinder.rs:2158`
-
-`src/world.rs:572` is correct for normal code, but it must say "not a direct normal dependency".
-
-**Procedure.** Correct the three comments. If B8 Option 1 is chosen, change them again in that commit.
-
-**Status:** done. The B8 commit removed the three incorrect comments.
-A search for "not a direct dependency" in `src/` finds no result.
-
-### F3. Package metadata, `LICENSE`, and tracked junk files (P2)
-
-**Problem.**
-
-- `Cargo.toml` says `license = "MIT"`, but the repository has no `LICENSE` file.
-- The mineflayer and azalea MIT notices are in the README only.
-- `Cargo.toml` has no `repository`, `readme`, `rust-version`, or `keywords` fields.
-- `docs/.DS_Store` is in git, although `.gitignore` lists `.DS_Store`.
-- `target/` uses 35 GB.
+**Problem.** Python scripts in the upstream `codegen/` directory make the
+registry, block, item component, entity, language, and packet files.
+These scripts are not in the repository.
 
 **Procedure.**
 
-1. Add `LICENSE` with the MIT text. Add the PrismarineJS and azalea notices.
-2. Add the missing `Cargo.toml` fields.
-3. Run `git rm --cached docs/.DS_Store`.
-4. Run `cargo clean` one time after E1. Record the new size.
+1. Select one of these two options:
+   - Copy `codegen/` into the repository and change it to write the
+     `mineflayer-*` names.
+   - Do not run a generator. Merge the generated files from upstream
+     during each upgrade.
+2. Record the decision in `docs/decisions.md` next to D-engine.
+3. Update `docs/version_upgrade.md` for the selected option.
 
-**Acceptance.** `cargo package --list` shows `LICENSE` and no `.DS_Store`.
+**Requirement.** Do this item before the first Minecraft upgrade.
 
-**Correction (review of the F3 commit):** the first F3 commit set
-`repository` to the upstream JavaScript repository and `rust-version` to
-1.85. Both values were incorrect. The port has no public remote, so the
-`repository` field is removed. `rust-version` is now 1.101, the version of
-the pinned nightly. A stable compiler cannot build azalea.
-
-**Status:** done. Final `cargo clean` record (end of the plan): `target/`
-was 49 GB (59.2 GiB removed). After a clean rebuild, `scripts/verify.sh`
-leaves 4.1 GB, and the live test binary adds 1.7 GB (5.8 GB in all).
-The rest of this paragraph is the earlier note. `target/` was
-36 GB with the twelve live binaries and 41 GB after E1 plus the items
-before it; the clean-and-rebuild measurement is deferred to the end of
-the plan so the remaining items keep the warm build cache (running it
-earlier would force a full azalea rebuild for every following item).
-`LICENSE` carries the port notice plus the mineflayer and azalea MIT
-texts; `Cargo.toml` has `readme`, `rust-version`, `keywords`, and
-`categories`; `docs/.DS_Store` is untracked and deleted.
-`cargo package --list --allow-dirty` lists `LICENSE` and no
-`.DS_Store`.
-
-### F4. Continuous integration (P2)
-
-**Problem.** The repository has no remote and no CI. The gate runs only on the developer computer.
+### E2. A list of local engine changes (P2)
 
 **Procedure.**
 
-1. When a remote exists, add one CI workflow that runs `scripts/verify.sh` with the pinned toolchain.
-2. Cache `~/.cargo` and `target/`.
-3. Do not run the live tests in CI. They need a local server and a Java runtime.
+1. In `docs/decisions.md`, add a list of local engine changes next to
+   D-engine.
+2. Add the changes that exist now: the `McBuf` derive shorthand, the
+   three `ignore` doctests, the clippy corrections, the removed
+   `core::f32` import, and `log` off by default.
+3. Add each Phase A change to the list in the same commit as the change.
+4. In `docs/version_upgrade.md`, add a step: examine each listed change
+   after the merge.
 
-**Acceptance.** A pull request shows the five verify steps and the doc step.
+### E3. A publication policy for the engine crates (P3)
 
-**Status:** prepared, not verified. `.github/workflows/verify.yml` runs
-`scripts/verify.sh` (all six steps) with the pinned toolchain
-(`rustup toolchain install` reads `rust-toolchain.toml`) and caches the
-cargo registry and `target/`. The repository still has no remote, so the
-workflow has not run. The acceptance check needs the first pull request
-after a remote exists.
-
-### F5. Old planning documents (P3)
-
-**Problem.**
-`docs/PORT-PLAN.md` gives "Open risks" that are now closed.
-Example: the MC version decision for the fixture.
-The finish reports are in `.superpowers/`, which git ignores.
+**Problem.** All 22 crate names were free on crates.io on 2026-10-16. To
+publish `mineflayer`, you must first publish the 21 engine crates.
 
 **Procedure.**
 
-1. Add a "Status" line to each closed risk in `docs/PORT-PLAN.md`.
-2. Copy the decision records (R1 to R7, the azalea pin ruling) into a `docs/decisions.md` file.
+1. Decide if the port will be published.
+2. If it will not, add `publish = false` to each engine crate. This also
+   prevents a publication of `mineflayer`.
+3. If it will, give the engine crates their own version number, and add
+   `repository` and `description` fields.
+4. Record the decision in `docs/decisions.md`.
 
-**Acceptance.** Each ruling that the code depends on is in a tracked file.
+### E4. Remove engine modules that the port does not use (P3)
 
-**Status:** done. Each of the three open risks in `docs/PORT-PLAN.md` has
-a "Status: closed" line. `docs/decisions.md` records R1 to R7, the azalea
-pin, the toolchain pin, and the rulings from this plan (B1, B8, B9, C1,
-D2). It also records the architecture decisions that section 12 tells you
-not to change.
-
-## 9. Phase G: performance
-
-### G1. Performance measurements before changes (P3)
+**Requirement.** Do item A4 first.
 
 **Procedure.**
 
-1. Connect a bot to the reset fixture. Count the `BotEvent` variants for each second over five minutes.
-2. Measure the time of `find_blocks` with `BlockMatcher::Predicate` and `max_distance` 64.
-3. Measure the time of `Bot::entities()` with 200 entities.
-4. Record the results in `docs/`.
+1. Measure which engine modules the port reaches. Start with the swarm
+   module (1,269 lines), `auto_reconnect`, `auto_respawn`,
+   `accept_resource_packs`, and `auto_tool`.
+2. Remove each module that the port and the engine tests do not need.
+3. Run `scripts/verify.sh` and the live suite after each removal.
+4. Record each removal in the list in item E2.
 
-**Acceptance.** The results are in `docs/` with the commit and the method.
-
-**Status:** done. The results and the method are in `docs/performance.md`.
-The probe is `examples/event_rate.rs`. The probe user was made op for the
-run only (`.live/ops.json`), and the entry is removed again. The run also
-found a bevy schedule-ambiguity warning for the dig-abort reconciler. The
-reconciler is now `ambiguous_with_all()`, and the warning no longer shows.
-
-### G2. Small performance corrections (P3)
-
-Do these items only if G1 shows a cost.
-
-1. `Bot::entities()` sorts by distance and then puts the result in a `HashMap` (`src/entity.rs`). The sort has no effect. Add an unsorted query for this call.
-2. `entities_sorted_by_distance` takes `ecs.write()` for a read-only query. Examine whether a cached `QueryState` lets the code use a read lock.
-3. `find_matching` creates a `Block`, with an `azalea::Client` clone, for each block in range. After A5, create the `Block` only for candidates that pass the distance limit.
-4. `EntityTracker::forget` searches all passenger lists for each removed id. For large `RemoveEntities` packets, remove the ids in one pass.
-
-**Acceptance.** Each change has a G1 measurement before and after it.
-
-**Status:** done, no code change. G1 shows no cost for any of the four
-items: `entities()` takes 26 µs with 294 entities, and `find_blocks` with
-a predicate takes 8.8 ms at distance 64. A5 already creates a `Block` only
-inside the distance limit. `RemoveEntities` packets are rare. The
-reasons are in `docs/performance.md`.
-
-## 10. Phase H: dependency and platform life cycle
-
-### H1. Remove the azalea patch when a release is available (P2)
+### E5. Engine build profile and documentation gate (P3)
 
 **Procedure.**
 
-1. Each month, examine the azalea releases for a version that contains commit `ddef371`.
-2. When such a release exists, change `azalea = "0.16"` to that version.
-3. Remove the `[patch.crates-io]` table.
-4. Run the full gate and the `live-entity` attack test.
-5. Remove the B4 README section.
+1. Add `[profile.dev.package."mineflayer-*"] opt-level = 1` to
+   `Cargo.toml`. Measure the compile time and the live suite time before
+   and after. Keep the change only if the live suite is faster and the
+   compile time is acceptable.
+2. Add a gate step for the engine documentation:
+   `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`.
+   Correct the warnings first.
 
-**Status (review 2026-10-16):** no change. The newest published azalea is
-`0.16.0+mc26.1` (2026-03-28). It does not contain commit `ddef371`, so
-the patch table stays. Do the next review in November 2026.
+## 8. Phase F: tests
 
-### H2. Toolchain pin review (P3)
+Detail file: `docs/reviews/05_tests_docs_tooling.md`.
 
-**Procedure.**
+### F1. The live suite in continuous integration (P2)
 
-1. Each month, compile azalea with the newest nightly and without `-Znext-solver=no`.
-2. If the compile passes, move the pin and remove the flag in one commit.
-3. Record the result of each review in `rust-toolchain.toml`.
-
-**Status (review 2026-10-16):** no change. `nightly-2026-10-15` (rustc
-`4ebd25825`) panics in `rustc_infer` (`infer/mod.rs:1694`) on azalea:
-without `-Znext-solver=no` it fails on `azalea-entity`, and with the flag
-it fails on `azalea-client`. The pin to `nightly-2026-10-01` and the flag
-stay. The result is in `rust-toolchain.toml`. Do the next review in
-November 2026.
-
-### H3. Reference checkout at the pinned revision (P3)
-
-**Problem.**
-`ref/azalea` is at a newer mc26.2 revision. The build uses rev `ddef371` (mc26.1).
-An earlier review read the wrong source because of this difference.
+**Problem.** The live suite is the only test of the port and the engine
+together on the wire. Continuous integration does not run it.
 
 **Procedure.**
 
-1. Change `ref/azalea` to rev `ddef371`.
-2. Add one line in the README that tells which revision `ref/` must have.
+1. Add a second job to `.github/workflows/verify.yml`. Run it on a
+   schedule and on manual dispatch.
+2. In the job, install a Java 25 runtime.
+3. Cache the server jar in `.live/`.
+4. Run `bash scripts/live-server.sh reset`, then the live suite, then
+   `bash scripts/live-server.sh stop`.
+5. Keep the fixture offline. Do not connect to Mojang session servers or
+   to public servers.
 
-**Status:** done. `ref/azalea` is on the local branch `pinned-ddef371` at
-`ddef371` (`0.16.0+mc26.1`). Its `main` branch is unchanged. The README
-"Toolchain" section tells which revision `ref/azalea` must have.
+### F2. Engine tests for the Phase A items (P1)
 
-### H4. Procedure for the next Minecraft version (P3)
+Each Phase A item gives its engine test in its procedure. Write the test
+first. Make sure that it fails before the engine change.
 
-**Procedure.** Write a checklist in `docs/` for the next azalea and Minecraft version. Put these items in it:
+### F3. A test for the event emission order (P1)
 
-1. Compare `client_app::app()` with `StartClientOpts::new` at the new revision.
-2. Run the schedule-level test in `src/client_app.rs`.
-3. Examine each packet that the bridge decodes for field changes.
-4. Change the fixture server jar in `scripts/live-server.sh` to the same version.
-5. Run the full live suite on a reset world.
-6. Update the version rows in `docs/api-parity.md`.
+**Problem.** The bridge sends events in an order that only the loop
+shows. Item B1 changes the loop.
 
-**Status:** done. The checklist is `docs/version_upgrade.md`. It also
-gives the table of the 66 clientbound packets that the port decodes itself
-and the module that owns each one.
+**Procedure.**
 
-## 11. Sequence and dependencies
+1. Write a unit test in `src/bridge.rs` that feeds these packets and
+   records the order of the events:
+   - `SetHealth` with health above 0 while the bot is dead (`Spawn` and
+     `Health`).
+   - `Respawn` (`Respawn`).
+   - `SetActionBarText` (`Packet`, the message family, `ActionBar`).
+   - `BlockEvent` for a note block (misc `NoteHeard`) and for a chest
+     (world `ChestLidMove`).
+2. Run the test on the current code. It must pass.
+3. Do item B1 only after this test is in `main`.
 
-| Step | Items | Condition |
-|---|---|---|
-| 1 | A1, A2, A3, A4, A5 with E2 | none |
-| 2 | B4, F1, F3 | none |
-| 3 | A6, A8, B2, B8, B9 | B8 before B9 |
-| 4 | B3, B7, C1, E1 | B3 before E3 |
-| 5 | B1 | after B2 |
-| 6 | D1, D2 | after B7 and B9 |
-| 7 | A7, A9, B5, B6, C2, E3, E4, E5, F2, F4, F5, G1, G2 | G2 after G1; C2 after G1 |
-| Monthly | H1, H2 | none |
-| Before the next MC version | H3, H4 | none |
+## 9. Phase G: documents and tools
 
-## 12. Items that this plan does not change
+### G1. Move the historical documents (P3)
 
-The earlier reviews approved these items. Do not change them without a new defect report:
+**Procedure.**
 
-- The bootstrap mirror in `src/client_app.rs` and its schedule-level test.
-- The single ordered observer loop in `src/bridge.rs`.
-- The dig generation model and `reconcile_aborted_dig` in `src/interact/dig.rs`.
-- `clear_inventory` with `join_all` and `CreativeSlotGuard` in `src/misc/creative.rs`.
-- The explicit 21-entry azalea patch table.
-- One `BotEvent` enum for all events. Do not divide it into nested event types.
-- The short ECS accessor functions in each plugin module. Do not replace them with a generic state registry.
+1. Move `docs/PORT-PLAN.md`, `docs/surveys/engine-features.md`, and
+   `docs/surveys/mineflayer-api.md` into `docs/history/`.
+2. Update the links in `README.md` and `docs/decisions.md`.
+
+### G2. Remove or document the model-delegation scripts (P3)
+
+**Problem.** `scripts/argon-unit.py` and `scripts/test-argon-unit.py`
+send source files to a local model API and write the returned files into
+`src/`, `docs/`, and `tests/`. They have no role in the build or the
+tests.
+
+**Procedure.**
+
+1. Ask the maintainer if the scripts are still in use.
+2. If they are not, remove them.
+3. If they are, add a "Maintainer tools" section to `README.md`. Give
+   the purpose and the write rules of the scripts.
+
+### G3. Build directory size (P3)
+
+**Problem.** `target/` measured 31 GB. The gate builds the engine crates
+two times, with two different feature sets.
+
+**Procedure.**
+
+1. Add one sentence to the README "Toolchain" section: run `cargo clean`
+   after large changes, because the build directory grows past 30 GB.
+2. Do not change the gate to save space. The two builds test two real
+   configurations.
+
+## 10. Sequence and dependencies
+
+1. F3 before B1.
+2. A2 with A1 or before it.
+3. A4 before A5 and before E4.
+4. A3 before C4.
+5. Phase B before A6.
+6. E1 before the first Minecraft upgrade.
+7. E2 at the start. Then update it with each engine change.
+
+Recommended order: F3, E2, A1 with A2, A3, A4, A5, B1, B2, B3, C1, C2,
+C3, D1, D4, then the P3 items.
+
+## 11. Items that this plan does not change
+
+| Item | Reason |
+|---|---|
+| One `BotEvent` enum | D-events. The size follows from the mineflayer event list. |
+| The error model | The typed variants are correct (first plan, B1). |
+| The lock family (`parking_lot`) | D-locks. Item A3 can make the lock order rule stricter, but the family stays. |
+| One Minecraft version | The engine supports one version. Multiple versions are out of scope. |
+| A new engine written from the start | The in-tree engine works and passes its tests. This plan corrects it in place. |
+| The public names that follow mineflayer | The parity table is the specification. |

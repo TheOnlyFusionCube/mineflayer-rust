@@ -22,7 +22,8 @@
 
 ## 0.2.0 — 2026-10-16
 
-The holistic improvement plan (`docs/improvement_plan.md`). Breaking
+The first holistic improvement plan (`docs/improvement_plan.md` at
+commit `775ba66`). Breaking
 changes first.
 
 ### Breaking
