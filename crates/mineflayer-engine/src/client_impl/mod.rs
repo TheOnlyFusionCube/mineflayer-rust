@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bevy_app::{App, AppExit};
+use bevy_app::{App, AppExit, PluginGroup, PluginGroupBuilder};
 use bevy_ecs::{entity::Entity, resource::Resource, world::Mut};
 use mineflayer_auth::game_profile::GameProfile;
 use mineflayer_client::{
@@ -72,6 +72,21 @@ pub struct Client {
     pub ecs: Arc<RwLock<bevy_ecs::world::World>>,
 }
 
+/// Every plugin [`Client::join`] builds its app from: [`DefaultPlugins`],
+/// [`DefaultBotPlugins`], and [`DefaultSwarmPlugins`]. Pass
+/// `ClientPlugins.build()` with plugins added or disabled to
+/// [`StartClientOpts::new_with_plugins`] to change the set.
+pub struct ClientPlugins;
+
+impl PluginGroup for ClientPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        PluginGroupBuilder::start::<Self>()
+            .add_group(DefaultPlugins)
+            .add_group(DefaultBotPlugins)
+            .add_group(DefaultSwarmPlugins)
+    }
+}
+
 pub struct StartClientOpts {
     pub ecs_lock: Arc<RwLock<bevy_ecs::world::World>>,
     pub account: Account,
@@ -93,8 +108,19 @@ impl StartClientOpts {
         address: ResolvedAddr,
         event_sender: Option<mpsc::UnboundedSender<Event>>,
     ) -> (StartClientOpts, oneshot::Receiver<AppExit>) {
+        Self::new_with_plugins(account, address, event_sender, ClientPlugins)
+    }
+
+    /// Like [`Self::new_with_appexit_rx`], with the app built from `plugins`
+    /// instead of [`ClientPlugins`].
+    pub fn new_with_plugins(
+        account: Account,
+        address: ResolvedAddr,
+        event_sender: Option<mpsc::UnboundedSender<Event>>,
+        plugins: impl PluginGroup,
+    ) -> (StartClientOpts, oneshot::Receiver<AppExit>) {
         let mut app = App::new();
-        app.add_plugins((DefaultPlugins, DefaultBotPlugins, DefaultSwarmPlugins));
+        app.add_plugins(plugins);
 
         let (ecs_lock, start_running_systems, appexit_rx) = start_ecs_runner(app.main_mut());
         start_running_systems();
@@ -539,5 +565,34 @@ impl Client {
         self.get_component::<TicksConnected>()
             .map(|c| c.0)
             .unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy_app::{App, PluginGroup};
+
+    use super::ClientPlugins;
+    use crate::{auto_reconnect::AutoReconnectPlugin, pathfinder::PathfinderPlugin};
+
+    struct Extra;
+    impl bevy_app::Plugin for Extra {
+        fn build(&self, _app: &mut App) {}
+    }
+
+    /// `StartClientOpts::new_with_plugins` takes the default plugin set as
+    /// a group, so a caller adds and disables plugins without copying it.
+    #[test]
+    fn client_plugins_can_be_extended_and_trimmed() {
+        let mut app = App::new();
+        app.add_plugins(
+            ClientPlugins
+                .build()
+                .disable::<AutoReconnectPlugin>()
+                .add(Extra),
+        );
+        assert!(app.is_plugin_added::<PathfinderPlugin>());
+        assert!(app.is_plugin_added::<Extra>());
+        assert!(!app.is_plugin_added::<AutoReconnectPlugin>());
     }
 }

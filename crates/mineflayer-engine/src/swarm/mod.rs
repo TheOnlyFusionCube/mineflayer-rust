@@ -15,6 +15,8 @@ use std::sync::{
 use bevy_app::{AppExit, PluginGroup, PluginGroupBuilder};
 use bevy_ecs::prelude::*;
 pub use builder::SwarmBuilder;
+pub use chat::SwarmChatPlugin;
+pub use events::SwarmPlugin;
 use futures::future::BoxFuture;
 use mineflayer_client::{account::Account, client_chat::ChatPacket, join::ConnectOpts};
 use mineflayer_entity::LocalEntity;

@@ -64,6 +64,10 @@ merge; plan item E2 keeps this list current):
     upstream mineflayer's `lastClosedWindow`). `Player::slot_for_inventory_index`
     maps `set_player_inventory` slots. Tests:
     `mineflayer-client/tests/simulation/inventory_packets.rs`.
+12. (A4) `ClientPlugins` (the three default plugin groups) and
+    `StartClientOpts::new_with_plugins` let a caller add and disable
+    plugins without a copy of the bootstrap; `swarm` exports
+    `SwarmPlugin` and `SwarmChatPlugin` so that they can be disabled.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
@@ -104,11 +108,13 @@ on first use for plugin-analog state; `BotShared` for everything else. See
 
 ## Architecture
 
-**D-bootstrap. `client_app::app()` mirrors the engine's `StartClientOpts::new`.**
-`Client::join` builds the app with no plugin hook, and the dig-abort
-reconciler must run inside the tick that materializes a pending mining
-start. A schedule-level test in `src/client_app.rs` runs the production
-app. Re-check the mirror when the engine changes (`docs/version_upgrade.md`).
+**D-bootstrap. The port joins through the engine bootstrap.**
+`connect` calls `StartClientOpts::new_with_plugins` with `client_plugins()`
+(`src/bot/connection.rs`): the engine's `ClientPlugins` without
+auto-reconnect and the swarm plugins, plus the dig-abort reconciler, which
+must run inside the tick that materializes a pending mining start. The
+port does not mirror the engine's plugin list (plan item A4, 2026-10-17).
+A schedule-level test in `src/bot/connection.rs` runs the production app.
 
 **D-bridge. One ordered observer loop.** Every domain observer runs inside
 the bridge task, in a fixed order, so derived events follow their source

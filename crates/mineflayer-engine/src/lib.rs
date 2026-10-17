@@ -56,7 +56,7 @@ pub use mineflayer_registry::identifier::Identifier;
 pub use mineflayer_world as world;
 
 pub use crate::{
-    client_impl::{Client, StartClientOpts},
+    client_impl::{Client, ClientPlugins, StartClientOpts},
     entity_ref::EntityRef,
     events::{Event, PathEvent},
 };
