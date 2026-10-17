@@ -423,7 +423,7 @@ mod tests {
         }));
         assert!(panicked.is_err(), "the observer panic must unwind");
         // the domain still works
-        chat.lock().add_pattern(
+        chat.lock().patterns.add(
             "probe",
             vec![regex::Regex::new("probe").unwrap()],
             crate::ChatPatternOpts::default(),

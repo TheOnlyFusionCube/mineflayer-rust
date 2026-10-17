@@ -313,13 +313,13 @@ struct ChatPatternEntry {
 /// monotonically increasing and never reused; entries are removed, not
 /// compacted (a `BTreeMap` gives upstream's ascending-id iteration order).
 #[derive(Debug, Default)]
-struct ChatPatterns {
+pub(crate) struct ChatPatterns {
     entries: BTreeMap<usize, ChatPatternEntry>,
     next_id: usize,
 }
 
 impl ChatPatterns {
-    fn add(&mut self, name: &str, patterns: Vec<Regex>, opts: ChatPatternOpts) -> usize {
+    pub(crate) fn add(&mut self, name: &str, patterns: Vec<Regex>, opts: ChatPatternOpts) -> usize {
         let id = self.next_id;
         self.next_id += 1;
         self.entries.insert(
@@ -336,7 +336,7 @@ impl ChatPatterns {
         id
     }
 
-    fn remove(&mut self, key: &ChatPatternKey) {
+    pub(crate) fn remove(&mut self, key: &ChatPatternKey) {
         match key {
             ChatPatternKey::Id(id) => {
                 self.entries.remove(id);
@@ -347,7 +347,7 @@ impl ChatPatterns {
         }
     }
 
-    fn list(&self) -> Vec<ChatPattern> {
+    pub(crate) fn list(&self) -> Vec<ChatPattern> {
         self.entries
             .iter()
             .map(|(&id, e)| ChatPattern {
@@ -426,8 +426,8 @@ impl ChatPatterns {
 /// and `tab_complete` replies arrive there too.
 #[derive(Debug)]
 pub(crate) struct ChatShared {
-    patterns: ChatPatterns,
-    tablist: TabList,
+    pub(crate) patterns: ChatPatterns,
+    pub(crate) tablist: TabList,
     /// Correlation counter for `tab_complete` — `s_command_suggestion` carries
     /// a transaction id the server echoes in `c_command_suggestions`.
     next_completion_id: u32,
@@ -455,31 +455,6 @@ impl Default for ChatShared {
 }
 
 impl ChatShared {
-    /// Register a pattern set (`Bot::add_chat_pattern*`).
-    pub(crate) fn add_pattern(
-        &mut self,
-        name: &str,
-        patterns: Vec<Regex>,
-        opts: ChatPatternOpts,
-    ) -> usize {
-        self.patterns.add(name, patterns, opts)
-    }
-
-    /// Remove pattern set(s) (`Bot::remove_chat_pattern`).
-    pub(crate) fn remove_pattern(&mut self, key: &ChatPatternKey) {
-        self.patterns.remove(key);
-    }
-
-    /// Snapshot of registered pattern sets (`Bot::chat_patterns`).
-    pub(crate) fn list_patterns(&self) -> Vec<ChatPattern> {
-        self.patterns.list()
-    }
-
-    /// The stored tab-list header/footer (`Bot::tablist`).
-    pub(crate) fn tablist(&self) -> TabList {
-        self.tablist.clone()
-    }
-
     /// The upstream message-family events for one incoming chat packet, in
     /// emission order: `message`, `messagestr`, then (inside the messagestr
     /// step, like upstream) `whisper` and completed `chat:{name}` events,
@@ -529,12 +504,6 @@ impl ChatShared {
         let (tx, rx) = oneshot::channel();
         self.completion_pending.insert(id, tx);
         (id, rx)
-    }
-
-    /// Store the latest `c_tab_list` header/footer — upstream overwrites both
-    /// unconditionally on NBT-component versions (mc26 is one).
-    pub(crate) fn store_tablist(&mut self, tablist: TabList) {
-        self.tablist = tablist;
     }
 }
 
@@ -679,18 +648,18 @@ impl Bot {
         patterns: Vec<Regex>,
         opts: ChatPatternOpts,
     ) -> usize {
-        self.shared.chat.lock().add_pattern(name, patterns, opts)
+        self.shared.chat.lock().patterns.add(name, patterns, opts)
     }
 
     /// `bot.removeChatPattern(name|id)` — by id removes that set; by name
     /// removes every set with the name.
     pub fn remove_chat_pattern(&self, key: impl Into<ChatPatternKey>) {
-        self.shared.chat.lock().remove_pattern(&key.into());
+        self.shared.chat.lock().patterns.remove(&key.into());
     }
 
     /// `bot.chatPatterns` — a snapshot of the registered pattern sets.
     pub fn chat_patterns(&self) -> Vec<ChatPattern> {
-        self.shared.chat.lock().list_patterns()
+        self.shared.chat.lock().patterns.list()
     }
 
     /// `bot.awaitMessage(...args)` — resolves with the `messagestr` text of
@@ -756,7 +725,7 @@ impl Bot {
     /// `bot.tablist` — the tab-list header/footer the server last sent
     /// (empty until the first `c_tab_list` packet).
     pub fn tablist(&self) -> TabList {
-        self.shared.chat.lock().tablist()
+        self.shared.chat.lock().tablist.clone()
     }
 }
 
@@ -963,14 +932,16 @@ mod tests {
     fn empty_pattern_set_never_matches() {
         // an empty set must not panic the bridge-side matcher
         let mut shared = ChatShared::default();
-        shared.add_pattern("empty", vec![], ChatPatternOpts::default());
+        shared
+            .patterns
+            .add("empty", vec![], ChatPatternOpts::default());
         let events = shared.message_events(&ChatPacket::new("anything"));
         assert!(
             !events
                 .iter()
                 .any(|e| matches!(e, BotEvent::ChatPattern { .. }))
         );
-        assert_eq!(shared.list_patterns().len(), 1);
+        assert_eq!(shared.patterns.list().len(), 1);
     }
 
     #[test]
@@ -1110,10 +1081,10 @@ mod tests {
     fn tablist_stores_and_defaults_empty() {
         let mut shared = ChatShared::default();
         assert_eq!(shared.tablist.header.to_string(), "");
-        shared.store_tablist(TabList {
+        shared.tablist = TabList {
             header: FormattedText::from("h"),
             footer: FormattedText::from("f"),
-        });
+        };
         assert_eq!(shared.tablist.header.to_string(), "h");
         assert_eq!(shared.tablist.footer.to_string(), "f");
     }

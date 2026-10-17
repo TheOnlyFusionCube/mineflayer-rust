@@ -479,10 +479,10 @@ fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) 
             chat.lock().message_events(&chat_packet)
         }
         ClientboundGamePacket::TabList(p) => {
-            chat.lock().store_tablist(TabList {
+            chat.lock().tablist = TabList {
                 header: p.header.clone(),
                 footer: p.footer.clone(),
-            });
+            };
             vec![]
         }
         ClientboundGamePacket::CommandSuggestions(p) => {
@@ -949,7 +949,7 @@ mod tests {
         });
         let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
         assert!(matches!(&out[..], [BotEvent::Packet(_)]));
-        let tablist = s.chat.lock().tablist();
+        let tablist = s.chat.lock().tablist.clone();
         assert_eq!(tablist.header.to_string(), "h");
         assert_eq!(tablist.footer.to_string(), "f");
     }
@@ -985,7 +985,7 @@ mod tests {
         let client = despawned();
         let mut s = BridgeState::default();
         let qr = Mutex::new(None);
-        s.chat.lock().add_pattern(
+        s.chat.lock().patterns.add(
             "probe",
             vec![regex::Regex::new("worked").unwrap()],
             crate::ChatPatternOpts::default(),
