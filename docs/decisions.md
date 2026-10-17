@@ -156,6 +156,29 @@ entry is an adapter that passes one shared `Observe` context to the
 domain function with the inputs that domain needs, so the domain
 functions keep narrow arguments and their unit tests.
 
+**D-redecode. The port keeps its packet re-decodes** (plan item A6,
+2026-10-17). For each place the port decodes what the engine drops or
+keeps inside the ECS (`docs/reviews/01_engine_boundary.md`, B10 to B13),
+an engine event would not make the port shorter by enough to pay for a
+new engine change:
+
+- Action bar, tab list, command suggestions (`bridge::packet_side_events`):
+  one match arm each on `Event::Packet`; an engine event is one arm too.
+- `move` (`movement::bridge_events`): a 15-line per-tick diff of
+  `Position`/`LookDirection`, equal to the engine sending a position
+  packet when either changed. An engine "position sent" event would
+  remove the diff and `MovementTracker` and add the same amount of engine
+  code. `forcedMove` and `abilities` are one arm each.
+- Sleep, wake, breath (`misc::tick_diffs`): a per-tick diff of `Pose`
+  and `AirSupply`; an engine event would move the same comparison into
+  the engine.
+- Equipment, chat-session keys, attributes (`entity::tracker`): the
+  engine does not store them, so the port must keep the state; an event
+  would only change where the packet arrives from.
+
+Cost if wrong: add the engine event, record it in the D-engine list, and
+replace the port decode with a match on it.
+
 **D-events. One `BotEvent` enum.** Events are one broadcast protocol;
 nested event types would cause match churn with no gain.
 
