@@ -4,6 +4,7 @@ description = "Cryptography features used in Minecraft."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dev-dependencies]
 

@@ -92,6 +92,15 @@ the generator to keep in step, and no drift between the local output and
 the upstream output. Cost if wrong: copy `codegen/` into the repository,
 change the scripts to write the `mineflayer-*` names, and regenerate.
 
+**D-publish. Nothing is published to crates.io** (plan item E3,
+2026-10-17). The port has no public remote and no release process that
+publishes, and publishing `mineflayer` would first need its 21 path
+dependencies published. Every engine crate has `publish = false`
+(`[workspace.package]` in `Cargo.toml`), so `cargo publish` refuses them,
+and `mineflayer` cannot be published while it depends on them. Cost if
+wrong: remove the flag, give the engine crates their own version line and
+`repository`/`description` fields, and publish them first.
+
 **D-toolchain. Nightly `2026-10-01` and `-Znext-solver=no`.** The engine
 crates need nightly. The nightly current at scaffold time stopped with an
 internal compiler error on the entity crate, and the next-gen trait solver

@@ -4,6 +4,7 @@ description = "Serialize and deserialize buffers from Minecraft."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 mineflayer-buf-macros.workspace = true

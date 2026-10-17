@@ -57,6 +57,9 @@ resolver = "3"
 version = "0.16.0+mc26.1"
 edition = "2024"
 license = "MIT"
+# D-publish: the engine crates are not published, which also keeps
+# `mineflayer` (which depends on them by path) off crates.io
+publish = false
 
 [workspace.dependencies]
 aes = "0.8.4"

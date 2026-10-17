@@ -4,6 +4,7 @@ description = "The Minecraft world representation used in the engine."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dev-dependencies]
 rand.workspace = true

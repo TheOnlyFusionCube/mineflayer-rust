@@ -4,6 +4,7 @@ description = "A port of Mojang's Brigadier command parsing and dispatching libr
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dev-dependencies]
 bevy_app.workspace = true

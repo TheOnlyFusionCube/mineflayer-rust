@@ -4,6 +4,7 @@ description = "Translate Minecraft strings from their id."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 compact_str = { workspace = true, features = ["serde"] }

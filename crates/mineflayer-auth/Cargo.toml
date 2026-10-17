@@ -4,6 +4,7 @@ description = "A port of Mojang's Authlib and launcher authentication."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 mineflayer-buf.workspace = true

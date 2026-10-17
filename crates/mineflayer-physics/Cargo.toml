@@ -4,6 +4,7 @@ description = "Physics for Minecraft entities."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true

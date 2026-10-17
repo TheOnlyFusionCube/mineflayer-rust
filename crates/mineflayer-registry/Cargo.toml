@@ -4,6 +4,7 @@ description = "Use Minecraft's registries."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 mineflayer-buf.workspace = true

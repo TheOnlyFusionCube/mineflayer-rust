@@ -4,6 +4,7 @@ description = "A headless Minecraft client."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 async-compat.workspace = true

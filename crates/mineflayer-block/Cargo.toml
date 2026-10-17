@@ -4,6 +4,7 @@ description = "Representation of Minecraft block states."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [dependencies]
 mineflayer-block-macros.workspace = true
