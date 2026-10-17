@@ -84,7 +84,7 @@ pub enum Auth {
         username: String,
     },
     /// `auth: 'microsoft'` — the engine's interactive device-code flow (prints a
-    /// link code; caches tokens in `~/.minecraft/mineflayer-auth-cache.json`).
+    /// link code; caches tokens in `~/.minecraft/mineflayer-auth.json`).
     Microsoft {
         /// Microsoft account email — the token cache key.
         email: String,

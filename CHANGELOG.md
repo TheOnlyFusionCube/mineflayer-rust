@@ -10,6 +10,11 @@
 - The engine re-export is `mineflayer::engine` (was the upstream crate
   name). Engine paths in signatures are `mineflayer_engine::…`; the buffer
   derive and traits are `McBuf`/`McBufVar`/`McBufLimited`.
+- `Auth::Microsoft` caches tokens in `~/.minecraft/mineflayer-auth.json`.
+  The previous engine used a different file name, so the first connect
+  after the update asks for the device-code login again (or rename the
+  old cache file to keep the tokens).
+- The packet-log env var is `MINEFLAYER_DO_NOT_CUT_OFF_PACKET_LOGS`.
 
 ### Fixed
 

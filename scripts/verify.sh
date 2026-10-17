@@ -26,6 +26,7 @@ run_step "clippy" cargo clippy --all-targets -- -D warnings
 # the live tests compile only with the feature; lint them too (their
 # warnings otherwise stay invisible to this gate)
 run_step "clippy (live)" cargo clippy --features live --all-targets -- -D warnings
+run_step "clippy (engine)" cargo clippy --workspace --exclude mineflayer --all-targets --features mineflayer-client/log -- -D warnings
 run_step "test"   cargo test
 # the engine crates, with the `log` feature their simulation tests capture
 # logs through (off for the port, which never installs a subscriber)

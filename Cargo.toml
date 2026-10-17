@@ -31,11 +31,11 @@ regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = "1"
-# Every crate lock (see the lock policy in docs/PORT-PLAN.md): same no-
+# Every crate lock (see D-locks in docs/decisions.md): same no-
 # poison lock family the engine uses for the ECS, and the version
 # mineflayer-client compiles its `WorldHolder.shared` field with.
 parking_lot = "0.12"
-# Log facade (ruling in docs/PORT-PLAN.md, C1) — the engine already logs
+# Log facade (D-log in docs/decisions.md) — the engine already logs
 # through `tracing`, and a dependent crate installs the subscriber.
 tracing = "0.1"
 

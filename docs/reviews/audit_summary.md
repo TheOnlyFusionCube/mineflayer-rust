@@ -102,8 +102,8 @@ returns its events, called in a fixed list) would turn the loop body into
 a short ordered list and make the event order visible in one place.
 
 `misc::handle_packet` takes the exclusive ECS write lock for every
-non-scoreboard clientbound packet, a few thousand times a second at the
-measured peak, although only `ResourcePackPush` changes misc state. The
+non-scoreboard clientbound packet, about 5,000 times a second at the
+measured peak (8,751 events/s, about 60% raw packets), although only `ResourcePackPush` changes misc state. The
 write lock competes with the engine's own systems. Matching the packet
 kind first removes almost all of these lock acquisitions.
 

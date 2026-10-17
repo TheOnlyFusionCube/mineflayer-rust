@@ -71,7 +71,7 @@ own commit. Record each engine change in the list in item E2.
 
 1. Do one work item in one commit series.
 2. Write the regression test before you change the production code.
-3. Run `scripts/verify.sh`. All seven steps must pass.
+3. Run `scripts/verify.sh`. All eight steps must pass.
 4. If the item changes behavior on the wire, reset the fixture and run
    the live suite:
    `bash scripts/live-server.sh reset`, then
@@ -96,7 +96,7 @@ own commit. Record each engine change in the list in item E2.
 | Copies of the ECS state accessor pair | 11 functions in 6 modules |
 | Hand-written event waits beside `await_event` | 6 |
 | `BotEvent` variants | 123 |
-| Gate steps (`scripts/verify.sh`) | 7 |
+| Gate steps (`scripts/verify.sh`) | 8 |
 | Size of `target/` | 31 GB |
 
 ## 2. Summary of the work items
@@ -123,8 +123,8 @@ own commit. Record each engine change in the list in item E2.
 | D3 | Shorten the remaining long functions | F5 | P3 | 1.5 HD |
 | D4 | Move `Bot::new` to the test utilities | F6 | P2 | 0.5 HD |
 | D5 | One atomic component insert in `connect` | F6 | P3 | 0.5 HD |
-| E1 | A decision about the engine code generator | F7 | P2 | 1 HD |
-| E2 | A list of local engine changes | F7 | P2 | 0.5 HD |
+| E1 | A decision about the engine code generator | F7 | P1 | 1 HD |
+| E2 | Keep the list of local engine changes current | F7 | P1 | 0.5 HD |
 | E3 | A publication policy for the engine crates | F7 | P3 | 0.5 HD |
 | E4 | Remove engine modules that the port does not use | F7 | P3 | 1.5 HD |
 | E5 | Engine build profile and documentation gate | F7 | P3 | 0.5 HD |
@@ -195,10 +195,12 @@ fields after each stop.
    `client.stop_pathfinding()` or `client.force_stop_pathfinding()`.
 4. Remove `stop_pathfinding_patched`.
 
-### A3. Correct the engine inventory packet handlers (P1)
+### A3. Correct the engine inventory packet handlers (P1) (confirm first)
 
 **Problem.** The engine inventory plugin does not apply these packet
-data. The port writes the data into the engine `Inventory` component
+data. The port comments compare each case with upstream mineflayer.
+Before you change the engine, compare each case with the vanilla client
+too, and record the result in the test. The port writes the data into the engine `Inventory` component
 from `src/windows/tracker.rs` (seven ECS writes):
 
 | Packet data | Port site |
@@ -336,7 +338,8 @@ the misc domain.
 
 **Problem.** `misc::handle_packet` (`src/misc/mod.rs:139`) takes the
 exclusive ECS write lock for each clientbound packet. Only
-`ResourcePackPush` changes the misc state. At the measured peak, the
+`ResourcePackPush` changes the misc state. At the measured peak (8,751
+events each second, about 60% raw packets, `docs/performance.md`), the
 bridge takes this lock approximately 5,000 times each second.
 
 **Procedure.**
@@ -510,7 +513,7 @@ times to insert `AutoReconnectDelay`, `MiscState`, and `InteractShared`.
 
 Detail file: `docs/reviews/04_engine_fork.md`.
 
-### E1. A decision about the engine code generator (P2)
+### E1. A decision about the engine code generator (P1)
 
 **Problem.** Python scripts in the upstream `codegen/` directory make the
 registry, block, item component, entity, language, and packet files.
@@ -528,17 +531,14 @@ These scripts are not in the repository.
 
 **Requirement.** Do this item before the first Minecraft upgrade.
 
-### E2. A list of local engine changes (P2)
+### E2. Keep the list of local engine changes current (P1)
 
 **Procedure.**
 
-1. In `docs/decisions.md`, add a list of local engine changes next to
-   D-engine.
-2. Add the changes that exist now: the `McBuf` derive shorthand, the
-   three `ignore` doctests, the clippy corrections, the removed
-   `core::f32` import, and `log` off by default.
-3. Add each Phase A change to the list in the same commit as the change.
-4. In `docs/version_upgrade.md`, add a step: examine each listed change
+1. The list is in `docs/decisions.md`, after D-engine. The rename
+   script is `scripts/vendor_engine.py`.
+2. Add each Phase A change to the list in the same commit as the change.
+3. In `docs/version_upgrade.md`, add a step: examine each listed change
    after the merge.
 
 ### E3. A publication policy for the engine crates (P3)
@@ -667,9 +667,9 @@ two times, with two different feature sets.
 4. A3 before C4.
 5. Phase B before A6.
 6. E1 before the first Minecraft upgrade.
-7. E2 at the start. Then update it with each engine change.
+7. E2 with each engine change.
 
-Recommended order: F3, E2, A1 with A2, A3, A4, A5, B1, B2, B3, C1, C2,
+Recommended order: F3, E1, A1 with A2, A3, A4, A5, B1, B2, B3, C1, C2,
 C3, D1, D4, then the P3 items.
 
 ## 11. Items that this plan does not change

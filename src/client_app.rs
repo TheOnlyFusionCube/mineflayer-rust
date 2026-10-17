@@ -31,6 +31,8 @@ mod tests {
     /// D-log: the crate never installs a global subscriber. The engine's
     /// `log` feature adds a log plugin that does, and a dependent's own
     /// `tracing_subscriber::…::init()` after `connect` then panics.
+    /// The check reads process-global state: no unit test in this crate
+    /// may install a global subscriber.
     #[test]
     fn the_production_app_installs_no_global_subscriber() {
         let mut app = crate::client_app::app();

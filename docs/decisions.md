@@ -24,25 +24,45 @@ and moves to a new Minecraft version by a manual merge
 (`docs/version_upgrade.md`). Cost if wrong: replace the path dependency
 with a registry dependency and reverse the renames in `src/`.
 
+Local engine changes after the copy (examine each one after an upstream
+merge; plan item E2 keeps this list current):
+
+1. Token renames by `scripts/vendor_engine.py`, then a prose pass over
+   comments, build-script messages, and test identifiers (`azalea:` test
+   namespaces became `mineflayer:`; the internal serde marker names
+   `azalea:int_array`/`azalea:long_array` became `mineflayer:…`).
+2. `cargo fmt --all` with `crates/rustfmt.toml`, and `cargo clippy --fix`
+   (five fixes plus `FixedBitSet::mc_write` iterating bytes).
+3. The `McBuf` derive emits field shorthand (`mineflayer-buf-macros`).
+4. Three attribute-only doctests in `mineflayer-core/src/codec_utils.rs`
+   are `ignore`.
+5. `use core::f32;` removed from the pathfinder world module.
+6. The `_docs` module of `mineflayer-engine` removed.
+7. `log` is not a default feature of `mineflayer-engine` or
+   `mineflayer-client` (commit `7a2bc95`).
+8. User-visible names: the Microsoft token cache is
+   `mineflayer-auth.json`; the packet-log env var is
+   `MINEFLAYER_DO_NOT_CUT_OFF_PACKET_LOGS`.
+
 **D-toolchain. Nightly `2026-10-01` and `-Znext-solver=no`.** The engine
 crates need nightly. The nightly current at scaffold time stopped with an
 internal compiler error on the entity crate, and the next-gen trait solver
-cannot infer `mineflayer-core`'s const generics. Review monthly (plan item H2).
+cannot infer `mineflayer-core`'s const generics. Review monthly (first plan, H2, at `775ba66`).
 
-**D-locks (B8). Every crate lock is `parking_lot`.** The engine's ECS lock is
+**D-locks (first plan B8). Every crate lock is `parking_lot`.** The engine's ECS lock is
 already `parking_lot`, and the type has no poisoning, so one panic under a
 lock cannot break a domain for the rest of the session.
 
-**D-lock-order (B9). A domain lock may be held while the ECS lock is
+**D-lock-order (first plan B9). A domain lock may be held while the ECS lock is
 taken; never the reverse.** The rule and every two-lock site are documented
 next to `BotShared` (`src/bot/mod.rs`).
 
-**D-log (C1). `tracing` is the log facade.** The engine already logs through
+**D-log (first plan C1). `tracing` is the log facade.** The engine already logs through
 it. The crate emits and never installs a subscriber; it never logs chat
 text, tokens, or account data. `tracing-subscriber` is a dev-dependency
 for the examples.
 
-**D-storage (D2). Where per-bot state lives.** ECS component when an ECS
+**D-storage (first plan D2). Where per-bot state lives.** ECS component when an ECS
 system or an ECS query with engine components reads it; a component created
 on first use for plugin-analog state; `BotShared` for everything else. See
 `BotShared`.
@@ -62,7 +82,7 @@ packet and a lagging broadcast consumer cannot drop them.
 **D-events. One `BotEvent` enum.** Events are one broadcast protocol;
 nested event types would cause match churn with no gain.
 
-**D-errors (B1). Typed error variants keep upstream messages.**
+**D-errors (first plan B1). Typed error variants keep upstream messages.**
 `InvalidArgument`, `InvalidState`, `NotFound`, `Failed`, `Cancelled`,
 `Unsupported`, and `DigAborted` replace `Operation(String)`; each keeps the
 upstream text as `Display`.
