@@ -45,11 +45,10 @@ The engine is a renamed copy of an upstream project (`LICENSE`,
    builds the app from its argument (local engine change 12).
 2. Make sure that each plugin that `client_plugins` in
    `src/bot/connection.rs` disables still exists in the engine.
-3. Run the schedule-level test:
-   `cargo test --lib game_tick_cancels_an_aborted_dig_through_the_production_app`.
-4. Examine `reconcile_aborted_dig` in `src/interact/dig.rs` against the engine's
-   `crates/mineflayer-client/src/plugins/mining.rs`. The reconciler must still run
-   before `MiningSystems`.
+3. Make sure that the start handler in
+   `crates/mineflayer-client/src/plugins/mining.rs` still skips the
+   start messages that `CancelMiningEvent` cut off (local engine change
+   13). Run `cargo test -p mineflayer-client --features log --test main cancel_mining`.
 
 ## 4. Packet decode
 

@@ -22,7 +22,7 @@
 pub(crate) mod dig;
 mod place;
 
-pub(crate) use dig::{DigAbortPlugin, InteractShared};
+pub(crate) use dig::InteractShared;
 pub use dig::{DigAbortReason, DigFace};
 pub use place::{PlaceHalf, PlaceOpts};
 

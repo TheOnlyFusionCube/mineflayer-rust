@@ -1,6 +1,6 @@
-//! Dig machinery: the `dig` promise, generation bookkeeping, and the
-//! in-span cancellation of engine mining for aborted digs. Split out of
-//! `interact` — the promise wait/settle/abort rules are self-contained.
+//! Dig machinery: the `dig` promise and its generation bookkeeping. Split
+//! out of `interact` — the promise wait/settle/abort rules are
+//! self-contained.
 
 use std::time::{Duration, Instant};
 
@@ -9,23 +9,17 @@ use std::time::{Duration, Instant};
 use mineflayer_engine::ecs as bevy_ecs;
 use mineflayer_engine::{
     BlockPos, Vec3,
-    app::{App, Plugin},
     block::BlockTrait,
-    core::{direction::Direction, game_type::GameMode, hit_result::BlockHitResult, tick::GameTick},
-    ecs::{entity::Entity, prelude::Component, schedule::IntoScheduleConfigs, world::World},
+    core::{direction::Direction, game_type::GameMode, hit_result::BlockHitResult},
+    ecs::{entity::Entity, prelude::Component, world::World},
     entity::{
         ActiveEffects, Attributes, FluidOnEyes, Physics, Position, dimensions::EntityDimensions,
         inventory::Inventory, mining::get_mine_progress,
     },
     interact::pick::HitResultComponent,
     local_player::WorldHolder,
-    mining::{
-        MineBlockPos, MineBlockProgressEvent, MineProgress, Mining, MiningQueued, MiningSystems,
-        StopMiningBlockEvent,
-    },
-    packet::game::SendGamePacketEvent,
+    mining::{CancelMiningEvent, Mining, MiningQueued},
     physics::{clip::traverse_blocks, collision::BlockWithShape},
-    protocol::packets::game::s_player_action::{Action as PlayerAction, ServerboundPlayerAction},
 };
 use tokio::sync::broadcast;
 
@@ -102,28 +96,6 @@ pub(crate) struct InteractShared {
     dig_target: Option<(BlockPos, Direction, u64)>,
     /// `bot.lastDigTime` — set when a dig finishes for any reason.
     last_dig_time: Option<Instant>,
-    /// An aborted dig whose engine state may still be coming — the
-    /// reconciliation pass cancels it in-span (see
-    /// [`reconcile_aborted_dig`]).
-    aborted_dig: Option<AbortedEngineDig>,
-}
-
-/// Engine state owed to an aborted dig generation.
-///
-/// `start_mining` only enqueues a message: at abort time the engine may
-/// have no `MiningQueued`/`Mining` yet, and the message may materialize
-/// and be acted on (including the engine's creative instant-break) before any
-/// external task can look. [`reconcile_aborted_dig`] runs at the head of
-/// the mining chain, so this is the earliest point the port can cancel
-/// inside the tick that materializes the start.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct AbortedEngineDig {
-    pos: BlockPos,
-    seq: u64,
-    /// Consecutive reconciliation runs that found no engine state: a start
-    /// cannot be pending past one full span, so two quiet runs are proof
-    /// nothing more is coming.
-    quiet_runs: u8,
 }
 
 impl InteractShared {
@@ -137,141 +109,13 @@ impl InteractShared {
             self.last_dig_time = Some(Instant::now());
         }
     }
-
-    pub(crate) fn mark_aborted_engine_dig(&mut self, pos: BlockPos, seq: u64) {
-        // a stale abort exit (dig A resuming after dig B was stopped) must
-        // not clobber the newer generation's marker: the reconciliation
-        // would discard it as superseded and B's pending start would
-        // escape unguarded
-        if self.dig_seq != seq {
-            return;
-        }
-        self.aborted_dig = Some(AbortedEngineDig {
-            pos,
-            seq,
-            quiet_runs: 0,
-        });
-    }
 }
 
-#[cfg(test)]
-impl InteractShared {
-    /// A shared whose current generation is `seq` — marker publication is
-    /// gated on `dig_seq == seq`, so callers that only need a marker need
-    /// the two to match.
-    pub(crate) fn with_generation(seq: u64) -> Self {
-        Self {
-            dig_seq: seq,
-            ..Default::default()
-        }
-    }
-}
-
-/// Cancel engine state owed to an aborted dig, at the head of `GameTick`'s
-/// mining chain (installed by [`DigAbortPlugin`]).
-///
-/// A `StartMiningBlockEvent` written by `start_mining` is only read by the
-/// next `Update`; an abort landing before that cannot see the state it
-/// creates, and the `Update`+`GameTick` pair runs under one ECS lock, so no
-/// external task can intervene. This pass runs before `handle_mining_queued`
-/// in the same span, so a freshly materialized `MiningQueued` is dropped
-/// before it can start mining — or, in creative mode, instantly break the
-/// block. Markers are dropped once a newer dig owns the generation, once
-/// the state was cancelled, or after two consecutive runs found nothing (a
-/// start cannot stay unread past one full span).
-pub(crate) fn reconcile_aborted_dig(world: &mut World) {
-    let entities: Vec<Entity> = {
-        let mut query = world.query::<(Entity, &InteractShared)>();
-        query
-            .iter(world)
-            .filter(|(_, shared)| shared.aborted_dig.is_some())
-            .map(|(entity, _)| entity)
-            .collect()
-    };
-    for entity in entities {
-        let (target, superseded) = {
-            let Some(shared) = world.get::<InteractShared>(entity) else {
-                continue;
-            };
-            let Some(aborted) = shared.aborted_dig else {
-                continue;
-            };
-            (aborted.pos, shared.dig_seq != aborted.seq)
-        };
-        if superseded {
-            // a newer dig owns the generation — even at the same position
-            // its engine state must survive untouched
-            if let Some(mut shared) = world.get_mut::<InteractShared>(entity) {
-                shared.aborted_dig = None;
-            }
-            continue;
-        }
-        let (queued, mining) = (
-            world.get::<MiningQueued>(entity).map(|q| q.position) == Some(target),
-            world.get::<Mining>(entity).map(|m| m.pos) == Some(target),
-        );
-        if queued {
-            world.entity_mut(entity).remove::<MiningQueued>();
-        }
-        if mining {
-            // The engine's stop handler runs in `Update`, but this pass runs in
-            // `GameTick` ahead of the mining chain: enqueueing the event
-            // alone would let `continue_mining_block` progress (or insta-
-            // finish) the block for the rest of this tick, so the handler's
-            // effects are applied synchronously — same shape as
-            // `handle_stop_mining_block_event`
-            let abort_pos = world.get::<MineBlockPos>(entity).and_then(|pos| pos.0);
-            world.entity_mut(entity).remove::<Mining>();
-            if let Some(mut progress) = world.get_mut::<MineProgress>(entity) {
-                progress.0 = 0.;
-            }
-            if let Some(abort_pos) = abort_pos {
-                world.trigger(SendGamePacketEvent::new(
-                    entity,
-                    ServerboundPlayerAction {
-                        action: PlayerAction::AbortDestroyBlock,
-                        pos: abort_pos,
-                        direction: Direction::Down,
-                        seq: 0,
-                    },
-                ));
-            }
-            world.write_message(MineBlockProgressEvent {
-                entity,
-                position: abort_pos.unwrap_or(target),
-                destroy_stage: None,
-            });
-        }
-        let Some(mut shared) = world.get_mut::<InteractShared>(entity) else {
-            continue;
-        };
-        let Some(mut aborted) = shared.aborted_dig else {
-            continue;
-        };
-        if queued || mining {
-            shared.aborted_dig = None;
-        } else {
-            aborted.quiet_runs += 1;
-            shared.aborted_dig = (aborted.quiet_runs < 2).then_some(aborted);
-        }
-    }
-}
-
-/// Installs [`reconcile_aborted_dig`]; `client_plugins` in
-/// `src/bot/connection.rs` adds it to the engine bootstrap.
-pub(crate) struct DigAbortPlugin;
-
-impl Plugin for DigAbortPlugin {
-    fn build(&self, app: &mut App) {
-        // only the order before `MiningSystems` matters; the exclusive system
-        // is otherwise unordered on purpose (no ambiguity warning)
-        app.add_systems(
-            GameTick,
-            reconcile_aborted_dig
-                .before(MiningSystems)
-                .ambiguous_with_all(),
-        );
-    }
+/// Trigger the engine's [`CancelMiningEvent`] and apply it before the ECS
+/// lock is released, so the port's next read sees the cancelled state.
+fn cancel_engine_mining(ecs: &mut World, entity: Entity) {
+    ecs.trigger(CancelMiningEvent { entity });
+    ecs.flush();
 }
 
 /// Per-tick mine progress → the `digTime` contract: `∞` for unbreakable
@@ -372,8 +216,8 @@ impl Bot {
         // bump the generation, publish the target, and enqueue the start
         // under one lock: a `stop_digging` can then never land between the
         // target becoming visible and the wire call existing (it either
-        // sees the whole start — and marks the generation so the in-span
-        // reconciliation cancels the queued message — or sees none of it)
+        // sees the whole start — and its cancel drops the queued message —
+        // or sees none of it)
         let my_seq = {
             let mut ecs = self.client.ecs.write();
             let seq = {
@@ -401,14 +245,9 @@ impl Bot {
             )
             .await;
 
-        // an aborted dig must not leave the engine mining: publishing the
-        // generation makes `reconcile_aborted_dig` cancel any queued or
-        // live engine operation in the next `GameTick`, before the mining
-        // chain can act on it. There is deliberately no completion barrier
-        // here — the abort error may surface before the ECS cleanup lands,
-        // and the in-span pass cannot be raced by the mining chain.
+        // an aborted dig must not leave the engine mining
         if matches!(outcome, DigExit::Aborted(_)) {
-            self.mark_aborted_engine_dig(pos, my_seq);
+            self.cancel_engine_dig(my_seq);
         }
         self.settle_dig(pos, my_seq);
         match outcome {
@@ -435,11 +274,17 @@ impl Bot {
         }
     }
 
-    /// Record the aborted generation for [`reconcile_aborted_dig`].
-    fn mark_aborted_engine_dig(&self, pos: BlockPos, seq: u64) {
+    /// Cancel the engine's queued or live mining for generation `seq`,
+    /// unless a newer dig owns the engine state now. The check and the
+    /// cancel share one lock with `dig`'s start, so a newer start is
+    /// either seen here or written after the cancel, which leaves it alone.
+    fn cancel_engine_dig(&self, seq: u64) {
         let mut ecs = self.client.ecs.write();
-        if let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) {
-            shared.mark_aborted_engine_dig(pos, seq);
+        if ecs
+            .get::<InteractShared>(self.client.entity)
+            .is_some_and(|s| s.dig_seq == seq)
+        {
+            cancel_engine_mining(&mut ecs, self.client.entity);
         }
     }
 
@@ -467,7 +312,7 @@ impl Bot {
             && ecs.get::<Mining>(entity).is_none()
             && ecs.get::<MiningQueued>(entity).map(|q| q.position) == Some(pos)
         {
-            ecs.entity_mut(entity).remove::<MiningQueued>();
+            cancel_engine_mining(&mut ecs, entity);
         }
     }
 
@@ -563,14 +408,14 @@ impl Bot {
     /// `if (!targetDigBlock) return`); the target is set before the wire
     /// call, so a stop landing in the `start_mining`→`MiningQueued` window
     /// still aborts the pending `dig`. Otherwise it stamps the abort
-    /// generation, clears the port-owned target, sends the engine's
-    /// `StopMiningBlockEvent` (→ `AbortDestroyBlock` packet) and drops a
-    /// stale `MiningQueued`.
+    /// generation, clears the port-owned target, and sends the engine's
+    /// `CancelMiningEvent` (drops a queued start, aborts live mining with
+    /// an `AbortDestroyBlock` packet).
     pub fn stop_digging(&self) {
         let entity = self.client.entity;
         let mut ecs = self.client.ecs.write();
-        let mining = ecs.get::<Mining>(entity).map(|m| m.pos);
-        let queued = ecs.get::<MiningQueued>(entity).map(|q| q.position);
+        let engine_busy =
+            ecs.get::<Mining>(entity).is_some() || ecs.get::<MiningQueued>(entity).is_some();
         {
             let Some(mut shared) = ecs.get_mut::<InteractShared>(entity) else {
                 return;
@@ -578,29 +423,13 @@ impl Bot {
             // upstream `if (!targetDigBlock) return` — but engine state
             // outlives the target (a timed-out dig), and that must stay
             // stoppable: only a fully idle stop is a no-op
-            if shared.dig_target.is_none() && mining.is_none() && queued.is_none() {
+            if shared.dig_target.is_none() && !engine_busy {
                 return;
-            }
-            if let Some((pos, _, seq)) = shared.dig_target {
-                shared.mark_aborted_engine_dig(pos, seq);
-            } else if let Some(pos) = queued.or(mining) {
-                // leftover engine state with no target: tag it with the
-                // current generation so the reconciliation can retire it
-                let seq = shared.dig_seq;
-                shared.mark_aborted_engine_dig(pos, seq);
             }
             shared.abort_current();
             shared.dig_target = None;
         }
-        if mining.is_none() && queued.is_none() {
-            return;
-        }
-        if queued.is_some() {
-            ecs.entity_mut(entity).remove::<MiningQueued>();
-        }
-        if mining.is_some() {
-            ecs.write_message(StopMiningBlockEvent { entity });
-        }
+        cancel_engine_mining(&mut ecs, entity);
     }
 
     /// `bot.digTime(block)` — how long a dig takes with the held item,
@@ -779,178 +608,17 @@ mod tests {
         assert!(shared.last_dig_time.is_none());
     }
 
-    fn aborted_world(aborted: Option<AbortedEngineDig>, dig_seq: u64) -> (World, Entity) {
-        let mut world = World::new();
-        world.init_resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>();
-        world.init_resource::<bevy_ecs::message::Messages<MineBlockProgressEvent>>();
-        let entity = world
-            .spawn(InteractShared {
-                dig_seq,
-                aborted_dig: aborted,
-                ..Default::default()
-            })
-            .id();
-        (world, entity)
-    }
-
-    fn aborted_marker(pos: BlockPos, seq: u64) -> Option<AbortedEngineDig> {
-        Some(AbortedEngineDig {
-            pos,
-            seq,
-            quiet_runs: 0,
-        })
-    }
-
-    /// The reconciliation drops a materialized queued mine for the aborted
-    /// generation before the mining chain can act on it (the pending-start
-    /// window no outside-tick code can close).
-    #[test]
-    fn reconcile_drops_a_queued_start_for_the_aborted_generation() {
-        use mineflayer_engine::mining::MiningQueued;
-
-        let pos = BlockPos::new(9, 64, 9);
-        let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 1);
-        world.entity_mut(entity).insert(MiningQueued {
-            position: pos,
-            direction: Direction::Down,
-            force: true,
-        });
-        reconcile_aborted_dig(&mut world);
-        assert!(world.get::<MiningQueued>(entity).is_none());
-        assert!(
-            world
-                .get::<InteractShared>(entity)
-                .unwrap()
-                .aborted_dig
-                .is_none(),
-            "cancelled marker should be cleared"
-        );
-        // stop was enqueued for a live mine, not for the queued one
-        let messages = world.resource::<bevy_ecs::message::Messages<StopMiningBlockEvent>>();
-        assert_eq!(messages.len(), 0);
-    }
-
-    /// A live `Mining` at the aborted position is retired by the pass
-    /// itself — Mining removed, progress reset, the abort packet sent —
-    /// before the mining chain below can progress (or insta-finish) it in
-    /// the same tick (the engine's own stop handler runs a schedule later).
-    #[test]
-    fn reconcile_retires_live_mining_in_span() {
+    /// A stop must still reach engine state that outlived the target (a
+    /// timed-out dig): with no target but a live `MiningQueued`, the stop
+    /// is not a no-op and cancels the engine mining.
+    #[tokio::test]
+    async fn stop_digging_reaches_engine_leftovers_without_a_target() {
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         };
 
         use mineflayer_engine::ecs::observer::On;
-
-        let pos = BlockPos::new(4, 64, 5);
-        let (mut world, entity) = aborted_world(aborted_marker(pos, 3), 3);
-        world.entity_mut(entity).insert((
-            Mining {
-                pos,
-                dir: Direction::Down,
-                force: true,
-            },
-            MineProgress(0.4),
-            MineBlockPos(Some(pos)),
-        ));
-        let aborts = Arc::new(AtomicUsize::new(0));
-        let counter = aborts.clone();
-        world.add_observer(move |_: On<SendGamePacketEvent>| {
-            counter.fetch_add(1, Ordering::SeqCst);
-        });
-        reconcile_aborted_dig(&mut world);
-        assert!(
-            world.get::<Mining>(entity).is_none(),
-            "Mining survived the pass"
-        );
-        assert_eq!(world.get::<MineProgress>(entity).unwrap().0, 0.);
-        assert_eq!(aborts.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            world
-                .resource::<bevy_ecs::message::Messages<MineBlockProgressEvent>>()
-                .len(),
-            1
-        );
-        // a second run is quiet: the marker is gone and nothing new fires
-        reconcile_aborted_dig(&mut world);
-        assert_eq!(aborts.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            world
-                .resource::<bevy_ecs::message::Messages<MineBlockProgressEvent>>()
-                .len(),
-            1
-        );
-    }
-
-    /// A stale abort exit (dig A resuming after dig B was stopped) must not
-    /// clobber the newer generation's marker.
-    #[test]
-    fn marker_publication_yields_to_a_newer_generation() {
-        let pos_a = BlockPos::new(1, 64, 1);
-        let pos_b = BlockPos::new(2, 64, 2);
-        let mut shared = InteractShared {
-            dig_seq: 2,
-            aborted_dig: aborted_marker(pos_b, 2),
-            ..Default::default()
-        };
-        shared.mark_aborted_engine_dig(pos_a, 1);
-        assert_eq!(shared.aborted_dig.map(|a| a.pos), Some(pos_b));
-        assert_eq!(shared.aborted_dig.map(|a| a.seq), Some(2));
-        // the owning generation re-marks freely
-        shared.mark_aborted_engine_dig(pos_a, 2);
-        assert_eq!(shared.aborted_dig.map(|a| a.pos), Some(pos_a));
-    }
-
-    /// A newer generation owns the position: its engine state must survive,
-    /// and the stale marker is dropped.
-    #[test]
-    fn reconcile_leaves_a_newer_generation_alone() {
-        use mineflayer_engine::mining::MiningQueued;
-
-        let pos = BlockPos::new(2, 64, 2);
-        let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 2);
-        world.entity_mut(entity).insert(MiningQueued {
-            position: pos,
-            direction: Direction::Down,
-            force: true,
-        });
-        reconcile_aborted_dig(&mut world);
-        assert!(world.get::<MiningQueued>(entity).is_some());
-        assert!(
-            world
-                .get::<InteractShared>(entity)
-                .unwrap()
-                .aborted_dig
-                .is_none()
-        );
-    }
-
-    /// A pending start cannot stay unread past one full span: two quiet
-    /// runs prove nothing more is coming and drop the marker.
-    #[test]
-    fn reconcile_expires_a_quiet_marker_after_two_runs() {
-        let pos = BlockPos::new(6, 64, 6);
-        let (mut world, entity) = aborted_world(aborted_marker(pos, 1), 1);
-        reconcile_aborted_dig(&mut world);
-        let marker = world.get::<InteractShared>(entity).unwrap().aborted_dig;
-        assert_eq!(marker.map(|m| m.quiet_runs), Some(1));
-        reconcile_aborted_dig(&mut world);
-        assert!(
-            world
-                .get::<InteractShared>(entity)
-                .unwrap()
-                .aborted_dig
-                .is_none()
-        );
-    }
-
-    /// A stop must still reach engine state that outlived the target (a
-    /// timed-out dig): with no target but a live `MiningQueued`, the stop
-    /// is not a no-op and drops the queued mine.
-    #[tokio::test]
-    async fn stop_digging_reaches_engine_leftovers_without_a_target() {
-        use mineflayer_engine::mining::MiningQueued;
 
         let client = crate::test_util::live_entity_client((
             InteractShared::default(),
@@ -960,20 +628,17 @@ mod tests {
                 force: true,
             },
         ));
+        let cancels = Arc::new(AtomicUsize::new(0));
+        let counter = cancels.clone();
+        client
+            .ecs
+            .write()
+            .add_observer(move |_: On<CancelMiningEvent>| {
+                counter.fetch_add(1, Ordering::SeqCst);
+            });
         let bot = crate::test_util::bot(client);
         bot.stop_digging();
-        let ecs = bot.client().ecs.read();
-        assert!(
-            ecs.get::<MiningQueued>(bot.client().entity).is_none(),
-            "stop left the queued engine mine behind"
-        );
-        assert!(
-            ecs.get::<InteractShared>(bot.client().entity)
-                .unwrap()
-                .aborted_dig
-                .is_some(),
-            "stop did not publish the aborted generation for reconciliation"
-        );
+        assert_eq!(cancels.load(Ordering::SeqCst), 1);
     }
 
     /// The in-flight dig's target is owned by the port; `stopDigging`

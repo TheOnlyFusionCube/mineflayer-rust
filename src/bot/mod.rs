@@ -65,9 +65,9 @@ pub struct Bot {
 /// Storage rule — where new per-bot state goes:
 ///
 /// 1. **ECS component on the client entity** when an ECS system reads it
-///    (`interact::InteractShared`, read by the dig-abort plugin) or when
-///    it must be read in the same ECS access as the engine components
-///    (`misc::MiscState` with `Pose`/`AirSupply`,
+///    or when it must be read in the same ECS access as the engine
+///    components (`interact::InteractShared` with `Mining` and the start
+///    message, `misc::MiscState` with `Pose`/`AirSupply`,
 ///    `pathfinder::PathfinderFacade` with the engine's `Pathfinder`).
 /// 2. **ECS component, created on first use** for the plugin-analog state
 ///    (`tool`, `pvp`, `collect`, `auto_eat`): a plugin that is never used

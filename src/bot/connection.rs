@@ -398,20 +398,18 @@ impl BotBuilder {
 /// The engine's client plugins as the port runs them. Auto-reconnect is
 /// off: it reconnects 5 s after any disconnect, our own `disconnect()`
 /// included, which would break `end`/`quit`/`kicked`. The swarm plugins
-/// are off: a bot is one client. [`crate::interact::DigAbortPlugin`] is on.
+/// are off: a bot is one client.
 pub(crate) fn client_plugins() -> PluginGroupBuilder {
     ClientPlugins
         .build()
         .disable::<AutoReconnectPlugin>()
         .disable::<SwarmPlugin>()
         .disable::<SwarmChatPlugin>()
-        .add(crate::interact::DigAbortPlugin)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mineflayer_engine::{BlockPos, core::direction::Direction, mining::MiningQueued};
 
     /// D-log: the crate never installs a global subscriber. The engine's
     /// `log` feature adds a log plugin that does, and a dependent's own
@@ -424,38 +422,6 @@ mod tests {
         app.add_plugins(client_plugins());
         app.finish();
         assert!(!tracing::dispatcher::has_been_set());
-    }
-
-    /// The integration guarantee the dig-abort design rests on: a pending
-    /// start materialized in `Update` is cancelled by the reconciler inside
-    /// `GameTick`, before the mining chain runs — through the *production*
-    /// app (plugin presence + ordering), not a bare `World`.
-    #[test]
-    fn game_tick_cancels_an_aborted_dig_through_the_production_app() {
-        use crate::interact::dig::InteractShared;
-
-        let mut app = mineflayer_engine::app::App::new();
-        app.add_plugins(client_plugins());
-        app.finish();
-        let pos = BlockPos::new(9, 64, 9);
-        let mut shared = InteractShared::with_generation(1);
-        shared.mark_aborted_engine_dig(pos, 1);
-        let world = app.main_mut().world_mut();
-        let entity = world
-            .spawn((
-                shared,
-                MiningQueued {
-                    position: pos,
-                    direction: Direction::Down,
-                    force: true,
-                },
-            ))
-            .id();
-        world.run_schedule(mineflayer_engine::core::tick::GameTick);
-        assert!(
-            world.get::<MiningQueued>(entity).is_none(),
-            "the production GameTick must cancel an aborted dig's queued mine"
-        );
     }
 
     #[test]

@@ -117,10 +117,9 @@ on first use for plugin-analog state; `BotShared` for everything else. See
 **D-bootstrap. The port joins through the engine bootstrap.**
 `connect` calls `StartClientOpts::new_with_plugins` with `client_plugins()`
 (`src/bot/connection.rs`): the engine's `ClientPlugins` without
-auto-reconnect and the swarm plugins, plus the dig-abort reconciler, which
-must run inside the tick that materializes a pending mining start. The
-port does not mirror the engine's plugin list (plan item A4, 2026-10-17).
-A schedule-level test in `src/bot/connection.rs` runs the production app.
+auto-reconnect and the swarm plugins. The port does not mirror the
+engine's plugin list (plan item A4, 2026-10-17). A dig abort uses the
+engine's `CancelMiningEvent` (A5), so the port adds no plugin.
 
 **D-bridge. One ordered observer loop.** Every domain observer runs inside
 the bridge task, in a fixed order, so derived events follow their source
