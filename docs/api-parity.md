@@ -313,7 +313,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Dispenser class` | inventory | `type Dispenser = Window` | ported | same as Chest |
 | `window event 'open'` | inventory | `BotEvent::WindowOpen(Window)` | ported | window-level events are bot-level here (windows aren't emitter objects) |
 | `window event 'close'` | inventory | `BotEvent::WindowClose(Window)` | ported | — |
-| `window event 'updateSlot'` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | also emitted for `set_slot` container_id -2 (player-inventory applies upstream never saw — the engine applies them, so reporting is strictly truer) |
+| `window event 'updateSlot'` | inventory | `BotEvent::WindowUpdateSlot{window_id,slot,old,new}` | ported | `old` is the stack the packet replaced in the engine window, which holds local click predictions like upstream's `acceptClick`; also emitted for `set_slot` container_id -2 (player-inventory applies upstream never saw — the engine applies them, so reporting is strictly truer) |
 | `Furnace class` | inventory | `struct Furnace` (Deref → Window) | ported | — |
 | `Furnace.fuel` | inventory | `furnace.fuel() -> f32` | ported | `fuelSeconds()`/`progressSeconds()` too; 0 until the data slots arrive like upstream's null guards |
 | `Furnace.progress` | inventory | `furnace.progress() -> f32` | ported | — |

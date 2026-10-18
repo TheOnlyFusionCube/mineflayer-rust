@@ -1317,7 +1317,7 @@ the commit that completes the item.
 | ST1 | replaced by D-port-plugins: the bridge stays, `BotPlugins` added | (ST3 commit) |
 | ST2 | done | (this commit) |
 | ST3 | done | (this commit) |
-| ST4 | open | |
+| ST4 | done; `pending` stays (the engine keeps no "windowOpen not sent yet" state); `eat_generation` and `eat_notify` wait for OP6 | `5b5537f`, (this commit) |
 | ST5 | open | |
 | ST6 | done | (this commit) |
 | ST7 | open | |

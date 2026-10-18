@@ -34,12 +34,13 @@
 //! set-content/set-slot/held-slot/cooldown) into
 //! [`BotEvent::WindowOpen`], [`BotEvent::WindowClose`],
 //! [`BotEvent::WindowUpdateSlot`], [`BotEvent::SetWindowItems`] and
-//! [`BotEvent::HeldItemChanged`], and keeps `WindowTracker` current. It
-//! only reads the engine `Inventory`: the engine applies every inventory
-//! packet itself, `container_set_content`'s `carried_item` and
-//! `c_set_player_inventory` included. Upstream's `setSlot:{id}` is `WindowUpdateSlot`'s
-//! `window_id` field; `confirmTransaction{id}` has no wire on mc26 —
-//! the transaction packet was removed in 1.17 and click rejects arrive
+//! [`BotEvent::HeldItemChanged`]. The engine applies every inventory
+//! packet and keeps the window lifecycle (early content, the last closed
+//! container); `WindowPlugin` reads what each packet replaces before the
+//! engine applies it, so the port keeps no copy of either. Upstream's
+//! `setSlot:{id}` is `WindowUpdateSlot`'s `window_id` field;
+//! `confirmTransaction{id}` has no wire on mc26 — the transaction packet
+//! was removed in 1.17 and click rejects arrive
 //! as corrective `set_slot`/`set_content` resyncs instead.
 
 use std::{
@@ -68,6 +69,20 @@ mod tracker;
 pub use item::Item;
 pub(crate) use tracker::{WindowTracker, held_item, observe_event};
 
+/// Records, before the engine applies each window packet, what the packet
+/// replaces (see `tracker::WindowPre`).
+pub(crate) struct WindowPlugin;
+
+impl mineflayer_engine::app::Plugin for WindowPlugin {
+    fn build(&self, app: &mut mineflayer_engine::app::App) {
+        app.init_resource::<mineflayer_engine::connection::PacketPreApply>()
+            .world_mut()
+            .resource_mut::<mineflayer_engine::connection::PacketPreApply>()
+            .0
+            .push(tracker::record_window_pre);
+    }
+}
+
 /// `bot.openBlock`/`openEntity`/`openContainer`/`inventory` produce this —
 /// the upstream `Window` (and its `Chest`/`Dispenser` subclasses, which
 /// add nothing over `deposit`/`withdraw`/`close` and are aliases here).
@@ -93,18 +108,15 @@ pub(crate) struct WindowShared {
     /// Absolute slot index where the player-inventory region starts
     /// (upstream `window.inventoryStart`); 9 for the player window.
     pub player_start: usize,
-    /// Total menu slot count (the `window_items` shape check upstream
-    /// uses for `lastClosedWindow` trailing-sync detection).
-    pub len: usize,
     /// Non-closing container handle — sends clicks and the close packet.
     pub handle: ContainerHandleRef,
-    /// Kept for ECS access (`Window::close`'s `copyInventory`).
+    /// Reads the window's slots from the engine `Inventory`.
     pub client: mineflayer_engine::Client,
     /// Set once the window is closed — by [`Window::close`] or by the
     /// server (`container_close`) — or displaced by a new `open_screen`.
     pub closed: AtomicBool,
     /// Back-reference to the bot's tracker: `close` clears
-    /// `current_window`, seeds `last_closed`, and emits `WindowClose`.
+    /// `current_window` and emits `WindowClose`.
     /// Weak — the tracker holds a strong ref via `current`.
     pub tracker: Weak<Mutex<WindowTracker>>,
 }
@@ -136,7 +148,6 @@ impl Window {
                 menu_kind: Some(menu_kind),
                 title: Some(title),
                 player_start,
-                len: menu.len(),
                 handle: ContainerHandleRef::new(id, client.clone()),
                 client,
                 closed: AtomicBool::new(false),
@@ -158,7 +169,6 @@ impl Window {
                 menu_kind: None,
                 title: None,
                 player_start: *mineflayer_engine::inventory::Player::INVENTORY_SLOTS.start(),
-                len: Menu::Player(Default::default()).len(),
                 handle: ContainerHandleRef::new(0, client.clone()),
                 client,
                 closed: AtomicBool::new(false),
@@ -363,10 +373,12 @@ impl Window {
         .await
     }
 
-    /// `window.close()` — copy the window's player region back into the
-    /// inventory model (upstream `copyInventory`), send `container_close`,
-    /// clear [`crate::Bot::current_window`] if it's this window, and emit
-    /// [`BotEvent::WindowClose`] exactly once. Idempotent.
+    /// `window.close()` — send `container_close`, clear
+    /// [`crate::Bot::current_window`] if it's this window, and emit
+    /// [`BotEvent::WindowClose`] exactly once. Idempotent. The engine's
+    /// close handler copies the window's player region back into the
+    /// player inventory (upstream `copyInventory`) and records the window
+    /// for trailing syncs (upstream `lastClosedWindow`).
     ///
     /// For the player inventory (id 0) this is a client-side no-op —
     /// The engine only sends `container_close` for the open container id.
@@ -374,43 +386,12 @@ impl Window {
         if self.shared.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.shared.id != 0 {
-            // copyInventory: while the window was open the server's
-            // player-inventory updates landed on the container menu, so
-            // the window's player region is fresher than inventory_menu.
-            // Copy it before the engine's close handler drops the menu.
-            // lock rule: this ECS guard must be dropped (the `drop(ecs)`
-            // below) before the tracker lock is taken — never hold the
-            // ECS lock while taking a domain lock.
-            let mut ecs = self.shared.client.ecs.write();
-            if let Some(mut inv) = ecs.get_mut::<Inventory>(self.shared.client.entity) {
-                let inv = &mut *inv;
-                if let Some(menu) = inv.container_menu.as_ref() {
-                    let range = menu.player_slots_range();
-                    let stacks: Vec<ItemStack> = range
-                        .clone()
-                        .filter_map(|i| menu.slot(i).cloned())
-                        .collect();
-                    for (off, stack) in stacks.into_iter().enumerate() {
-                        let inv_slot = off + 9;
-                        if let Some(dst) = inv.inventory_menu.slot_mut(inv_slot) {
-                            *dst = stack;
-                        }
-                    }
-                }
-            }
-            drop(ecs);
-        }
         self.shared.handle.close();
         if let Some(tracker) = self.shared.tracker.upgrade() {
             let mut t = tracker.lock();
-            // drop the slot snapshot — a reused window id must not see
-            // this window's contents as `old` in WindowUpdateSlot
-            t.slots.remove(&self.shared.id);
             if let Some(current) = &t.current
                 && Arc::ptr_eq(current, &self.shared)
             {
-                t.last_closed = Some((self.shared.id, self.shared.player_start, self.shared.len));
                 t.current = None;
             }
             let _ = t.events.send(BotEvent::WindowClose(self.clone()));

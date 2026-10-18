@@ -59,7 +59,8 @@ impl PluginGroup for BotPlugins {
     fn build(self) -> PluginGroupBuilder {
         let mut group = PluginGroupBuilder::start::<Self>()
             .add_group(ClientPlugins)
-            .add(crate::world::WorldPlugin);
+            .add(crate::world::WorldPlugin)
+            .add(crate::windows::WindowPlugin);
         if !self.respawn {
             group = group.disable::<AutoRespawnPlugin>();
         }

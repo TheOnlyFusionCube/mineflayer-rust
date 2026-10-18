@@ -101,6 +101,13 @@
   engine's `log` feature (bevy's log plugin) is off by default, so a
   dependent's own `tracing_subscriber` `init()` after `connect` cannot
   panic.
+- `WindowUpdateSlot.old` is the stack the packet replaced in the engine's
+  window, read before the engine applies the packet. After a click, the
+  server's confirming slot update now reports the stack the click left,
+  as upstream's `acceptClick` does, instead of the stack before the click.
+- A login or a respawn now also clears the engine's buffered early window
+  content and its last closed container, as upstream does; a later window
+  that reuses an id no longer gets stale contents.
 
 ## 0.2.0 — 2026-10-16
 

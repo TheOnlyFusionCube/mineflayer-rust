@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::VecDeque,
     sync::{Arc, atomic::Ordering},
 };
 
@@ -8,6 +8,11 @@ use parking_lot::Mutex;
 use mineflayer_engine::{
     Event, FormattedText,
     core::entity_id::MinecraftEntityId,
+    ecs::{
+        self as bevy_ecs,
+        prelude::{Component, Entity},
+        world::World,
+    },
     entity::inventory::Inventory,
     inventory::ItemStack,
     protocol::packets::game::ClientboundGamePacket,
@@ -15,7 +20,7 @@ use mineflayer_engine::{
 };
 use tokio::sync::{Notify, broadcast};
 
-use crate::BotEvent;
+use crate::{BotEvent, bot::with_component_mut};
 
 use super::{Item, Window, WindowShared};
 
@@ -34,24 +39,15 @@ pub(crate) struct PendingWindow {
 
 /// Inventory/window state shared between `Bot` methods and the bridge —
 /// the analog of upstream's `bot.currentWindow` plus the click/eat
-/// bookkeeping in inventory.js.
+/// bookkeeping in inventory.js. The window lifecycle the engine keeps
+/// (the open id, early content, the last closed container, the slots) is
+/// read from the engine `Inventory`, before each packet applies, through
+/// [`WindowPreApply`].
 pub(crate) struct WindowTracker {
     /// The currently open non-inventory window (id != 0).
     pub current: Option<Arc<WindowShared>>,
     /// `open_screen` seen, waiting for first `container_set_content`.
     pub pending: Option<PendingWindow>,
-    /// Slot data that arrived for a not-yet-open window id (the upstream
-    /// `windowItems` buffer — consumed by the matching `open_screen`).
-    pub early_items: Option<(i32, Vec<ItemStack>)>,
-    /// Last-seen slot contents per window id — the `old` side of
-    /// `WindowUpdateSlot`. Keyed by window id; 0 = player inventory.
-    pub slots: HashMap<i32, Vec<ItemStack>>,
-    /// `(id, player_start, menu_len)` of the last window we closed
-    /// client-side — server ticks can emit trailing syncs under the
-    /// closed id; its player-region slots still describe the player
-    /// inventory and are applied there (upstream `lastClosedWindow`; the
-    /// shape check needs the menu's total length).
-    pub last_closed: Option<(i32, usize, usize)>,
     /// Last-seen held-item signature `(kind, count)` — upstream only
     /// cancels eating on a type/count change, not on every
     /// `heldItemChanged`.
@@ -80,9 +76,6 @@ impl WindowTracker {
         Self {
             current: None,
             pending: None,
-            early_items: None,
-            slots: HashMap::new(),
-            last_closed: None,
             last_held: None,
             using_held_item: false,
             eat_generation: 0,
@@ -118,27 +111,154 @@ impl WindowTracker {
         })
     }
 
-    /// Record `stack` as the snapshot of `window_id[slot]` and report the
-    /// change, with the previous snapshot value as `old`.
-    fn slot_update(&mut self, window_id: i32, slot: usize, stack: &ItemStack) -> BotEvent {
-        let slots = self.slots.entry(window_id).or_default();
-        if slots.len() <= slot {
-            slots.resize(slot + 1, ItemStack::Empty);
-        }
-        let old = std::mem::replace(&mut slots[slot], stack.clone());
-        BotEvent::WindowUpdateSlot {
-            window_id,
-            slot: slot as u16,
-            old: Item::of(old, slot as i16),
-            new: Item::of(stack.clone(), slot as i16),
-        }
-    }
-
     /// Run the held-item check (upstream `updateHeldItem`) and report the
     /// held stack.
     fn held_changed(&mut self, client: &mineflayer_engine::Client) -> BotEvent {
         self.held_sig_changed(client);
         BotEvent::HeldItemChanged(held_item(client, self.selected(client)))
+    }
+
+    /// The open window or the announced one has this id.
+    fn resolves(&self, id: i32) -> bool {
+        self.current.as_ref().is_some_and(|c| c.id == id)
+            || self.pending.as_ref().is_some_and(|w| w.id == id)
+    }
+}
+
+/// What one window packet is about to replace, read from the engine
+/// `Inventory` before the engine applies the packet. The bridge runs
+/// after the pass, when later packets may have changed the `Inventory`
+/// again, so this is the only correct source of the `old` stacks and of
+/// the lifecycle state each packet saw.
+#[derive(Default)]
+pub(crate) struct WindowPre {
+    /// The packet's address inside its `Arc`, which the bridge gets in
+    /// `Event::Packet`.
+    packet: usize,
+    /// `open_screen`: the early content for its id, which the open
+    /// applies.
+    early: Option<Vec<ItemStack>>,
+    /// `(id, player_start, len)` of the container the client closed
+    /// last (upstream `lastClosedWindow`).
+    closed: Option<(i32, usize, usize)>,
+    /// The slots of the menu the packet writes: all of them for
+    /// `container_set_content`, one for a single-slot packet.
+    old: Vec<ItemStack>,
+}
+
+/// The [`WindowPre`] records of the packets the bridge has not decoded
+/// yet, in packet order.
+#[derive(Component, Default)]
+pub(crate) struct WindowPreApply(VecDeque<WindowPre>);
+
+/// The `PacketPreApply` hook of [`super::WindowPlugin`].
+pub(crate) fn record_window_pre(world: &mut World, entity: Entity, packet: &ClientboundGamePacket) {
+    use ClientboundGamePacket as P;
+    if !matches!(
+        packet,
+        P::OpenScreen(_)
+            | P::ContainerSetContent(_)
+            | P::ContainerSetSlot(_)
+            | P::SetPlayerInventory(_)
+    ) {
+        return;
+    }
+    let Some(inv) = world.get::<Inventory>(entity) else {
+        return;
+    };
+    let pre = WindowPre::read(inv, packet);
+    match world.get_mut::<WindowPreApply>(entity) {
+        Some(mut queue) => queue.0.push_back(pre),
+        None => {
+            world
+                .entity_mut(entity)
+                .insert(WindowPreApply(VecDeque::from([pre])));
+        }
+    }
+}
+
+impl WindowPre {
+    /// The same routing as the engine's handlers
+    /// (`container_set_content`, `container_set_slot`).
+    fn read(inv: &Inventory, packet: &ClientboundGamePacket) -> Self {
+        let closed = inv.last_closed;
+        let closed_id = |id: i32| closed.is_some_and(|(closed, _, _)| closed == id);
+        let one = |stack: Option<&ItemStack>| vec![stack.cloned().unwrap_or_default()];
+        let (early, old) = match packet {
+            ClientboundGamePacket::OpenScreen(p) => (
+                inv.early_content
+                    .as_ref()
+                    .filter(|(id, _)| *id == p.container_id)
+                    .map(|(_, items)| items.clone()),
+                Vec::new(),
+            ),
+            ClientboundGamePacket::ContainerSetContent(p) => {
+                let menu = if p.container_id == inv.id {
+                    Some(inv.menu())
+                } else if p.container_id == 0 || closed_id(p.container_id) {
+                    Some(&inv.inventory_menu)
+                } else {
+                    None
+                };
+                (None, menu.map(|m| m.slots()).unwrap_or_default())
+            }
+            ClientboundGamePacket::ContainerSetSlot(p) => {
+                let slot = usize::from(p.slot);
+                let stack = match p.container_id {
+                    -2 | 0 => inv.inventory_menu.slot(slot),
+                    id if id == inv.id => inv.menu().slot(slot),
+                    id if closed_id(id) => closed
+                        .and_then(|(_, start, _)| slot.checked_sub(start))
+                        .and_then(|i| inv.inventory_menu.slot(i + 9)),
+                    _ => None,
+                };
+                (None, one(stack))
+            }
+            ClientboundGamePacket::SetPlayerInventory(p) => {
+                let slot = mineflayer_engine::inventory::Player::slot_for_inventory_index(p.slot);
+                (None, one(inv.inventory_menu.slot(slot)))
+            }
+            _ => (None, Vec::new()),
+        };
+        Self {
+            packet: std::ptr::from_ref(packet) as usize,
+            early,
+            closed,
+            old,
+        }
+    }
+
+    /// The replaced stack at index `i` of [`Self::old`].
+    fn old(&self, i: usize) -> &ItemStack {
+        static EMPTY: ItemStack = ItemStack::Empty;
+        self.old.get(i).unwrap_or(&EMPTY)
+    }
+}
+
+/// The record of `packet`. Records of packets the bridge never decoded
+/// are dropped on the way; with no record (a client with no engine
+/// systems), every replaced stack is empty.
+fn take_pre(client: &mineflayer_engine::Client, packet: &Arc<ClientboundGamePacket>) -> WindowPre {
+    let address = Arc::as_ptr(packet) as usize;
+    with_component_mut::<WindowPreApply, _>(client, |queue| {
+        while let Some(pre) = queue.0.pop_front() {
+            if pre.packet == address {
+                return Some(pre);
+            }
+        }
+        None
+    })
+    .flatten()
+    .unwrap_or_default()
+}
+
+/// One `WindowUpdateSlot`.
+fn slot_update(window_id: i32, slot: usize, old: &ItemStack, new: &ItemStack) -> BotEvent {
+    BotEvent::WindowUpdateSlot {
+        window_id,
+        slot: slot as u16,
+        old: Item::of(old.clone(), slot as i16),
+        new: Item::of(new.clone(), slot as i16),
     }
 }
 
@@ -172,9 +292,7 @@ pub(crate) fn held_item(client: &mineflayer_engine::Client, sel: u8) -> Option<I
 }
 
 /// Decode one engine [`Event`] into window-domain [`BotEvent`]s — the
-/// inventory-side analog of `entity::observe_event`. Runs after the engine's
-/// own packet handlers, so the ECS `Inventory` component already reflects
-/// the packet; this only reads it.
+/// inventory-side analog of `entity::observe_event`.
 pub(crate) fn observe_event(
     tracker: &Arc<Mutex<WindowTracker>>,
     client: &mineflayer_engine::Client,
@@ -185,26 +303,20 @@ pub(crate) fn observe_event(
     };
     match &**packet {
         ClientboundGamePacket::OpenScreen(p) => {
+            let pre = take_pre(client, packet);
             let mut t = tracker.lock();
             // a new screen displaces the previous open window without a
             // close packet — mark it closed like upstream replacing
-            // `currentWindow`, and clear `lastClosedWindow` (upstream's
-            // open_window handler does).
+            // `currentWindow`; an announced-but-unfilled window is
+            // displaced the same way
             if let Some(current) = t.current.take() {
                 current.closed.store(true, Ordering::SeqCst);
-                t.slots.remove(&current.id);
             }
-            t.last_closed = None;
-            // an announced-but-unfilled window is displaced the same way —
-            // upstream's currentWindow replacement drops it
             t.pending = None;
-            let early_items = t
-                .early_items
-                .take_if(|(id, _)| *id == p.container_id)
-                .map(|(_, items)| items);
-            if let Some(items) = early_items {
+            if let Some(items) = pre.early {
                 // slot data arrived before the open packet (upstream's
-                // prepareWindow sync branch); the engine applied it
+                // prepareWindow sync branch); the engine applied it to the
+                // new, empty menu
                 let window = Window::new(
                     p.container_id,
                     p.menu_type,
@@ -213,10 +325,11 @@ pub(crate) fn observe_event(
                     tracker,
                 );
                 t.current = Some(window.shared.clone());
-                let mut out = Vec::new();
-                for (i, stack) in items.iter().enumerate() {
-                    out.push(t.slot_update(p.container_id, i, stack));
-                }
+                let mut out: Vec<BotEvent> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, stack)| slot_update(p.container_id, i, &ItemStack::Empty, stack))
+                    .collect();
                 out.push(t.held_changed(client));
                 out.push(BotEvent::WindowOpen(window));
                 out
@@ -229,8 +342,14 @@ pub(crate) fn observe_event(
                 Vec::new()
             }
         }
-        ClientboundGamePacket::ContainerSetContent(p) => set_content_events(tracker, client, p),
-        ClientboundGamePacket::ContainerSetSlot(p) => set_slot_events(tracker, client, p),
+        ClientboundGamePacket::ContainerSetContent(p) => {
+            let pre = take_pre(client, packet);
+            set_content_events(tracker, client, p, &pre)
+        }
+        ClientboundGamePacket::ContainerSetSlot(p) => {
+            let pre = take_pre(client, packet);
+            set_slot_events(tracker, client, p, &pre)
+        }
         ClientboundGamePacket::ContainerClose(p) => {
             let mut t = tracker.lock();
             // the server may close a pending window before content ever
@@ -244,13 +363,7 @@ pub(crate) fn observe_event(
                 return Vec::new();
             };
             shared.closed.store(true, Ordering::SeqCst);
-            // `last_closed` is only seeded on *client* close (upstream
-            // sets it in closeWindow); a server close of this id would
-            // otherwise misroute early items of a same-id successor
-            t.slots.remove(&shared.id);
-            vec![BotEvent::WindowClose(Window {
-                shared: shared.clone(),
-            })]
+            vec![BotEvent::WindowClose(Window { shared })]
         }
         ClientboundGamePacket::SetHeldSlot(p) => {
             if p.slot > 8 {
@@ -271,10 +384,11 @@ pub(crate) fn observe_event(
             }
         }
         ClientboundGamePacket::SetPlayerInventory(p) => {
+            let pre = take_pre(client, packet);
             let win_slot = mineflayer_engine::inventory::Player::slot_for_inventory_index(p.slot);
             let mut t = tracker.lock();
             vec![
-                t.slot_update(0, win_slot, &p.contents),
+                slot_update(0, win_slot, pre.old(0), &p.contents),
                 t.held_changed(client),
             ]
         }
@@ -310,13 +424,10 @@ pub(crate) fn observe_event(
         }
         ClientboundGamePacket::Respawn(_) | ClientboundGamePacket::Login(_) => {
             // a new server-side player entity restarts the window id
-            // counter; pending/trailing bookkeeping is stale (upstream
-            // clears windowItems + lastClosedWindow on respawn/login).
+            // counter, so an announced window is stale (the engine drops
+            // its early content and last closed container too)
             let mut t = tracker.lock();
             t.pending = None;
-            t.early_items = None;
-            t.last_closed = None;
-            t.slots.clear();
             // the override only bridges set_selected_hotbar_slot's
             // tick-late component write — a fresh server-side player makes
             // any stale value wrong (upstream keeps `quickBarSlot`, and the
@@ -342,33 +453,38 @@ pub(crate) fn observe_event(
 /// `setWindowItems` gate), then emits one `WindowUpdateSlot` per reported
 /// slot, like upstream calling `updateSlot` for each. Resolved packets
 /// (window 0, a pending window's first fill, or the open container) end in
-/// `SetWindowItems` — upstream's `setWindowItems:{id}`. Buffered (`early_items`) and `last_closed`
-/// remaps return before upstream's emit, so they produce no
-/// `SetWindowItems` — a remap still buffers the packet for a same-id
-/// reopen and runs the held-item check, like upstream's `windowItems`
-/// ordering.
+/// `SetWindowItems` — upstream's `setWindowItems:{id}`. A trailing sync
+/// under the last closed container is remapped into window 0 and ends
+/// before upstream's emit, so it gives no `SetWindowItems`; content for
+/// any other id is buffered by the engine and gives no event.
 fn set_content_events(
     tracker: &Arc<Mutex<WindowTracker>>,
     client: &mineflayer_engine::Client,
     p: &mineflayer_engine::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
+    pre: &WindowPre,
 ) -> Vec<BotEvent> {
     // lock rule: tracker lock held while ECS reads (`get_component`,
     // `held_sig_changed`, `held_item`) run — allowed direction.
     let mut t = tracker.lock();
-    let mut out = Vec::new();
+    let id = p.container_id;
+    let updates = |window_id: i32| -> Vec<BotEvent> {
+        p.items
+            .iter()
+            .enumerate()
+            .map(|(i, stack)| slot_update(window_id, i, pre.old(i), stack))
+            .collect()
+    };
 
-    if p.container_id == 0 {
-        for (i, stack) in p.items.iter().enumerate() {
-            out.push(t.slot_update(0, i, stack));
-        }
+    if id == 0 || t.current.as_ref().is_some_and(|c| c.id == id) {
         // upstream runs updateHeldItem(), then emits
         // `setWindowItems:{id}` — resolved packets only
+        let mut out = updates(id);
         out.push(t.held_changed(client));
-        out.push(BotEvent::SetWindowItems { window_id: 0 });
+        out.push(BotEvent::SetWindowItems { window_id: id });
         return out;
     }
 
-    if let Some(pending) = t.pending.take_if(|w| w.id == p.container_id) {
+    if let Some(pending) = t.pending.take_if(|w| w.id == id) {
         let window = Window::new(
             pending.id,
             pending.menu_kind,
@@ -377,404 +493,83 @@ fn set_content_events(
             tracker,
         );
         t.current = Some(window.shared.clone());
-        for (i, stack) in p.items.iter().enumerate() {
-            out.push(t.slot_update(p.container_id, i, stack));
-        }
+        let mut out = updates(id);
         out.push(t.held_changed(client));
         // upstream emits `setWindowItems:{id}` here; the once-listener
         // it registered in prepareWindow then fires `windowOpen`
-        out.push(BotEvent::SetWindowItems {
-            window_id: p.container_id,
-        });
+        out.push(BotEvent::SetWindowItems { window_id: id });
         out.push(BotEvent::WindowOpen(window));
         return out;
     }
 
-    if t.current.as_ref().is_some_and(|c| c.id == p.container_id) {
-        // resync of the open window — upstream's resolved-window path
-        // also runs updateHeldItem() before `setWindowItems:{id}`
-        for (i, stack) in p.items.iter().enumerate() {
-            out.push(t.slot_update(p.container_id, i, stack));
-        }
-        out.push(t.held_changed(client));
-        out.push(BotEvent::SetWindowItems {
-            window_id: p.container_id,
-        });
-        return out;
-    }
-
-    if let Some((closed_id, player_start, menu_len)) = t.last_closed
-        && p.container_id == closed_id
-        && p.items.len() == menu_len
+    if let Some((closed_id, player_start, len)) = pre.closed
+        && id == closed_id
+        && p.items.len() == len
     {
         // Trailing bulk sync under a window we closed client-side: its
         // player region still describes the player inventory — remap
         // into window 0 like upstream (the length check keeps an early
         // sync for a *different* same-id window from being misrouted).
-        // Upstream buffers `windowItems = packet` before remapping, so a
-        // same-id reopen consumes these contents.
-        t.early_items = Some((p.container_id, p.items.clone()));
-        for (i, stack) in p.items.iter().enumerate().skip(player_start) {
-            let inv_slot = i - player_start + 9;
-            out.push(t.slot_update(0, inv_slot, stack));
-        }
+        let mut out: Vec<BotEvent> = p
+            .items
+            .iter()
+            .enumerate()
+            .skip(player_start)
+            .map(|(i, stack)| {
+                let inv_slot = i - player_start + 9;
+                slot_update(0, inv_slot, pre.old(inv_slot), stack)
+            })
+            .collect();
         // each remapped write goes through upstream's `_setSlot`, which
         // runs updateHeldItem() — once per packet here
         out.push(t.held_changed(client));
         return out;
     }
-
-    // content for a window id we've never seen — buffer it; a matching
-    // `open_screen` consumes it (upstream `windowItems`).
-    t.early_items = Some((p.container_id, p.items.clone()));
-    out
+    Vec::new()
 }
 
 /// `container_set_slot` — single-slot write. `container_id` -1 is the
 /// cursor (applied by the engine, no event upstream), -2 and 0 hit the player
 /// window, anything else resolves the open *or pending* container (or a
-/// trailing sync under `last_closed`) — upstream's `currentWindow` is set
-/// at `open_window`, before its first `window_items` arrives.
+/// trailing sync under the last closed container) — upstream's
+/// `currentWindow` is set at `open_window`, before its first
+/// `window_items` arrives.
 fn set_slot_events(
     tracker: &Arc<Mutex<WindowTracker>>,
     client: &mineflayer_engine::Client,
     p: &mineflayer_engine::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
+    pre: &WindowPre,
 ) -> Vec<BotEvent> {
     // lock rule: the tracker lock is held while brief ECS reads are taken
     // — allowed direction.
     let mut t = tracker.lock();
-    let mut out = Vec::new();
-
-    match p.container_id {
+    let slot = usize::from(p.slot);
+    let window_slot = match p.container_id {
         -1 => {
             // cursor item — the engine applies it; upstream emits nothing.
             t.held_sig_changed(client);
+            return Vec::new();
         }
-        -2 | 0 => {
-            out.push(t.slot_update(0, usize::from(p.slot), &p.item_stack));
-            out.push(t.held_changed(client));
-        }
-        id => {
-            // `pending` resolves too — upstream's `currentWindow` exists
-            // from `open_window`, so a set_slot that lands before the
-            // first fill still emits `setSlot:{id}` (and its snapshot
-            // entry becomes the fill's `old`).
-            if t.current.as_ref().is_some_and(|c| c.id == id)
-                || t.pending.as_ref().is_some_and(|w| w.id == id)
-            {
-                out.push(t.slot_update(id, usize::from(p.slot), &p.item_stack));
-                out.push(t.held_changed(client));
-            } else if let Some((closed_id, player_start, _)) = t.last_closed
-                && id == closed_id
-                && (p.slot as usize) >= player_start
-                && (p.slot as usize) < player_start + 36
-            {
-                // Trailing sync under a window we closed client-side:
-                // its player region still describes the player
-                // inventory — remap into window 0 like upstream.
-                let inv_slot = p.slot as usize - player_start + 9;
-                out.push(t.slot_update(0, inv_slot, &p.item_stack));
-                // upstream's `_setSlot` runs updateHeldItem() here too —
-                // a remapped hotbar write can change the held stack
-                out.push(t.held_changed(client));
-            }
-        }
-    }
-    out
+        -2 | 0 => Some((0, slot)),
+        id if t.resolves(id) => Some((id, slot)),
+        // Trailing sync under a window we closed client-side: its player
+        // region still describes the player inventory — remap into
+        // window 0 like upstream.
+        id => pre
+            .closed
+            .filter(|&(closed, start, _)| closed == id && (start..start + 36).contains(&slot))
+            .map(|(_, start, _)| (0, slot - start + 9)),
+    };
+    let Some((window_id, slot)) = window_slot else {
+        return Vec::new();
+    };
+    // upstream's `_setSlot` runs updateHeldItem() after each write — a
+    // remapped hotbar write can change the held stack too
+    vec![
+        slot_update(window_id, slot, pre.old(0), &p.item_stack),
+        t.held_changed(client),
+    ]
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // — packet→event decode: the per-window-id events upstream's
-    // inventory.js emits (`setSlot:{id}`, `setWindowItems:{id}`) —
-
-    use mineflayer_engine::protocol::packets::game::{
-        c_container_set_content::ClientboundContainerSetContent,
-        c_container_set_slot::ClientboundContainerSetSlot, c_open_screen::ClientboundOpenScreen,
-    };
-
-    fn packet_event(p: ClientboundGamePacket) -> Event {
-        Event::Packet(Arc::new(p))
-    }
-
-    fn tracker() -> Arc<Mutex<WindowTracker>> {
-        let (events, _rx) = broadcast::channel(8);
-        Arc::new(Mutex::new(WindowTracker::new(events)))
-    }
-
-    fn client() -> mineflayer_engine::Client {
-        crate::test_util::live_entity_client(Inventory::default())
-    }
-
-    fn open_screen(id: i32) -> Event {
-        packet_event(ClientboundGamePacket::OpenScreen(ClientboundOpenScreen {
-            container_id: id,
-            menu_type: MenuKind::Generic9x3,
-            title: mineflayer_engine::FormattedText::from("chest"),
-        }))
-    }
-
-    fn set_content(id: i32, items: Vec<ItemStack>) -> Event {
-        packet_event(ClientboundGamePacket::ContainerSetContent(
-            ClientboundContainerSetContent {
-                container_id: id,
-                state_id: 0,
-                items,
-                carried_item: ItemStack::Empty,
-            },
-        ))
-    }
-
-    fn set_slot(id: i32, slot: u16, stack: ItemStack) -> Event {
-        packet_event(ClientboundGamePacket::ContainerSetSlot(
-            ClientboundContainerSetSlot {
-                container_id: id,
-                state_id: 0,
-                slot,
-                item_stack: stack,
-            },
-        ))
-    }
-
-    /// Upstream `setSlot:{windowId}` — every resolved `set_slot` write
-    /// reports `(window_id, slot, old, new)`.
-    #[test]
-    fn set_slot_reports_per_window_slot_update() {
-        let t = tracker();
-        let client = client();
-        observe_event(&t, &client, &open_screen(3));
-        observe_event(&t, &client, &set_content(3, vec![ItemStack::Empty; 63]));
-        let out = observe_event(
-            &t,
-            &client,
-            &set_slot(3, 2, ItemStack::new(ItemKind::Stone, 5)),
-        );
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowUpdateSlot {
-                window_id: 3,
-                slot: 2,
-                old: None,
-                new: Some(item),
-            } if item.kind() == ItemKind::Stone && item.count() == 5
-        )));
-        // set_player_inventory and id-0/-2 writes report under window 0
-        let out = observe_event(
-            &t,
-            &client,
-            &set_slot(0, 40, ItemStack::new(ItemKind::Dirt, 1)),
-        );
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowUpdateSlot {
-                window_id: 0,
-                slot: 40,
-                ..
-            }
-        )));
-    }
-
-    /// Upstream `setWindowItems:{windowId}` — fires once per resolved
-    /// `container_set_content`, after the per-slot updates and
-    /// `heldItemChanged`, before `windowOpen` on first fill.
-    #[test]
-    fn set_content_emits_set_window_items_with_upstream_ordering() {
-        let t = tracker();
-        let client = client();
-        assert!(observe_event(&t, &client, &open_screen(3)).is_empty());
-        let items: Vec<ItemStack> = (0..63)
-            .map(|i| {
-                if i == 0 {
-                    ItemStack::new(ItemKind::Stone, 1)
-                } else {
-                    ItemStack::Empty
-                }
-            })
-            .collect();
-        let out = observe_event(&t, &client, &set_content(3, items));
-        let pos =
-            |pred: &dyn Fn(&BotEvent) -> bool| out.iter().position(pred).unwrap_or(usize::MAX);
-        let last_slot = out
-            .iter()
-            .rposition(|e| matches!(e, BotEvent::WindowUpdateSlot { window_id: 3, .. }))
-            .unwrap();
-        let held = pos(&|e| matches!(e, BotEvent::HeldItemChanged(_)));
-        let items_set = pos(&|e| matches!(e, BotEvent::SetWindowItems { window_id: 3 }));
-        let opened = pos(&|e| matches!(e, BotEvent::WindowOpen(w) if w.id() == 3));
-        assert!(last_slot < held && held < items_set && items_set < opened);
-
-        // a resync of the still-open window emits it again (upstream's
-        // resolved-window path runs updateHeldItem + setWindowItems too)
-        let out = observe_event(&t, &client, &set_content(3, vec![ItemStack::Empty; 63]));
-        assert!(
-            out.iter()
-                .any(|e| matches!(e, BotEvent::HeldItemChanged(_)))
-        );
-        assert!(matches!(
-            out.last(),
-            Some(BotEvent::SetWindowItems { window_id: 3 })
-        ));
-
-        // window 0 resolves too (upstream `bot.inventory`)
-        let out = observe_event(&t, &client, &set_content(0, vec![ItemStack::Empty; 46]));
-        assert!(matches!(
-            out.last(),
-            Some(BotEvent::SetWindowItems { window_id: 0 })
-        ));
-    }
-
-    /// Slot data ahead of `open_screen` is buffered (`early_items`,
-    /// upstream's `windowItems`); the consuming `open_screen` emits
-    /// `windowOpen` without `setWindowItems` — upstream's prepareWindow
-    /// sync branch emits only `updateSlot` per item.
-    #[test]
-    fn buffered_items_open_without_set_window_items() {
-        let t = tracker();
-        let client = client();
-        assert!(observe_event(&t, &client, &set_content(7, vec![ItemStack::Empty; 63])).is_empty());
-        let out = observe_event(&t, &client, &open_screen(7));
-        assert!(
-            !out.iter()
-                .any(|e| matches!(e, BotEvent::SetWindowItems { .. }))
-        );
-        assert!(
-            out.iter()
-                .any(|e| matches!(e, BotEvent::WindowUpdateSlot { window_id: 7, .. }))
-        );
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowOpen(w) if w.id() == 7
-        )));
-    }
-
-    /// A `set_slot` between `open_screen` and the first `set_content` —
-    /// upstream's `currentWindow` exists already, so `setSlot:{id}`
-    /// fires. The write is also in the slot snapshot, so the fill's
-    /// `WindowUpdateSlot` reports it as `old` rather than `None`.
-    #[test]
-    fn set_slot_to_pending_window_reports_update() {
-        let t = tracker();
-        let client = client();
-        assert!(observe_event(&t, &client, &open_screen(3)).is_empty());
-        let out = observe_event(
-            &t,
-            &client,
-            &set_slot(3, 2, ItemStack::new(ItemKind::Stone, 1)),
-        );
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowUpdateSlot {
-                window_id: 3,
-                slot: 2,
-                old: None,
-                new: Some(item),
-            } if item.kind() == ItemKind::Stone
-        )));
-        assert!(
-            out.iter()
-                .any(|e| matches!(e, BotEvent::HeldItemChanged(_)))
-        );
-
-        // the first fill's slot-2 update reports the pending write as old
-        let mut items = vec![ItemStack::Empty; 63];
-        items[2] = ItemStack::new(ItemKind::Dirt, 4);
-        let out = observe_event(&t, &client, &set_content(3, items));
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowUpdateSlot {
-                window_id: 3,
-                slot: 2,
-                old: Some(old),
-                new: Some(new),
-            } if old.kind() == ItemKind::Stone && new.kind() == ItemKind::Dirt
-        )));
-        assert!(
-            out.iter()
-                .any(|e| matches!(e, BotEvent::SetWindowItems { window_id: 3 }))
-        );
-    }
-
-    /// Upstream buffers `windowItems` before the `lastClosedWindow`
-    /// remap, so a same-id reopen consumes the trailing sync as its
-    /// contents.
-    #[test]
-    fn trailing_content_buffers_for_same_id_reopen() {
-        let t = tracker();
-        let client = client();
-        observe_event(&t, &client, &open_screen(9));
-        let out = observe_event(&t, &client, &set_content(9, vec![ItemStack::Empty; 63]));
-        let window = out
-            .iter()
-            .find_map(|e| match e {
-                BotEvent::WindowOpen(w) => Some(w.clone()),
-                _ => None,
-            })
-            .unwrap();
-        window.close();
-
-        let mut items = vec![ItemStack::Empty; 63];
-        items[0] = ItemStack::new(ItemKind::Stone, 7);
-        observe_event(&t, &client, &set_content(9, items));
-
-        // reopening under the same id consumes the buffered contents
-        let out = observe_event(&t, &client, &open_screen(9));
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowOpen(w) if w.id() == 9
-        )));
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowUpdateSlot {
-                window_id: 9,
-                slot: 0,
-                new: Some(item),
-                ..
-            } if item.kind() == ItemKind::Stone && item.count() == 7
-        )));
-    }
-
-    /// A trailing bulk sync under a client-closed id remaps its player
-    /// region into window 0 (upstream `lastClosedWindow`) and never
-    /// emits `setWindowItems` — upstream returns before the emit.
-    #[test]
-    fn trailing_content_remaps_to_inventory_without_set_window_items() {
-        let t = tracker();
-        let client = client();
-        observe_event(&t, &client, &open_screen(9));
-        let out = observe_event(&t, &client, &set_content(9, vec![ItemStack::Empty; 63]));
-        let window = out
-            .iter()
-            .find_map(|e| match e {
-                BotEvent::WindowOpen(w) => Some(w.clone()),
-                _ => None,
-            })
-            .unwrap();
-        window.close();
-        assert_eq!(t.lock().last_closed, Some((9, 27, 63)));
-
-        let mut items = vec![ItemStack::Empty; 63];
-        items[27] = ItemStack::new(ItemKind::Stone, 2);
-        let out = observe_event(&t, &client, &set_content(9, items));
-        assert!(
-            !out.iter()
-                .any(|e| matches!(e, BotEvent::SetWindowItems { .. }))
-        );
-        // player-region slot 27 → inventory window slot 9
-        assert!(out.iter().any(|e| matches!(
-            e,
-            BotEvent::WindowUpdateSlot {
-                window_id: 0,
-                slot: 9,
-                new: Some(item),
-                ..
-            } if item.kind() == ItemKind::Stone
-        )));
-        // nothing under the closed id
-        assert!(
-            !out.iter()
-                .any(|e| matches!(e, BotEvent::WindowUpdateSlot { window_id: 9, .. }))
-        );
-    }
-}
+mod tests;
