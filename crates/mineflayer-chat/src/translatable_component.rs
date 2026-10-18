@@ -97,12 +97,8 @@ impl TranslatableComponent {
 
     /// Convert the key and args to a FormattedText.
     pub fn read(&self) -> Result<TextComponent, fmt::Error> {
-        let template = mineflayer_language::get(&self.key).unwrap_or_else(|| {
-            if let Some(fallback) = &self.fallback {
-                fallback.as_str()
-            } else {
-                &self.key
-            }
+        let template = mineflayer_language::translate(&self.key).unwrap_or_else(|| {
+            std::borrow::Cow::Owned(self.fallback.clone().unwrap_or_else(|| self.key.clone()))
         });
         // decode the % things
 

@@ -368,6 +368,41 @@ mod tests {
         let _ = sim.sent();
     }
 
+    /// A translatable line renders in the bot's language, with `en_us`
+    /// for the ids that language lacks.
+    #[test]
+    fn chat_renders_in_the_bot_language() {
+        use mineflayer_engine::FormattedText;
+        use serde::Deserialize;
+
+        let line = |sim: &mut BotSim| {
+            let content = FormattedText::deserialize(serde_json::json!({
+                "translate": "chat.type.text",
+                "with": ["faye", "hallo"]
+            }))
+            .unwrap();
+            sim.events();
+            sim.receive(ClientboundSystemChat {
+                content,
+                overlay: false,
+            });
+            sim.tick();
+            sim.events()
+                .into_iter()
+                .find_map(|e| match e {
+                    BotEvent::MessageStr { message, .. } => Some(message),
+                    _ => None,
+                })
+                .expect("a MessageStr")
+        };
+        assert_eq!(line(&mut BotSim::new()), "<faye> hallo");
+        let german = BotBuilder::default().language(std::collections::HashMap::from([(
+            "chat.type.text".to_owned(),
+            "%s sagt: %s".to_owned(),
+        )]));
+        assert_eq!(line(&mut BotSim::spawned(german)), "faye sagt: hallo");
+    }
+
     /// A keybind in a container title used to fail the decode of
     /// `open_screen`, so the window never opened.
     #[test]

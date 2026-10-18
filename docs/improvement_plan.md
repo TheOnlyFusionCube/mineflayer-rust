@@ -1350,7 +1350,7 @@ the commit that completes the item.
 | CP5 | done; the configuration-phase reply has no `BotSim` test (the harness runs the game state) | (this commit) |
 | CP6 | open | |
 | CP7 | done | (this commit) |
-| CP8 | open | |
+| CP8 | done | (this commit) |
 | AD0 | done; DEC-1 waits for the owner | (this commit) |
 | AD1 | open | |
 | AD2 | open | |

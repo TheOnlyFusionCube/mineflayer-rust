@@ -172,6 +172,11 @@ merge; plan item E2 keeps this list current):
     with `false`, `ExecuteCtx::sprint` walks. Test:
     `a_goto_without_sprint_walks` in
     `mineflayer-engine/src/pathfinder/tests.rs`.
+32. (CP8) `mineflayer-language` has a per-thread language:
+    `with_language(Some(&language), f)` puts it in front of `en_us` for
+    `translate` while `f` runs, and the chat crate's translatable
+    components read `translate`. `mineflayer-chat` re-exports the crate as
+    `language`. Test: `a_language_comes_before_en_us_and_only_in_its_scope`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

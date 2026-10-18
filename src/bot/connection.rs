@@ -67,6 +67,9 @@ pub struct BotBuilder {
     /// Whether the bridge broadcasts [`BotEvent::Packet`] (default `true`).
     /// See [`BotBuilder::packet_events`].
     packet_events: bool,
+    /// The language that chat is rendered in, in front of `en_us`. See
+    /// [`BotBuilder::language`].
+    language: Option<mineflayer_engine::chat::language::Language>,
     /// `options.agent`-analog — the engine's SOCKS5 proxy support
     /// (`Client::join_with_proxy`); also covers the `connect` proxy use case.
     proxy: Option<mineflayer_engine::protocol::connect::Proxy>,
@@ -132,6 +135,7 @@ impl Default for BotBuilder {
             default_chat_patterns: true,
             check_timeout_interval: Duration::from_secs(30),
             packet_events: true,
+            language: None,
             proxy: None,
             plugins: Default::default(),
         }
@@ -267,6 +271,20 @@ impl BotBuilder {
     /// still arrives, and the port's own waits do not read raw packets.
     pub fn packet_events(mut self, enabled: bool) -> Self {
         self.packet_events = enabled;
+        self
+    }
+
+    /// The language the bot renders chat in: translation ids and their
+    /// strings, such as the contents of `de_de.json` from the game's
+    /// assets. Ids it lacks fall back to `en_us`, the default. Upstream
+    /// sets `bot.registry.language`.
+    ///
+    /// The bot's own text (`Message`, `MessageStr`, titles, kick reasons)
+    /// uses it; `ChatMessage::to_string` on another thread renders
+    /// `en_us` unless it runs inside
+    /// [`with_language`](mineflayer_engine::chat::language::with_language).
+    pub fn language(mut self, language: std::collections::HashMap<String, String>) -> Self {
+        self.language = Some(std::sync::Arc::new(language));
         self
     }
     /// `bot.loadPlugin` analog: add a Bevy plugin to the bot's app, after
@@ -432,6 +450,7 @@ impl BotBuilder {
                 client_information: builder.client_information,
                 brand: builder.brand,
                 packet_events: builder.packet_events,
+                language: builder.language,
             },
         );
 

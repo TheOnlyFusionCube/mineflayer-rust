@@ -12,6 +12,8 @@ pub mod translatable_component;
 pub mod unresolved_component;
 
 pub use component::{DEFAULT_STYLE, FormattedText};
+/// The translation tables that translatable components read.
+pub use mineflayer_language as language;
 #[cfg(feature = "simdnbt")]
 use simdnbt::{DeserializeError, FromNbtTag};
 

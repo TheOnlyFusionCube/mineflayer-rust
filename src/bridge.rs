@@ -5,6 +5,7 @@
 //! to `BotEvent`s, forward over the broadcast channel, and shut the client
 //! down when every `Bot` handle is gone.
 
+use mineflayer_engine::chat::language::{Language, with_language};
 use std::{collections::HashSet, sync::Arc};
 
 use mineflayer_engine::{
@@ -40,6 +41,9 @@ pub(crate) struct BridgeOptions {
     /// `BotBuilder::packet_events` — `false` keeps `BotEvent::Packet` off
     /// the broadcast; the misc decode still sees every packet.
     pub packet_events: bool,
+    /// `BotBuilder::language` — put in front of `en_us` while the bridge
+    /// renders chat.
+    pub language: Option<Language>,
 }
 
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
@@ -127,6 +131,7 @@ pub(crate) struct Bridge {
     client_information: Option<ClientInformation>,
     brand: Option<String>,
     packet_events: bool,
+    language: Option<Language>,
     state: BridgeState,
 }
 
@@ -145,6 +150,7 @@ impl Bridge {
             client_information: options.client_information,
             brand: options.brand,
             packet_events: options.packet_events,
+            language: options.language,
             state,
         }
     }
@@ -180,10 +186,12 @@ impl Bridge {
             shared: &self.shared,
             local: &mut self.state,
         };
-        let derived: Vec<BotEvent> = OBSERVERS
-            .iter()
-            .flat_map(|observe| observe(&mut cx, &event))
-            .collect();
+        let derived: Vec<BotEvent> = with_language(self.language.as_ref(), || {
+            OBSERVERS
+                .iter()
+                .flat_map(|observe| observe(&mut cx, &event))
+                .collect()
+        });
         for bot_event in derived {
             // upstream chat.js keeps `endReason` for the pre-play error
             // message — record it before the event goes out so a racing

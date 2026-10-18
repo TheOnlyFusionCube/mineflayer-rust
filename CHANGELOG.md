@@ -58,6 +58,9 @@
 
 ### Added
 
+- `BotBuilder::language(map)`: the bot renders chat in that language, with
+  `en_us` for the ids it lacks. `engine::chat::language::with_language`
+  renders any component in a language on the calling thread.
 - `test_util::sim::BotSim::drive` runs a bot future while the engine
   steps, with a closure playing the server; `BotSim::echo_clicks`
   confirms window clicks as vanilla does.
