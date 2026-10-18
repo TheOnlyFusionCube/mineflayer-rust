@@ -130,7 +130,7 @@ impl Default for AutoEatOpts {
 }
 
 /// Upstream `FoodSelection` — what [`EatOpts::food`] accepts. Upstream's
-/// numeric (item id) form has no the engine analog; [`ItemKind`] covers it.
+/// numeric (item id) form has no engine analog; [`ItemKind`] covers it.
 #[derive(Clone, Debug)]
 pub enum FoodSelection {
     /// A specific inventory stack (an [`Item`] read from

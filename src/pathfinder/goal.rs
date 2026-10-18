@@ -513,7 +513,7 @@ mod tests {
         ));
     }
 
-    /// M-6: `Goal::Follow`'s `is_end` must answer with the same
+    /// `Goal::Follow`'s `is_end` must answer with the same
     /// block-center `RadiusGoal` check the installed goal runs — a raw
     /// Vec3 distance disagrees by ±0.5 per axis and would report a
     /// reached goal as still pending at the boundary.

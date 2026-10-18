@@ -1111,7 +1111,7 @@ mod tests {
     /// the `events` sender lives on `Bot`, so `Closed` can't be counted
     /// on (the bridge's shutdown watch is the backstop for the
     /// lagged-out case).
-    /// `fish()` follows the derived events (C2): a bobber `EntitySpawn`,
+    /// `fish()` follows the derived events: a bobber `EntitySpawn`,
     /// then `EntityGone` for that id, rejects with upstream's
     /// `Fishing cancelled` — no raw `Packet` event is needed.
     #[tokio::test]

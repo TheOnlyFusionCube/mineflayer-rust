@@ -680,7 +680,7 @@ mod tests {
         assert!(tracker.passengers_of.get(&id(2)).unwrap().is_empty());
     }
 
-    /// A dimension change keeps only the bot's own entries (A9).
+    /// A dimension change keeps only the bot's own entries.
     #[test]
     fn respawn_forgets_other_dimension_entities() {
         use mineflayer_engine::{

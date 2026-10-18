@@ -16,8 +16,8 @@
 //! - `activate_block` sends the right-click interaction (which doubles as a
 //!   placement trigger, exactly like upstream).
 //! - `InteractShared` holds the bookkeeping upstream keeps in JS-side
-//!   state (`lastDigTime`, abort coordination); the engine's `Mining` component
-//!   is the `targetDigBlock`/`targetDigFace` source of truth.
+//!   state (`lastDigTime`, abort coordination). Its `dig_target` is the
+//!   `targetDigBlock`/`targetDigFace` source of truth.
 
 pub(crate) mod dig;
 mod place;

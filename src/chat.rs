@@ -736,7 +736,7 @@ mod tests {
     }
 
     /// A caller that drops `tab_complete` before the reply must not leave
-    /// its correlation entry behind (A7).
+    /// its correlation entry behind.
     #[tokio::test]
     async fn cancelled_tab_complete_leaves_no_pending_entry() {
         let client = crate::test_util::live_entity_client(mineflayer_engine::world::WorldName(

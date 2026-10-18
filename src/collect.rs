@@ -1,8 +1,8 @@
 //! The mineflayer-collectblock plugin surface: `bot.collect_block().collect(...)`.
 //!
 //! Upstream's collect is a find → goto → dig loop that resolves once every
-//! requested block is broken; ours keeps that shape over the U3/U6/U7
-//! primitives: [`FindBlocksOpts`] re-searches each iteration (the world
+//! requested block is broken; ours keeps that shape over the find, goto,
+//! and dig primitives: [`FindBlocksOpts`] re-searches each iteration (the world
 //! changes under us as we dig), [`Goal::LookAtBlock`] walks into sight
 //! and dig reach like upstream's `mineBlock` goal, and [`Bot::dig`] does
 //! the breaking. Before digging, the loop equips

@@ -26,7 +26,7 @@ impl Item {
     }
 
     /// `item.type` analog — the item kind, e.g. [`ItemKind::Stone`]. The
-    /// numeric mcdata id has no the engine equivalent; the enum is richer.
+    /// numeric mcdata id has no engine equivalent; the enum is richer.
     pub fn kind(&self) -> ItemKind {
         self.stack.kind()
     }

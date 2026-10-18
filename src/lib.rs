@@ -94,7 +94,7 @@ pub use world::{
 pub use interact::{DigAbortReason, DigFace, ForceLook};
 pub use vec3::Vec3Ext;
 
-// — ecosystem-plugin analogs (U12): mineflayer-collectblock, -tool, -pvp, -auto-eat —
+// — ecosystem-plugin analogs: mineflayer-collectblock, -tool, -pvp, -auto-eat —
 pub use auto_eat::{AutoEat, AutoEatOpts, EatOpts, FoodData, FoodPriority, FoodSelection};
 pub use collect::{CollectBlock, CollectOpts, CollectTarget, Collected, ItemFilter};
 pub use pvp::{AttackRate, Pvp};

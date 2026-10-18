@@ -6,7 +6,7 @@
 //! when a free slot exists), scoring each stack with the engine's
 //! `get_mine_progress` — item dig speed per block state including
 //! physics/effect modifiers, the same scoring `mine_with_auto_tool`
-//! uses. Entity selection has no the engine analog: ours equips the hotbar
+//! uses. Entity selection has no engine analog: ours equips the hotbar
 //! item with the highest melee `attack_damage` (vanilla's base damage
 //! before enchant/cooldown factors) — upstream's weapon pick does the
 //! same from mcdata; entity-specific scoring exists on neither side

@@ -635,7 +635,7 @@ mod tests {
         assert!(observe_event(&state, &client, &mut lids, &Event::Login).is_empty());
     }
 
-    /// C2: `handle_block_update_event` applies the update inside the
+    /// `handle_block_update_event` applies the update inside the
     /// same `Update` pass that emits `Event::Packet`, and the bridge
     /// can't observe mid-pass — so a live world read can't supply
     /// `oldBlock`. The tracked update history must: a re-updated

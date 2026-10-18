@@ -1,6 +1,6 @@
 //! Typed windows — the upstream `furnace.js`, `enchantment_table.js`,
 //! `anvil.js`, `villager.js`, `book.js`, and `command_block.js` plugins
-//! ported onto the U8 [`Window`] base.
+//! ported onto the [`Window`] base.
 //!
 //! # Server-pushed window data
 //!
@@ -14,7 +14,7 @@
 //! [`BotEvent::VillagerReady`]) plus the generic
 //! [`BotEvent::WindowDataUpdate`] feed.
 //!
-//! Windows aren't event emitters here (same call U8 made): typed-window
+//! Windows aren't event emitters here (the same choice as [`Window`]): typed-window
 //! events are bot-level and carry the `window_id` they belong to.
 //!
 //! # Slot layouts (the engine [`Menu`](mineflayer_engine::inventory::Menu) shapes, same as upstream)
@@ -258,12 +258,6 @@ pub(crate) fn observe_event(
         _ => Vec::new(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Bot methods — the openers and the book/command-block ops.
-// ---------------------------------------------------------------------------
-
-impl Bot {}
 
 // ---------------------------------------------------------------------------
 // Wait helpers.

@@ -1,7 +1,7 @@
 //! Windows, items, and the shared window-state tracker — the
 //! `prismarine-windows` / `prismarine-item` analog.
 //!
-//! # Slot conventions (load-bearing for U9 typed windows and U10 crafting)
+//! # Slot conventions (typed windows and crafting depend on these)
 //!
 //! Slot indices are the protocol's absolute window indices, identical to
 //! mineflayer's `window.slots` indexing and to the engine's [`Menu`] layout:
@@ -34,11 +34,10 @@
 //! set-content/set-slot/held-slot/cooldown) into
 //! [`BotEvent::WindowOpen`], [`BotEvent::WindowClose`],
 //! [`BotEvent::WindowUpdateSlot`], [`BotEvent::SetWindowItems`] and
-//! [`BotEvent::HeldItemChanged`], keeps `WindowTracker` current, and
-//! patches the two the engine gaps that matter for parity:
-//! `container_set_content`'s `carried_item` (the engine ignores it, so the
-//! cursor would desync) and `c_set_player_inventory` (the engine drops the
-//! packet entirely). Upstream's `setSlot:{id}` is `WindowUpdateSlot`'s
+//! [`BotEvent::HeldItemChanged`], and keeps `WindowTracker` current. It
+//! only reads the engine `Inventory`: the engine applies every inventory
+//! packet itself, `container_set_content`'s `carried_item` and
+//! `c_set_player_inventory` included. Upstream's `setSlot:{id}` is `WindowUpdateSlot`'s
 //! `window_id` field; `confirmTransaction{id}` has no wire on mc26 —
 //! the transaction packet was removed in 1.17 and click rejects arrive
 //! as corrective `set_slot`/`set_content` resyncs instead.
@@ -437,8 +436,9 @@ pub type Dispenser = Window;
 /// Resolve the live [`Menu`] for a window id. Id 0 always reads
 /// `inventory_menu` — the engine's `ContainerHandleRef` accessors gate on
 /// `inv.id == self.id`, which blinds the player window while a container
-/// is open (upstream keeps `bot.inventory` live during open windows via
-/// the id-0 packet writes our observer patches into `inventory_menu`).
+/// is open (upstream keeps `bot.inventory` live during open windows; the
+/// engine applies the id-0 packets to `inventory_menu`, so it stays live
+/// here too).
 pub(crate) fn menu_for_id(inv: &Inventory, id: i32) -> Option<Menu> {
     if id == 0 {
         return Some(inv.inventory_menu.clone());
@@ -489,7 +489,7 @@ pub(crate) fn first_empty_in(slots: &[ItemStack], range: Range<usize>) -> Option
 mod tests {
     use super::*;
 
-    /// The C2 regression: `bot.inventory()` (id 0) must resolve the
+    /// Regression: `bot.inventory()` (id 0) must resolve the
     /// player menu even while a container is open — the engine's
     /// `ContainerHandleRef` gates on `inv.id == self.id`, which would
     /// return `None` for every id-0 read during an open window.

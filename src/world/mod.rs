@@ -151,7 +151,7 @@ impl WorldRef {
 ///
 /// `state` is the block state as last observed; re-read it through
 /// `block.world` if the block may have changed since. Digging,
-/// interaction and pathfinding units (U6/U8/U10) consume the fields
+/// interaction, and pathfinding consume the fields
 /// below: `pos` + `kind`/`state_id`/`properties` for matching,
 /// `behavior` for dig speed and `world` for live re-reads and
 /// client-side predictions.
@@ -243,8 +243,8 @@ impl Block {
     }
 
     /// `block.material`/`block.harvestTools` backing data — the engine's
-    /// `BlockBehavior` (friction, destroy time, …). U6 uses `destroy_time`,
-    /// `requires_correct_tool_for_drops` and friends for dig timing.
+    /// `BlockBehavior` (friction, destroy time, …). Dig timing uses `destroy_time`,
+    /// `requires_correct_tool_for_drops` and friends.
     pub fn behavior(&self) -> mineflayer_engine::block::BlockBehavior {
         Box::<dyn BlockTrait>::from(self.state).behavior()
     }
@@ -985,7 +985,7 @@ mod tests {
     }
 
     /// `boundingBox` is typed but keeps upstream's strings; `short_name`
-    /// is upstream's un-namespaced `block.name` (B5).
+    /// is upstream's un-namespaced `block.name`.
     #[test]
     fn bounding_box_and_short_name_match_upstream() {
         let client = crate::test_util::despawned_client();
@@ -1367,7 +1367,7 @@ mod tests {
     }
 
     /// Before `c_set_default_spawn_position` the spawn point is unknown,
-    /// not the origin (B5).
+    /// not the origin.
     #[test]
     fn spawn_point_is_none_before_the_packet() {
         let bot = crate::test_util::bot(crate::test_util::despawned_client());

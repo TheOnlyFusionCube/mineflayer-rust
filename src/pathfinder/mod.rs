@@ -395,7 +395,7 @@ impl Pathfinder<'_> {
         // resetPath also cleared it).
         let satisfied = !dynamic && goal.is_end(&client, client.position());
         // the facade write lands BEFORE the ECS patch — same interleave
-        // argument as `stop()` (N-3): an ownerless installed goal is
+        // argument as `stop()`: an ownerless installed goal is
         // silent, an ownerless clear edge is a phantom `NoPath`
         let set_gen = with_component_mut::<PathfinderFacade, _>(&client, |f| {
             cancel_watcher(f);
@@ -404,7 +404,7 @@ impl Pathfinder<'_> {
             // equal goal doesn't bump `set_gen` (the re-path below still
             // happens; only the replacement flag is deduped). `dynamic`
             // isn't part of the identity — upstream compares only the
-            // goal object (N-5).
+            // goal object.
             let same = f.goal.as_ref().is_some_and(|g| same_goal(g, &goal));
             f.goal = (!satisfied).then(|| goal.clone());
             f.dynamic = dynamic;
@@ -466,7 +466,7 @@ impl Pathfinder<'_> {
                 });
                 // movements travel with the driver — every re-issue is
                 // a fresh issue, so `think_timeout` is re-read then
-                // (`set_think_timeout` must reach re-issues, M-7)
+                // (`set_think_timeout` must reach re-issues)
                 follow_driver(
                     client.clone(),
                     entity,
@@ -519,8 +519,8 @@ impl Pathfinder<'_> {
         // the facade write lands BEFORE the engine's stop handler runs:
         // the opposite order lets a bridge tick see `calc_finished &&
         // goal_cleared` with the facade goal still set and report a
-        // phantom `NoPath` a pending `goto` would trust over `PathStopped`
-        // (N-3). This order shows an ownerless installed goal — every arm
+        // phantom `NoPath` a pending `goto` would trust over `PathStopped`.
+        // This order shows an ownerless installed goal — every arm
         // gates on the facade goal, so it's silent.
         let stopped = with_component_mut::<PathfinderFacade, _>(client, |f| {
             cancel_watcher(f);
@@ -707,7 +707,7 @@ impl Pathfinder<'_> {
     /// calling this on the bot's LocalSet thread stalls the ECS for
     /// that long, so prefer `spawn_blocking` for big searches.
     /// `optimizePath`/`resetEntityIntersects`/`searchRadius`/`tickTimeout`
-    /// have no the engine knob and are not exposed.
+    /// have no engine knob and are not exposed.
     pub fn get_path_from_to(
         &self,
         movements: &Movements,
@@ -791,8 +791,6 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
     }
 }
 
-/// Stop the engine's pathfinder (`force` = halt mid-move) and patch the
-/// component state its 0.16 stop handler drops:
 /// The [`Goal::Follow`] driver: every tick, re-issue a radius goal on the
 /// entity's new block position (the engine merges it into the running path).
 /// Ends silently when the facade goal is gone or its generation moved on
@@ -949,7 +947,7 @@ fn dynamic_watcher(
 /// ticks: a fresh drop may be a failed search whose failure-clear
 /// hasn't run yet (the engine's goal drop lands in Update, the bridge sees
 /// it on the next GameTick), and a re-issue inside that window would
-/// install an unclaimed goal the bot then walks (M-4).
+/// install an unclaimed goal the bot then walks.
 fn pathfinder_live(client: &mineflayer_engine::Client) -> bool {
     client
         .try_query_self::<&pathfinder::Pathfinder, _>(|p| p.goal.is_some() || p.is_calculating)

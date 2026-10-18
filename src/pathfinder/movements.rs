@@ -26,7 +26,7 @@ pub struct Movements {
     /// toggle.
     pub allow_sprinting: bool,
     /// `allowFreeMotion` (default `false`). Unhonored: upstream's
-    /// fly-straight-to-goal shortcut has no the engine analog.
+    /// fly-straight-to-goal shortcut has no engine analog.
     pub allow_free_motion: bool,
     /// `dontCreateFlow` (default `true`). Unhonored: the engine doesn't model
     /// liquid flow released by mining.

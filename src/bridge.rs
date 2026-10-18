@@ -265,12 +265,12 @@ struct BridgeState {
     /// World-domain chest-lid dedup (`openCountByPos`) — see
     /// [`crate::world::LidCounts`].
     lids: crate::world::LidCounts,
-    /// Movement tracking for `move`/`mount`/`dismount` (U5).
+    /// Movement tracking for `move`/`mount`/`dismount`.
     movement: crate::movement::MovementTracker,
     /// Chat-domain state shared with `Bot` (pattern registry, tablist,
     /// `tab_complete` correlation).
     chat: Arc<Mutex<ChatShared>>,
-    /// Pathfinder component-diff state for the goal/path events (U7).
+    /// Pathfinder component-diff state for the goal/path events.
     pathfinder: crate::pathfinder::PathTracker,
 }
 
@@ -1044,7 +1044,7 @@ mod tests {
     }
 
     /// `packet_events(false)` keeps raw `Packet` events off the broadcast
-    /// but still emits what is derived from them (C2): a respawn packet
+    /// but still emits what is derived from them: a respawn packet
     /// still yields `Respawn`.
     #[tokio::test]
     async fn packet_events_off_keeps_derived_events() {

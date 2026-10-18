@@ -418,7 +418,7 @@ mod tests {
         )));
     }
 
-    /// N-1: the cumulative budget is promise-level. A `dynamic` goal has
+    /// The cumulative budget is promise-level. A `dynamic` goal has
     /// no promise to settle and upstream keeps `stateGoal` repathing
     /// after every `timeout` status — the report fires once, and the
     /// goal/watcher survive.

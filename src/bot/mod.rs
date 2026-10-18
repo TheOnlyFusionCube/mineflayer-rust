@@ -71,7 +71,7 @@ pub struct Bot {
 ///    (`tool`, `pvp`, `collect`, `auto_eat`): a plugin that is never used
 ///    allocates nothing, and the state goes away with the entity.
 /// 3. **Here** for everything else: state that the bridge writes from
-///    packets and `Bot` handles read, with no the engine component involved
+///    packets and `Bot` handles read, with no engine component involved
 ///    (chat, world, entities, windows, typed windows, recipes,
 ///    scoreboard). A domain lock here never needs the ECS lock to read.
 #[derive(Clone)]
@@ -499,7 +499,7 @@ impl Bot {
 mod tests {
     use super::*;
 
-    /// Lock policy (B8): a panic while a domain lock is held must not break
+    /// Lock policy: a panic while a domain lock is held must not break
     /// the domain for later calls. Every crate lock is `parking_lot`, which
     /// does not poison; `std::sync` would panic on the second call.
     #[test]

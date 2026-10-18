@@ -90,7 +90,7 @@ pub enum BotEvent {
     Whisper(mineflayer_engine::client_chat::ChatPacket),
     /// `message` — any incoming message (chat, system, or game_info
     /// position). The upstream `sender` UUID is on the packet
-    /// (`sender_uuid()`); upstream's `verified` flag has no the engine analog.
+    /// (`sender_uuid()`); upstream's `verified` flag has no engine analog.
     Message {
         /// The packet the message arrived in.
         packet: mineflayer_engine::client_chat::ChatPacket,
@@ -529,7 +529,7 @@ pub enum BotEvent {
     /// `updateHeldItem`, so listeners should diff on kind+count like
     /// upstream's eat listener does).
     HeldItemChanged(Option<crate::windows::Item>),
-    // — typed windows (U9): `container_set_data`/`merchant_offers`
+    // — typed windows: `container_set_data`/`merchant_offers`
     // decode. Window-level events stay bot-level with the window id
     // they belong to (windows aren't emitters, same as upstream's
     // `craft_progress_bar` feed consumers match on). —
@@ -562,7 +562,7 @@ pub enum BotEvent {
         /// Protocol window id of the merchant window.
         window_id: i32,
     },
-    // — ecosystem plugins (U12): collectBlock / pvp progress events.
+    // — ecosystem plugins: collectBlock / pvp progress events.
     // Emitted by the plugin methods themselves (no upstream packet
     // source — mineflayer-collectblock emits nothing; ours surfaces the
     // progress the single-await API can't otherwise report). —

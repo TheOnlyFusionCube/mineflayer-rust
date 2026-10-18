@@ -256,8 +256,8 @@ impl BotBuilder {
     }
     /// Whether [`Bot::events`] carries [`BotEvent::Packet`], the raw
     /// clientbound-packet stream (default `true`). Pass `false` when no
-    /// subscriber reads raw packets: they are about 60% of all events (G1
-    /// measurement, `docs/performance.md`), so a slow subscriber is far less
+    /// subscriber reads raw packets: they are about 60% of all events (measured
+    /// in `docs/performance.md`), so a slow subscriber is far less
     /// likely to fall behind the 8192-event ring and see `Lagged`. Every
     /// derived event (`BlockUpdate`, `EntityMoved`, `WindowUpdateSlot`, …)
     /// still arrives, and the port's own waits do not read raw packets.

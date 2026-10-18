@@ -304,7 +304,7 @@ impl Bot {
     /// Like upstream's `waitForWindowUpdate`, clicks on the crafting
     /// region (slots 0..=4 of the player window, 0..=9 of a crafting
     /// table) also wait for the server's crafting-result resync before
-    /// returning — the packet that matters for U10 crafting.
+    /// returning — the packet that crafting needs.
     pub async fn click_window(&self, slot: i32, mouse_button: u8, mode: u8) -> Result<()> {
         let window = self.current_window().unwrap_or_else(|| self.inventory());
         click_window_on(&window, slot, mouse_button, mode, self.subscribe()).await
@@ -699,7 +699,7 @@ impl Bot {
     /// `activateBlock`'s `lookAt`), right-click it, and wait for the
     /// server's `open_screen` + slot data; resolves with the opened
     /// [`Window`]. The upstream `direction`/`cursorPos` hit-result
-    /// parameters have no the engine equivalent (the engine fabricates the
+    /// parameters have no engine equivalent (the engine fabricates the
     /// block-face hit from `force_block`).
     pub async fn open_block(&self, block: &Block) -> Result<Window> {
         let mut rx = self.subscribe();
@@ -802,7 +802,7 @@ impl Bot {
 /// `waitForWindowUpdate` — wait for the server's crafting-result resync
 /// when the click lands in a crafting region (player inventory slots
 /// 0..=4, crafting-table slots 0..=9). The merchant-window branches of
-/// upstream are U9 territory and intentionally not ported.
+/// upstream are not ported; the typed villager window owns trades.
 pub(crate) async fn click_window_on(
     window: &Window,
     slot: i32,
@@ -876,7 +876,7 @@ mod tests {
     /// The baseline read `slots().unwrap_or_default()` and indexed the
     /// empty vector (`slots[QUICK_BAR_START]`), which panicked.
     /// The integer `click_window` and the typed `click_window_operation`
-    /// share one crafting-wait rule, keyed on the operation's slot (B5).
+    /// share one crafting-wait rule, keyed on the operation's slot.
     #[test]
     fn crafting_wait_rule_follows_the_operation_slot() {
         assert!(waits_for_craft_result(0, None, Some(0)));
