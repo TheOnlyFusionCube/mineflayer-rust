@@ -56,17 +56,44 @@ async fn a_sign_reads_back_what_the_bot_wrote() {
         .await
         .expect("equip the sign");
 
-    // a cell beside the bot with ground under it and air in it
+    // a cell near the bot, not its own column, with solid ground under it
+    // and nothing in it a sign cannot replace (air, or a grass plant)
     let feet = BlockPos::from(bot.position());
-    let (ground, cell) = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-        .into_iter()
-        .map(|(x, z)| feet + BlockPos::new(x, 0, z))
+    let free = |name: &str| {
+        matches!(
+            name,
+            "minecraft:air" | "minecraft:short_grass" | "minecraft:fern"
+        )
+    };
+    let around: Vec<(i32, i32)> = (-2..=2)
+        .flat_map(|x| (-2..=2).map(move |z| (x, z)))
+        .filter(|&(x, z)| (x, z) != (0, 0))
+        .collect();
+    let (ground, cell) = around
+        .iter()
+        .map(|&(x, z)| feet + BlockPos::new(x, 0, z))
         .find_map(|cell| {
             let ground = bot.block_at(cell + BlockPos::new(0, -1, 0))?;
-            let air = bot.block_at(cell)?.name() == "minecraft:air";
-            (ground.diggable() && air).then_some((ground, cell))
+            let solid = ground.bounding_box() == mineflayer::world::BoundingBox::Block
+                && ground.diggable()
+                && !free(ground.name());
+            (solid && free(bot.block_at(cell)?.name())).then_some((ground, cell))
         })
-        .expect("a free cell beside the spawn");
+        .unwrap_or_else(|| {
+            let names: Vec<String> = around
+                .iter()
+                .filter_map(|&(x, z)| {
+                    let cell = feet + BlockPos::new(x, 0, z);
+                    Some(format!(
+                        "{:?}: {} on {}",
+                        (x, z),
+                        bot.block_at(cell)?.name(),
+                        bot.block_at(cell + BlockPos::new(0, -1, 0))?.name()
+                    ))
+                })
+                .collect();
+            panic!("no free cell near {feet:?}: {names:?}")
+        });
 
     let mut events = bot.events();
     bot.place_block(&ground, Vec3::new(0., 1., 0.))
