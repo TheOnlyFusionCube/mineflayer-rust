@@ -17,7 +17,6 @@ use crate::pathfinder::{
 /// [`goto_listener`]: crate::pathfinder::goto_listener
 /// [`PathfinderClientExt::goto`]: crate::pathfinder::PathfinderClientExt::goto
 #[derive(Message)]
-#[non_exhaustive]
 pub struct GotoEvent {
     /// The local bot entity that will do the pathfinding and execute the path.
     pub entity: Entity,
@@ -52,7 +51,6 @@ impl GotoEvent {
 /// [`Client::goto_with_opts`]: super::PathfinderClientExt::goto_with_opts
 /// [`Client::start_goto_with_opts`]: super::PathfinderClientExt::start_goto_with_opts
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub struct PathfinderOpts {
     pub(crate) successors_fn: SuccessorsFn,
     pub(crate) allow_mining: bool,

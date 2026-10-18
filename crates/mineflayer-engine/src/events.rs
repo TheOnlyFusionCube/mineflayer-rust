@@ -58,7 +58,6 @@ use crate::{
 /// Note: Events are sent before they're processed, so for example game ticks
 /// happen at the beginning of a tick before anything has happened.
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub enum Event {
     /// Happens right after the bot switches into the Game state, but before
     /// it's actually spawned.
@@ -146,7 +145,6 @@ pub enum Event {
 /// event stream (the port used to infer these by diffing components
 /// every tick).
 #[derive(Clone, Debug)]
-#[non_exhaustive]
 pub enum PathEvent {
     /// A search finished. An empty `path` with `is_partial == false`
     /// means no route exists; `is_partial == true` means the search hit

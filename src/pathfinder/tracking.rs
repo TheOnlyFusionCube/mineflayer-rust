@@ -184,9 +184,6 @@ pub(crate) fn bridge_events(
             }
             out
         }
-        // the engine's `PathEvent` is #[non_exhaustive]: an upstream
-        // addition is dropped rather than crashing the bridge
-        _ => out,
     }
 }
 

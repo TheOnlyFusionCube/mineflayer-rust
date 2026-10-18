@@ -113,7 +113,6 @@ pub struct PathfinderSystems;
 
 /// A component that makes this client able to pathfind.
 #[derive(Clone, Component, Default)]
-#[non_exhaustive]
 pub struct Pathfinder {
     pub goal: Option<Arc<dyn Goal>>,
     pub opts: Option<PathfinderOpts>,
@@ -140,7 +139,6 @@ impl ExecutingPath {
 }
 
 #[derive(Clone, Debug, Message)]
-#[non_exhaustive]
 pub struct PathFoundEvent {
     pub entity: Entity,
     pub start: BlockPos,

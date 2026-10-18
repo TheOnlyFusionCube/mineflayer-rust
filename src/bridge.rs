@@ -303,16 +303,8 @@ fn translate(
         // KeepAlive has no mineflayer analog — the engine answers keepalives
         // itself. Dropped by design (see api-parity.md `options.keepAlive`).
         Event::KeepAlive(_) => vec![],
-        // The engine's Event is #[non_exhaustive]: anything it adds upstream in
-        // the future is dropped rather than crashing the bridge — with a
-        // debug log so a new upstream event does not vanish silently.
-        _ => {
-            debug!(
-                ?event,
-                "dropping an engine event the bridge does not translate"
-            );
-            vec![]
-        }
+        // the pathfinder observer translates these
+        Event::Pathfinder(_) => vec![],
     }
 }
 

@@ -84,6 +84,11 @@ merge; plan item E2 keeps this list current):
     (`JoinOpts`), `auto_reconnect`, and the `NoState`/`HandleFn` handler
     types. `ClientPlugins` is `DefaultPlugins` and `DefaultBotPlugins`. An
     upstream merge drops its changes to these files.
+16. (DF3) `Event`, `PathEvent`, `GotoEvent`, `PathfinderOpts`,
+    `Pathfinder`, and `PathFoundEvent` are not `#[non_exhaustive]`. The
+    engine is not published, so the attribute only hid new variants from
+    the port's matches; now a new variant fails to compile in the bridge.
+    An upstream merge that adds the attribute back must drop it again.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
