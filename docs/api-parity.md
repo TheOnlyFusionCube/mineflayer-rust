@@ -78,7 +78,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use the en
 | `options.skipValidation` | lifecycle | `n/a` | wontfix | minecraft-protocol ClientOption for skipping session-server validation; the engine has no validation layer to skip — `Auth::Offline` already covers the dev-server case |
 | `options.authTitle` | lifecycle | `n/a` | wontfix | the Azure app title shown during Microsoft auth; mineflayer-auth hardcodes its client id/flow (`interactive_get_ms_auth_token`) — no title knob |
 | `options.fetchProfile` | lifecycle | always-on | diverges | upstream's opt-in full-profile fetch (skins/capes); the engine always fetches the full game profile during auth — no opt-out needed or offered |
-| `options.onMsaCode` | lifecycle | `n/a` | wontfix | device-code callback for custom auth UIs; mineflayer-auth prints `verification_uri?otc=code` to stdout inside `interactive_get_ms_auth_token` — no interception seam |
+| `options.onMsaCode` | lifecycle | `Auth::Microsoft { on_msa_code }` | ported | a `DeviceCodeCallback` gets the device-code response (`user_code`, `verification_uri`, `expires_in`); with `None` the engine prints the link to stdout as before |
 
 Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregate — the compile-time-plugin rows above and `bot.loadPlugin`/`loadPlugins`/`hasPlugin` in lifecycle cover them; there are no per-plugin rows by design.
 

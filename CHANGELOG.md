@@ -21,6 +21,10 @@
 - `mineflayer::engine` no longer has `swarm`, `ClientBuilder`, `JoinOpts`,
   `auto_reconnect`, `NoState`, `HandleFn`, or `BoxHandleFn`. The bot never
   used them; join with `Client::join` or `StartClientOpts`.
+- `Auth::Microsoft` has an `on_msa_code` field (`None` keeps the old
+  behavior). `engine::auth::interactive_get_ms_auth_token` takes the
+  callback as a fifth argument, and `AuthOpts` and
+  `MicrosoftAccountOpts` have an `on_device_code` field.
 - `engine::Event`, `engine::PathEvent`, `GotoEvent`, `PathfinderOpts`,
   `Pathfinder`, and `PathFoundEvent` are no longer `#[non_exhaustive]`.
   A match over `Event` must name the new `PacketDecodeFailed` variant.
@@ -36,6 +40,8 @@
   ordered against the start messages.
 - `engine::Event::Pathfinder` carries pathfinder results.
 - `engine::registry::tags::item_tag_by_name`.
+- `Auth::Microsoft { on_msa_code }` (upstream `options.onMsaCode`): the
+  Microsoft device code goes to a callback instead of stdout.
 - `BotEvent::Error` when a game packet does not decode. The engine drops
   such a packet; before, only a `tracing` error log showed it. The engine
   side is `engine::Event::PacketDecodeFailed` and the ECS message

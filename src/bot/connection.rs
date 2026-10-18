@@ -82,11 +82,14 @@ pub enum Auth {
         /// The username presented to the server.
         username: String,
     },
-    /// `auth: 'microsoft'` — the engine's interactive device-code flow (prints a
-    /// link code; caches tokens in `~/.minecraft/mineflayer-auth.json`).
+    /// `auth: 'microsoft'` — the engine's interactive device-code flow
+    /// (caches tokens in `~/.minecraft/mineflayer-auth.json`).
     Microsoft {
         /// Microsoft account email — the token cache key.
         email: String,
+        /// `options.onMsaCode`: receives the device code when the user must
+        /// log in. `None` prints a link to stdout.
+        on_msa_code: Option<mineflayer_engine::auth::DeviceCodeCallback>,
     },
     /// A prebuilt [`mineflayer_engine::account::Account`] — e.g.
     /// `Account::with_microsoft_access_token(token)` (the `accessToken`
@@ -102,7 +105,11 @@ impl std::fmt::Debug for Auth {
                 .debug_struct("Offline")
                 .field("username", username)
                 .finish(),
-            Auth::Microsoft { email } => f.debug_struct("Microsoft").field("email", email).finish(),
+            Auth::Microsoft { email, on_msa_code } => f
+                .debug_struct("Microsoft")
+                .field("email", email)
+                .field("on_msa_code", on_msa_code)
+                .finish(),
             Auth::Account(_) => f.write_str("Account(..)"),
         }
     }
@@ -319,10 +326,16 @@ impl BotBuilder {
             Some(Auth::Offline { username }) => {
                 mineflayer_engine::account::Account::offline(&username)
             }
-            Some(Auth::Microsoft { email }) => {
-                mineflayer_engine::account::Account::microsoft(&email)
-                    .await
-                    .map_err(Error::Auth)?
+            Some(Auth::Microsoft { email, on_msa_code }) => {
+                mineflayer_engine::account::Account::microsoft_with_opts(
+                    &email,
+                    mineflayer_engine::account::microsoft::MicrosoftAccountOpts {
+                        on_device_code: on_msa_code,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .map_err(Error::Auth)?
             }
             Some(Auth::Account(account)) => account,
             None => mineflayer_engine::account::Account::offline(&builder.username),

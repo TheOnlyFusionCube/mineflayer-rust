@@ -36,6 +36,9 @@ pub struct MicrosoftAccountOpts {
     pub client_id: Option<String>,
     /// An override for the OAuth2 scope to authenticate with.
     pub scope: Option<String>,
+    /// Where the device code goes when the user must log in. `None` prints
+    /// it to stdout.
+    pub on_device_code: Option<mineflayer_auth::DeviceCodeCallback>,
 }
 
 impl MicrosoftAccountOpts {
@@ -50,6 +53,7 @@ impl MicrosoftAccountOpts {
             cache_file,
             client_id: self.client_id.as_deref(),
             scope: self.scope.as_deref(),
+            on_device_code: self.on_device_code.clone(),
         }
     }
 }
@@ -60,6 +64,7 @@ fn default_account_opts(client_id: Option<&str>, scope: Option<&str>) -> Microso
         cache_file: Some(default_cache_file()),
         client_id: client_id.map(str::to_owned),
         scope: scope.map(str::to_owned),
+        on_device_code: None,
     }
 }
 

@@ -104,6 +104,11 @@ merge; plan item E2 keeps this list current):
     the kind, the style and `extra` children, and the other fields as
     JSON, written back unchanged. Display is vanilla's fallback. Upstream
     returns an error for these kinds, which dropped the whole packet.
+20. (DF4) `mineflayer_auth::DeviceCodeCallback` receives the Microsoft
+    device code. `AuthOpts::on_device_code`,
+    `MicrosoftAccountOpts::on_device_code`, and a fifth argument of
+    `interactive_get_ms_auth_token` carry it; `None` keeps upstream's
+    `println!`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

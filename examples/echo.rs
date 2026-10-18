@@ -28,6 +28,7 @@ async fn main() {
     let auth = if args.len() > 4 {
         Auth::Microsoft {
             email: username.clone(),
+            on_msa_code: None,
         }
     } else {
         Auth::Offline {

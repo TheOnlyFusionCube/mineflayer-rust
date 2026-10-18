@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -15,6 +16,23 @@ use tracing::{error, trace};
 use uuid::Uuid;
 
 use crate::cache::{self, CachedAccount, ExpiringValue};
+
+/// Receives the Microsoft device code that the user must enter, in place
+/// of the default message on stdout.
+#[derive(Clone)]
+pub struct DeviceCodeCallback(pub Arc<dyn Fn(&DeviceCodeResponse) + Send + Sync>);
+
+impl DeviceCodeCallback {
+    pub fn new(f: impl Fn(&DeviceCodeResponse) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for DeviceCodeCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DeviceCodeCallback(..)")
+    }
+}
 
 #[derive(Default)]
 pub struct AuthOpts<'a> {
@@ -37,6 +55,9 @@ pub struct AuthOpts<'a> {
     pub client_id: Option<&'a str>,
     /// An override for the OAuth2 scope to authenticate with.
     pub scope: Option<&'a str>,
+    /// Where the device code goes when the user must log in. `None` prints
+    /// it to stdout.
+    pub on_device_code: Option<DeviceCodeCallback>,
 }
 
 #[derive(Debug, Error)]
@@ -96,7 +117,14 @@ pub async fn auth(cache_key: &str, opts: AuthOpts<'_>) -> Result<AuthResult, Aut
         let mut msa = if let Some(account) = cached_account {
             account.msa
         } else {
-            interactive_get_ms_auth_token(&client, cache_key, Some(client_id), Some(scope)).await?
+            interactive_get_ms_auth_token(
+                &client,
+                cache_key,
+                Some(client_id),
+                Some(scope),
+                opts.on_device_code.as_ref(),
+            )
+            .await?
         };
         if msa.is_expired() {
             trace!("refreshing Microsoft auth token");
@@ -117,6 +145,7 @@ pub async fn auth(cache_key: &str, opts: AuthOpts<'_>) -> Result<AuthResult, Aut
                         cache_key,
                         Some(client_id),
                         Some(scope),
+                        opts.on_device_code.as_ref(),
                     )
                     .await?;
                 }
@@ -397,23 +426,38 @@ pub async fn get_ms_auth_token(
 
 /// Asks the user to go to a webpage and log in with Microsoft.
 ///
-/// If you need to access the code, then use [`get_ms_link_code`] and then
+/// The device code goes to `on_device_code`, or to stdout when it is
+/// `None`. For full control, use [`get_ms_link_code`] and then
 /// [`get_ms_auth_token`] instead.
 pub async fn interactive_get_ms_auth_token(
     client: &reqwest::Client,
     cache_key: &str,
     client_id: Option<&str>,
     scope: Option<&str>,
+    on_device_code: Option<&DeviceCodeCallback>,
 ) -> Result<ExpiringValue<AccessTokenResponse>, GetMicrosoftAuthTokenError> {
     let res = get_ms_link_code(client, client_id, scope).await?;
     trace!("Device code response: {:?}", res);
-    let verification_uri = &res.verification_uri;
-    let user_code = &res.user_code;
-    println!(
-        "Go to \x1b[1m{verification_uri}?otc={user_code}\x1b[m and log in for \x1b[1m{cache_key}\x1b[m",
-    );
+    announce_device_code(&res, cache_key, on_device_code);
 
     get_ms_auth_token(client, res, client_id).await
+}
+
+fn announce_device_code(
+    res: &DeviceCodeResponse,
+    cache_key: &str,
+    on_device_code: Option<&DeviceCodeCallback>,
+) {
+    match on_device_code {
+        Some(callback) => (callback.0)(res),
+        None => {
+            let verification_uri = &res.verification_uri;
+            let user_code = &res.user_code;
+            println!(
+                "Go to \x1b[1m{verification_uri}?otc={user_code}\x1b[m and log in for \x1b[1m{cache_key}\x1b[m",
+            );
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -617,4 +661,37 @@ pub async fn get_profile(
     trace!("{:?}", res);
 
     Ok(res)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[test]
+    fn the_device_code_reaches_the_callback() {
+        let seen = Arc::new(Mutex::new(None));
+        let sink = seen.clone();
+        let callback = DeviceCodeCallback::new(move |res| {
+            *sink.lock().unwrap() = Some((res.verification_uri.clone(), res.user_code.clone()));
+        });
+        let res = DeviceCodeResponse {
+            user_code: "ABCD-1234".to_owned(),
+            device_code: "device".to_owned(),
+            verification_uri: "https://example.invalid/link".to_owned(),
+            expires_in: 900,
+            interval: 5,
+        };
+
+        announce_device_code(&res, "someone", Some(&callback));
+
+        assert_eq!(
+            seen.lock().unwrap().clone(),
+            Some((
+                "https://example.invalid/link".to_owned(),
+                "ABCD-1234".to_owned()
+            ))
+        );
+    }
 }
