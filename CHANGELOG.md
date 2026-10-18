@@ -58,6 +58,10 @@
 
 ### Added
 
+- `Bot::set_physics`: change `gravity`, `airdrag`, and `airborne_inertia`
+  at run time (the engine's new `physics::PhysicsSettings` resource);
+  `Bot::physics` reads the live values. `BotBuilder::physics(false)`
+  runs the bot with no physics (`options.physicsEnabled`).
 - `BotBuilder::language(map)`: the bot renders chat in that language, with
   `en_us` for the ids it lacks. `engine::chat::language::with_language`
   renders any component in a language on the calling thread.

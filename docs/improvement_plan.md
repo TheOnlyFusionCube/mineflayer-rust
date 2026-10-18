@@ -1346,7 +1346,7 @@ the commit that completes the item.
 | CP1 | done; the port keeps the block entities (D-redecode), not the engine | (this commit) |
 | CP2 | done; `dont_create_flow` and `allow_free_motion` are removed (the engine always refuses to break next to a liquid and has no free motion); `MovementConstraints` stays, because `SuccessorsFn` is a plain `fn` | (this commit) |
 | CP3 | open | |
-| CP4 | open | |
+| CP4 | done; three constants are settable (gravity, air drag, airborne inertia), the others are refused with `Unsupported`; the physics switch works (BotSim test) | (this commit) |
 | CP5 | done; the configuration-phase reply has no `BotSim` test (the harness runs the game state) | (this commit) |
 | CP6 | open | |
 | CP7 | done | (this commit) |

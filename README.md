@@ -163,7 +163,7 @@ this API only.
 public mineflayer API is a row marked `ported`, `diverges` (intentional
 semantic difference, with a note), `wontfix`, or `additive` (Rust surface
 beyond upstream). Current counts:
-**347 ported · 124 diverges · 42 wontfix · 11 additive — zero pending**.
+**348 ported · 124 diverges · 41 wontfix · 11 additive — zero pending**.
 
 ## Live testing
 

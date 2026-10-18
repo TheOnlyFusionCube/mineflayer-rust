@@ -33,10 +33,32 @@ use crate::collision::{MoveCtx, entity_collisions::update_last_bounding_box};
 #[derive(Clone, Debug, Eq, Hash, PartialEq, SystemSet)]
 pub struct PhysicsSystems;
 
+/// The physics constants a bot may change at run time. The default is
+/// vanilla's.
+#[derive(Clone, Copy, Debug, PartialEq, Resource)]
+pub struct PhysicsSettings {
+    /// Blocks per tick² of fall in air.
+    pub gravity: f64,
+    /// The factor on the vertical velocity after each tick in air.
+    pub vertical_drag: f64,
+    /// The factor on the horizontal velocity after each tick in air.
+    pub airborne_inertia: f32,
+}
+
+impl Default for PhysicsSettings {
+    fn default() -> Self {
+        Self {
+            gravity: 0.08,
+            vertical_drag: 0.9800000190734863,
+            airborne_inertia: 0.91,
+        }
+    }
+}
+
 pub struct PhysicsPlugin;
 impl Plugin for PhysicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<PhysicsSettings>().add_systems(
             GameTick,
             (
                 fluids::update_in_water_state_and_do_fluid_pushing,

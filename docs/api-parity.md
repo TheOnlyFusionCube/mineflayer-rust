@@ -61,7 +61,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use the en
 | `options.brand` | lifecycle | `BotBuilder::brand(impl Into<String>)` | ported | `minecraft:brand` custom payload sent on `Event::Login` — upstream's login-packet timing; the engine also sends `"vanilla"` during config phase, and the server keeps the last brand received, so ours wins |
 | `options.respawn` | lifecycle | `BotBuilder::respawn(bool)` | ported | `false` leaves the engine's `AutoRespawnPlugin` out of the app; `bot.respawn()` respawns by hand |
 | `options.plugins` | lifecycle | `BotBuilder::plugin(impl Plugin)` | diverges | a Bevy plugin added at build time (`BotBuilder::plugin`) and an extension trait on `Bot` over `mineflayer::plugin`; no loader at run time (README, Writing a plugin) |
-| `options.physicsEnabled` | lifecycle | `n/a` | wontfix | the engine's PhysicsPlugin is baked into `Client::join`'s default plugins — no disable seam; `bot.physics_enabled()` reports always-true |
+| `options.physicsEnabled` | lifecycle | `BotBuilder::physics(bool)` | ported | `false` leaves the engine's physics plugin out: the bot does not fall, and the controls and the pathfinder do not move it |
 | `options.chat (settings passthrough)` | lifecycle | `BotBuilder::chat(ChatVisibility)` | ported | `'enabled'`/`'commandsOnly'`/`'disabled'` → `ChatVisibility::Full`/`System`/`Hidden`; merged into the `ClientInformation` sent on Init |
 | `options.colorsEnabled` | lifecycle | `BotBuilder::colors_enabled(bool)` | ported | → `ClientInformation::chat_colors` on Init |
 | `options.viewDistance` | lifecycle | `BotBuilder::view_distance(impl Into<ViewDistance>)` | ported | applied on `Event::Init` so login already carries it; `ViewDistance` covers upstream's `'far'`/`'normal'`/`'short'`/`'tiny'` presets (12/10/8/6) plus raw counts |
@@ -250,8 +250,8 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.waitForTicks(n)` | movement | `bot.wait_for_ticks(n) -> Result<()>` | ported | the engine wait_ticks + upstream's n*50ms+5s timeout |
 | `bot._replyOnNextTick(reply)` | movement | — | wontfix | internal upstream plumbing; the engine handles teleport acks itself, no reply queue needed |
 | `bot.controlState` | movement | `bot.control_states() -> ControlState` | ported | snapshot struct (not a live get/set proxy); mutate via set_control_state |
-| `bot.physics` | movement | `bot.physics() -> PhysicsSettings` | diverges | read-only struct of vanilla constants; upstream's knobs are mutable, the engine physics has no mutation seam |
-| `bot.physicsEnabled` | movement | `bot.physics_enabled() -> bool` | diverges | always true; the engine physics runs unconditionally |
+| `bot.physics` | movement | `bot.physics() -> PhysicsSettings` / `bot.set_physics(PhysicsSettings) -> Result` | diverges | `gravity`, `airdrag`, and `airborne_inertia` are the engine's live values and can change; the other fields are the vanilla constants built into the engine, and `set_physics` refuses a change to one of them with `Unsupported` |
+| `bot.physicsEnabled` | movement | `bot.physics_enabled() -> bool` | diverges | set once at build time (`BotBuilder::physics`); upstream can toggle it at run time |
 | `bot.jumpQueued (undoc)` | movement | `bot.jump_queued() -> bool` | diverges | reads held Jumping input; upstream's flag is a queued one-shot cleared per tick |
 | `bot.jumpTicks (undoc)` | movement | — | wontfix | autojump cooldown; the engine intentionally implements no autojump |
 | `bot.abilities` | movement | `bot.abilities() -> PlayerAbilities` | ported | PlayerAbilities component, default before first packet |

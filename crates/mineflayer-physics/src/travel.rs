@@ -43,9 +43,11 @@ pub fn travel(
         (With<LocalEntity>, With<HasClientLoaded>),
     >,
     worlds: Res<Worlds>,
+    settings: Option<Res<crate::PhysicsSettings>>,
     aabb_query: AabbQuery,
     collidable_entity_query: CollidableEntityQuery,
 ) {
+    let settings = settings.as_deref().copied().unwrap_or_default();
     for (
         entity,
         attributes,
@@ -92,16 +94,16 @@ pub fn travel(
             // minecraft also checks for `this.isAffectedByFluids() &&
             // !this.canStandOnFluid(fluidAtBlock)` here but it doesn't matter
             // for players
-            travel_in_fluid(&mut ctx);
+            travel_in_fluid(&mut ctx, &settings);
         } else {
-            travel_in_air(&mut ctx);
+            travel_in_air(&mut ctx, &settings);
         }
     }
 }
 
 /// The usual movement when we're not in water or using an elytra.
-fn travel_in_air(ctx: &mut MoveCtx) {
-    let gravity = get_effective_gravity();
+fn travel_in_air(ctx: &mut MoveCtx, settings: &crate::PhysicsSettings) {
+    let gravity = settings.gravity;
 
     let block_pos_below = get_block_pos_below_that_affects_movement(*ctx.position);
 
@@ -114,9 +116,9 @@ fn travel_in_air(ctx: &mut MoveCtx) {
     let block_friction = block_below.behavior().friction;
 
     let inertia = if ctx.physics.on_ground() {
-        block_friction * 0.91
+        block_friction * settings.airborne_inertia
     } else {
-        0.91
+        settings.airborne_inertia
     };
 
     // this applies the current delta
@@ -136,16 +138,16 @@ fn travel_in_air(ctx: &mut MoveCtx) {
     } else {
         ctx.physics.velocity = Vec3 {
             x: movement.x * inertia as f64,
-            y: movement.y * 0.9800000190734863f64,
+            y: movement.y * settings.vertical_drag,
             z: movement.z * inertia as f64,
         };
     }
 }
 
-fn travel_in_fluid(ctx: &mut MoveCtx) {
+fn travel_in_fluid(ctx: &mut MoveCtx, settings: &crate::PhysicsSettings) {
     let moving_down = ctx.physics.velocity.y <= 0.;
     let y = ctx.position.y;
-    let gravity = get_effective_gravity();
+    let gravity = settings.gravity;
 
     let acceleration = Vec3::new(
         ctx.physics.x_acceleration as f64,
@@ -345,10 +347,6 @@ fn contains_any_liquid(world: &World, bounding_box: Aabb) -> bool {
     false
 }
 
-fn get_effective_gravity() -> f64 {
-    // TODO: slow falling effect
-    0.08
-}
 
 pub fn fluid_jump_threshold() -> f64 {
     // this is 0.0 for entities with an eye height lower than 0.4, but that's

@@ -177,6 +177,10 @@ merge; plan item E2 keeps this list current):
     `translate` while `f` runs, and the chat crate's translatable
     components read `translate`. `mineflayer-chat` re-exports the crate as
     `language`. Test: `a_language_comes_before_en_us_and_only_in_its_scope`.
+33. (CP4) `physics::PhysicsSettings`, a resource that `PhysicsPlugin`
+    inits and `travel` reads: gravity, vertical drag, and airborne
+    inertia (the constants were literals). Test: `gravity_is_a_setting`
+    in `mineflayer-client/tests/simulation/physics_settings.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

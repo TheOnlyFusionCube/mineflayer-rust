@@ -322,6 +322,15 @@ impl BotBuilder {
         self
     }
 
+    /// `options.physicsEnabled` (default `true`). With `false` the engine
+    /// runs no physics for the bot: it does not fall, and the controls and
+    /// the pathfinder do not move it. The server still moves it (a
+    /// teleport, a knockback velocity is not applied).
+    pub fn physics(mut self, enabled: bool) -> Self {
+        self.plugins.physics = enabled;
+        self
+    }
+
     /// `options.agent`-analog — connect through a SOCKS5 proxy
     /// (the engine's `Client::join_with_proxy`; covers the server connection,
     /// not Mojang session auth).

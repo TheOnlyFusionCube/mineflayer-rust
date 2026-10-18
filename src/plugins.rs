@@ -32,6 +32,8 @@ pub(crate) struct BotPlugins {
     pub(crate) respawn: bool,
     /// `false` leaves out the engine's accept-every-resource-pack plugin.
     pub(crate) accept_resource_packs: bool,
+    /// `options.physicsEnabled`: `false` leaves out the engine's physics.
+    pub(crate) physics: bool,
     pub(crate) user: Vec<AddPlugin>,
 }
 
@@ -40,6 +42,7 @@ impl Default for BotPlugins {
         Self {
             respawn: true,
             accept_resource_packs: true,
+            physics: true,
             user: Vec::new(),
         }
     }
@@ -50,6 +53,7 @@ impl std::fmt::Debug for BotPlugins {
         f.debug_struct("BotPlugins")
             .field("respawn", &self.respawn)
             .field("accept_resource_packs", &self.accept_resource_packs)
+            .field("physics", &self.physics)
             .field("user", &self.user.len())
             .finish()
     }
@@ -68,6 +72,9 @@ impl PluginGroup for BotPlugins {
         }
         if !self.accept_resource_packs {
             group = group.disable::<AcceptResourcePacksPlugin>();
+        }
+        if !self.physics {
+            group = group.disable::<mineflayer_engine::physics::PhysicsPlugin>();
         }
         self.user.iter().fold(group, |group, add| add(group))
     }

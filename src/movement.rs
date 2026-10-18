@@ -13,6 +13,7 @@
 //! convenience wrappers panic before the client entity exists, while
 //! upstream's plain booleans can be set any time.
 
+use mineflayer_engine::physics::PhysicsSettings as EngineSettings;
 use std::f64::consts::PI;
 
 use mineflayer_engine::{
@@ -69,12 +70,12 @@ impl ControlState {
 ///
 /// Upstream returns the live prismarine-physics object: plugins read
 /// `bot.physics.gravity` and also mutate it (e.g. `gravity = 0` to fly).
-/// The engine simulates the same vanilla constants internally but offers no
-/// mutation seam, so this is a read-only snapshot of the vanilla values
-/// for the targeted version — a documented `diverges` (api-parity.md).
-/// Methods on upstream's physics object (`simulatePlayer`, …) have no
-/// public analog and are not mirrored.
-#[derive(Clone, Copy, Debug)]
+/// [`Bot::set_physics`] changes `gravity`, `airdrag`, and
+/// `airborne_inertia`, the constants the engine reads at run time; the
+/// others are the vanilla values for the targeted version, and a change
+/// to one of them is refused. Methods on upstream's physics object
+/// (`simulatePlayer`, …) have no public analog and are not mirrored.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PhysicsSettings {
     /// blocks/tick²
     pub gravity: f64,
@@ -123,7 +124,7 @@ pub struct PhysicsSettings {
 
 /// The `{down, maxDown, up, maxUp}` drag quadruplet prismarine-physics uses
 /// for bubble columns.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColumnDrag {
     pub down: f64,
     pub max_down: f64,
@@ -367,17 +368,63 @@ impl Bot {
         self.look(yaw, pitch, force).await
     }
 
-    /// `bot.physics` — read-only snapshot of the vanilla physics constants
-    /// (see [`PhysicsSettings`]; upstream's knobs are mutable, ours can't
-    /// be — `diverges`).
+    /// `bot.physics` — the physics constants: the engine's live
+    /// `gravity`, `airdrag`, and `airborne_inertia`, and the vanilla values
+    /// of the rest (see [`PhysicsSettings`]).
     pub fn physics(&self) -> PhysicsSettings {
-        PhysicsSettings::VANILLA
+        let live = self
+            .client
+            .ecs
+            .read()
+            .get_resource::<EngineSettings>()
+            .copied()
+            .unwrap_or_default();
+        PhysicsSettings {
+            gravity: live.gravity,
+            airdrag: live.vertical_drag,
+            airborne_inertia: f64::from(live.airborne_inertia),
+            ..PhysicsSettings::VANILLA
+        }
     }
 
-    /// `bot.physicsEnabled` — always `true`; the engine's physics runs
-    /// unconditionally, so upstream's toggle can't be offered (`diverges`).
+    /// `bot.physics.x = …` — apply `settings`: the engine takes `gravity`,
+    /// `airdrag`, and `airborne_inertia` from the next tick on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unsupported`](crate::Error::Unsupported) when another field differs from
+    /// [`Bot::physics`] (the engine has those values built in), and
+    /// [`Error::InvalidState`](crate::Error::InvalidState) when physics is off
+    /// ([`BotBuilder::physics`](crate::BotBuilder::physics)).
+    pub fn set_physics(&self, settings: PhysicsSettings) -> Result<()> {
+        if !self.physics_enabled() {
+            return Err(crate::Error::InvalidState(
+                "physics is off for this bot".into(),
+            ));
+        }
+        let rest = PhysicsSettings {
+            gravity: PhysicsSettings::VANILLA.gravity,
+            airdrag: PhysicsSettings::VANILLA.airdrag,
+            airborne_inertia: PhysicsSettings::VANILLA.airborne_inertia,
+            ..settings
+        };
+        if rest != PhysicsSettings::VANILLA {
+            return Err(crate::Error::Unsupported(
+                "only gravity, airdrag, and airborne_inertia can change".into(),
+            ));
+        }
+        self.client.ecs.write().insert_resource(EngineSettings {
+            gravity: settings.gravity,
+            vertical_drag: settings.airdrag,
+            airborne_inertia: settings.airborne_inertia as f32,
+        });
+        Ok(())
+    }
+
+    /// `bot.physicsEnabled` — whether the engine's physics runs for this
+    /// bot ([`BotBuilder::physics`](crate::BotBuilder::physics)).
     pub fn physics_enabled(&self) -> bool {
-        true
+        self.client.ecs.read().contains_resource::<EngineSettings>()
     }
 
     /// `bot.abilities` — the abilities the server last granted (flying,
@@ -552,5 +599,60 @@ mod tests {
         assert!(a.flying && a.can_fly && a.invulnerable && a.instant_break);
         assert_eq!(a.flying_speed, 0.1);
         assert_eq!(a.walking_speed, 0.2);
+    }
+}
+
+#[cfg(test)]
+mod physics_tests {
+    use super::*;
+    use crate::{BotBuilder, Error, test_util::sim::BotSim};
+
+    /// How far the bot falls in 10 ticks.
+    fn fall(sim: &mut BotSim) -> f64 {
+        let start = sim.bot.position().y;
+        for _ in 0..10 {
+            sim.tick();
+        }
+        start - sim.bot.position().y
+    }
+
+    #[test]
+    fn set_physics_changes_gravity_and_refuses_the_built_in_fields() {
+        let vanilla = fall(&mut BotSim::new());
+        let mut sim = BotSim::new();
+        let half = PhysicsSettings {
+            gravity: 0.04,
+            ..sim.bot.physics()
+        };
+        sim.bot.set_physics(half).unwrap();
+        assert_eq!(sim.bot.physics().gravity, 0.04);
+        // the bot is already falling when the setting lands, so the fall
+        // is less, not half
+        let fallen = fall(&mut sim);
+        assert!(fallen < vanilla * 0.8, "{fallen} of {vanilla}");
+        let step = PhysicsSettings {
+            step_height: 1.,
+            ..sim.bot.physics()
+        };
+        assert!(matches!(
+            sim.bot.set_physics(step),
+            Err(Error::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn a_bot_without_physics_stays_put_and_keeps_working() {
+        let mut sim = BotSim::spawned(BotBuilder::default().physics(false));
+        assert!(!sim.bot.physics_enabled());
+        assert_eq!(fall(&mut sim), 0.);
+        sim.bot.set_control_state(Control::Forward, true);
+        let at = sim.bot.position();
+        fall(&mut sim);
+        assert_eq!(sim.bot.position(), at, "the controls do not move it");
+        assert!(matches!(
+            sim.bot.set_physics(sim.bot.physics()),
+            Err(Error::InvalidState(_))
+        ));
+        assert!(sim.bot.chat("still here").is_ok());
     }
 }
