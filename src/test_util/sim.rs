@@ -37,10 +37,9 @@ pub(crate) struct BotSim {
     bridge: Bridge,
     events: broadcast::Receiver<BotEvent>,
     sent: SentPackets,
-    // the bridge's liveness and shutdown channels; kept so the bot's
-    // driver tasks see a live connection
+    // the bridge's liveness channel; kept so the bot sees a live
+    // connection
     _alive: watch::Receiver<()>,
-    _shutdown: watch::Sender<()>,
     // the engine's tasks need their runtime alive
     _rt: tokio::runtime::Runtime,
 }
@@ -78,7 +77,7 @@ impl BotSim {
         let ecs = Arc::new(RwLock::new(std::mem::take(app.world_mut())));
         let client = mineflayer_engine::Client::new(entity, ecs.clone());
 
-        let (bot, bridge, alive, shutdown) = builder.attach(client);
+        let (bot, bridge, alive) = builder.attach(client);
         let events = bot.events();
         Self {
             bot,
@@ -88,7 +87,6 @@ impl BotSim {
             events,
             sent,
             _alive: alive,
-            _shutdown: shutdown,
             _rt: rt,
         }
     }

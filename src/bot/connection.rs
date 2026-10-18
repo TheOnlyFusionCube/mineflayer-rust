@@ -352,8 +352,8 @@ impl BotBuilder {
         };
         let client = mineflayer_engine::Client::start_client(opts).await;
         let check_timeout_interval = builder.check_timeout_interval;
-        let (bot, bridge, alive_rx, shutdown_tx) = builder.attach(client);
-        bridge::spawn(bridge, rx, check_timeout_interval, alive_rx, shutdown_tx);
+        let (bot, bridge, alive_rx) = builder.attach(client);
+        bridge::spawn(bridge, rx, check_timeout_interval, alive_rx);
         Ok(bot)
     }
 
@@ -363,7 +363,7 @@ impl BotBuilder {
     pub(crate) fn attach(
         self,
         client: mineflayer_engine::Client,
-    ) -> (Bot, bridge::Bridge, watch::Receiver<()>, watch::Sender<()>) {
+    ) -> (Bot, bridge::Bridge, watch::Receiver<()>) {
         let builder = self;
         // the misc state (difficulty comes from `options.difficulty`; it's
         // client-side only like upstream) and the dig bookkeeping exist
@@ -380,14 +380,15 @@ impl BotBuilder {
         let shared = BotShared::new(events);
         shared.chat.lock().default_chat_patterns = builder.default_chat_patterns;
         let (alive, alive_rx) = watch::channel(());
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
         // subscribed before the bridge starts, so `Event::Init` — which
         // The engine queues before `join` returns — and everything since is on
         // the receiver the first `Bot::events()` call hands out.
         let bootstrap_events = shared.events.subscribe();
+        let root = tokio_util::sync::CancellationToken::new();
         let bridge = bridge::Bridge::new(
             client.clone(),
             shared.clone(),
+            root.clone(),
             bridge::BridgeOptions {
                 client_information: builder.client_information,
                 brand: builder.brand,
@@ -399,11 +400,11 @@ impl BotBuilder {
             client,
             bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
             _alive: Some(alive),
-            shutdown: shutdown_rx,
+            root: root.clone(),
             shared: Arc::new(shared),
             chat_length_limit: builder.chat_length_limit,
         };
-        (bot, bridge, alive_rx, shutdown_tx)
+        (bot, bridge, alive_rx)
     }
 }
 

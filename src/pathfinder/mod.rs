@@ -70,7 +70,8 @@ use mineflayer_engine::{
     registry::builtin::BlockKind,
     world::ChunkStorage,
 };
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 mod goal;
 mod movements;
@@ -277,10 +278,9 @@ impl Pathfinder<'_> {
         let mut rx = self.bot.subscribe();
         let mut ticks = self.client().get_tick_broadcaster();
         // `End` arrives over `rx`, but >8192 queued events at disconnect
-        // can push it past a lagged receiver — the bridge's shutdown watch
+        // can push it past a lagged receiver — the bridge's root token
         // closes that gap
-        let mut shutdown = self.bot.shutdown.clone();
-        let _ = shutdown.borrow_and_update();
+        let root = self.bot.root.clone();
         let client = self.client().clone();
         let probe = goal.clone();
         // captured inside the set_goal facade write — a separate read
@@ -331,7 +331,7 @@ impl Pathfinder<'_> {
                         }
                     }
                 }
-                _ = shutdown.changed() => return Err(Error::NotConnected),
+                _ = root.cancelled() => return Err(Error::NotConnected),
                 t = ticks.recv() => {
                     if matches!(t, Err(broadcast::error::RecvError::Closed)) {
                         return Err(Error::NotConnected);
@@ -496,7 +496,7 @@ impl Pathfinder<'_> {
                         engine_goal,
                         movements,
                         cancel,
-                        self.bot.shutdown.clone(),
+                        self.bot.root.clone(),
                         issue_gen,
                     );
                 }
@@ -796,7 +796,7 @@ fn cancel_watcher(facade: &mut PathfinderFacade) {
 /// Ends silently when the facade goal is gone or its generation moved on
 /// — a non-dynamic follow ends once the bridge reports `goal_reached`,
 /// and `stop()`/`set_goal`/`set_movements` retire it through the cancel
-/// flag and `goal_gen`. Disconnect retires it through `Bot::shutdown`
+/// flag and `goal_gen`. Disconnect retires it through the root token
 /// (the tick channel alone never closes while the driver holds a
 /// `Client`). The entity leaving the world mirrors upstream's `isValid()`
 /// failure: the driver clears the facade goal, stops pathfinding, and
@@ -812,7 +812,7 @@ fn follow_driver(
     issue_gen: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticks = TickStream::new(&client, bot.shutdown.clone());
+        let mut ticks = TickStream::new(&client, bot.root.clone());
         let mut last_target: Option<BlockPos> = None;
         // the goal was just issued — a drop observed on the first poll
         // is a fresh one
@@ -889,17 +889,17 @@ fn follow_driver(
 /// goal-clears-on-success can't express on its own. `goal_gen` gates the
 /// re-issue so a watcher can't write a stale `GotoEvent` over a goal
 /// `set_goal`/`set_movements` installed after it spawned. Disconnect
-/// retires it through `Bot::shutdown`, like [`follow_driver`].
+/// retires it through the root token, like [`follow_driver`].
 fn dynamic_watcher(
     client: mineflayer_engine::Client,
     goal: Arc<dyn EngineGoal>,
     movements: Movements,
     cancel: Arc<AtomicBool>,
-    shutdown: watch::Receiver<()>,
+    root: CancellationToken,
     issue_gen: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticks = TickStream::new(&client, shutdown);
+        let mut ticks = TickStream::new(&client, root);
         // the goal was just issued — a drop observed on the first poll
         // is a fresh one
         let mut was_live = true;
@@ -1001,13 +1001,13 @@ mod tests {
         ));
         // a goal the bot isn't standing in, so the watcher re-issues it
         let goal: Arc<dyn EngineGoal> = Arc::new(goals::BlockPosGoal(BlockPos::new(100, 64, 100)));
-        let (shutdown_tx, shutdown_rx) = watch::channel(());
+        let root = CancellationToken::new();
         let handle = dynamic_watcher(
             client.clone(),
             goal,
             Movements::default(),
             Arc::new(AtomicBool::new(false)),
-            shutdown_rx,
+            root.clone(),
             7,
         );
         let ticks = crate::test_util::tick_sender(&client);
@@ -1027,7 +1027,7 @@ mod tests {
         assert!(!handle.is_finished());
         assert!(goto_messages(&client) > 0, "watcher stopped re-issuing");
 
-        drop(shutdown_tx);
+        root.cancel();
         tokio::time::timeout(std::time::Duration::from_secs(5), handle)
             .await
             .expect("watcher outlived the connection")

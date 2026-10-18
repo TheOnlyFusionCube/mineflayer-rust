@@ -1321,7 +1321,7 @@ the commit that completes the item.
 | ST5 | open | |
 | ST6 | open | |
 | ST7 | open | |
-| OP1 | open | |
+| OP1 | done | (this commit) |
 | OP2 | open | |
 | OP3 | open | |
 | OP4 | open | |

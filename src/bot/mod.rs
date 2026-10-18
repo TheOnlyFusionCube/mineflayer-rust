@@ -8,6 +8,8 @@
 
 use std::{sync::Arc, time::Duration};
 
+use tokio_util::sync::CancellationToken;
+
 use mineflayer_engine::{
     core::{position::ChunkPos, registry_holder::RegistryHolder},
     ecs::component::{Component, Mutable},
@@ -40,11 +42,11 @@ pub struct Bot {
     /// driver must not keep the connection open after the user drops every
     /// handle. Held only to keep the watch channel open.
     pub(crate) _alive: Option<watch::Sender<()>>,
-    /// The bridge's shutdown signal: its sender lives in the bridge task
-    /// and drops when the bridge exits (disconnect, or every `Bot`
-    /// handle gone), resolving `changed()` for every receiver. Driver
-    /// tasks wait on it through [`TickStream`].
-    pub(crate) shutdown: watch::Receiver<()>,
+    /// Cancelled by the bridge when it exits (disconnect, or every `Bot`
+    /// handle gone). Every operation token is a child of it
+    /// ([`crate::op::OpSlot`]), and driver tasks stop on it through
+    /// [`TickStream`].
+    pub(crate) root: CancellationToken,
     /// Per-domain state shared with the bridge task; `Bot` method blocks
     /// reach domains through `self.shared` (see [`BotShared`]).
     pub(crate) shared: Arc<BotShared>,
@@ -109,37 +111,32 @@ pub(crate) struct BotShared {
     pub scoreboard: Arc<Mutex<crate::scoreboard::ScoreboardState>>,
 }
 
-/// The game ticks a driver task loops on.
+/// The game ticks a driver task loops on, until `token` is cancelled.
 ///
-/// The shutdown signal is what ends a driver: the `TickBroadcast` sender is
-/// a World resource kept alive by the `Client` the driver holds, so the tick
-/// channel never closes while the driver runs, and without the signal a
-/// driver would wait forever after the bridge exits.
+/// The token is what ends a driver: the `TickBroadcast` sender is a World
+/// resource kept alive by the `Client` the driver holds, so the tick
+/// channel never closes while the driver runs.
 pub(crate) struct TickStream {
     ticks: broadcast::Receiver<()>,
-    shutdown: watch::Receiver<()>,
+    token: CancellationToken,
 }
 
 impl TickStream {
-    pub(crate) fn new(
-        client: &mineflayer_engine::Client,
-        mut shutdown: watch::Receiver<()>,
-    ) -> Self {
-        // mark the initial value seen so only the sender's drop resolves
-        let _ = shutdown.borrow_and_update();
+    pub(crate) fn new(client: &mineflayer_engine::Client, token: CancellationToken) -> Self {
         Self {
             ticks: client.get_tick_broadcaster(),
-            shutdown,
+            token,
         }
     }
 
-    /// Wait for the next tick. `false` once the bridge has shut down or the
+    /// Wait for the next tick. `false` once the token is cancelled or the
     /// tick channel closed. The channel holds one tick, so a slow driver
     /// loses ticks, not its loop.
     pub(crate) async fn next(&mut self) -> bool {
         tokio::select! {
+            biased;
+            _ = self.token.cancelled() => false,
             r = self.ticks.recv() => !matches!(r, Err(broadcast::error::RecvError::Closed)),
-            _ = self.shutdown.changed() => false,
         }
     }
 }
@@ -359,7 +356,7 @@ impl Bot {
     /// A handle for background driver tasks (auto-eat, pvp, pathfinder
     /// follow): it holds no `_alive` sender, so a running driver can never
     /// keep the connection open after the last user handle drops. The
-    /// driver still stops on [`Bot::shutdown`] like every other task.
+    /// driver still stops when the root token is cancelled.
     pub(crate) fn driver_handle(&self) -> Bot {
         let mut bot = self.clone();
         bot._alive = None;
@@ -551,14 +548,11 @@ mod tests {
     async fn driver_handles_do_not_hold_the_alive_sender() {
         fn bot_with_alive(alive: watch::Sender<()>) -> Bot {
             let (events, _) = broadcast::channel(16);
-            let (_shutdown_tx, shutdown_rx) = watch::channel(());
-            // keep the shutdown sender alive for the test's lifetime
-            std::mem::forget(_shutdown_tx);
             Bot {
                 client: crate::test_util::despawned_client(),
                 bootstrap_events: Arc::new(Mutex::new(None)),
                 _alive: Some(alive),
-                shutdown: shutdown_rx,
+                root: CancellationToken::new(),
                 shared: Arc::new(BotShared::new(events)),
                 chat_length_limit: crate::chat::CHAT_LENGTH_LIMIT,
             }

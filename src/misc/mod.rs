@@ -734,12 +734,11 @@ impl Bot {
         self.client.start_use_item();
 
         // the `events` sender lives on `Bot`, so `rx` can never report
-        // `Closed` while `self` is held — select on the bridge's shutdown
-        // watch (and match `End`) or the loop parks forever on disconnect.
-        // `End` is the fast path; shutdown covers the lagged-out case where
+        // `Closed` while `self` is held — select on the bridge's root
+        // token (and match `End`) or the loop parks forever on disconnect.
+        // `End` is the fast path; the root token covers the lagged-out case where
         // >8192 queued events push `End` past the receiver
-        let mut shutdown = self.shutdown.clone();
-        let _ = shutdown.borrow_and_update();
+        let root = self.root.clone();
         let result = loop {
             let event = tokio::select! {
                 event = rx.recv() => match event {
@@ -750,7 +749,7 @@ impl Bot {
                 _ = &mut cancel_rx => break Err(Error::Cancelled(
                     "Fishing cancelled due to calling bot.fish() again".into(),
                 )),
-                _ = shutdown.changed() => break Err(Error::NotConnected),
+                _ = root.cancelled() => break Err(Error::NotConnected),
             };
             if matches!(event, BotEvent::End(_)) {
                 break Err(Error::NotConnected);

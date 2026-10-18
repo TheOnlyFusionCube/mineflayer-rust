@@ -25,6 +25,7 @@ live = []
 # (crates/, see docs/version_upgrade.md for its origin and upkeep).
 mineflayer-engine = { path = "crates/mineflayer-engine", version = "0.16.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = { workspace = true }
 thiserror = "2"
 futures = "0.3"
 regex = "1"

@@ -11,11 +11,6 @@
 //! [`BotEvent::StoppedAttacking`] exactly once (whoever ends the loop
 //! owns the report).
 
-use std::sync::{
-    Arc,
-    atomic::{self, AtomicBool},
-};
-
 use mineflayer_engine::{
     EntityRef,
     attack::get_attack_strength_delay,
@@ -26,6 +21,7 @@ use mineflayer_engine::{
 use crate::bot::{TickStream, with_component, with_component_mut};
 use crate::{
     Bot, BotEvent, Error, Result,
+    op::{Op, OpSlot},
     pathfinder::{Goal, Movements},
 };
 
@@ -130,18 +126,16 @@ impl Default for PvpOpts {
     }
 }
 
-/// Facade state the engine has no slot for: the pvp target, the cancel
-/// flag for its driver task, and the option fields — the same shape
-/// [`crate::pathfinder`] uses for its watcher
-/// (`PathfinderFacade.watcher_cancel`).
+/// Facade state the engine has no slot for: the pvp target, the running
+/// attack loop, and the option fields.
 /// Stored as an ECS component created on first use — rule 2 of the
 /// storage rule on `bot::BotShared`.
 #[derive(Component, Default)]
 struct PvpState {
     /// The entity `attack` is driving at; `bot.pvp.target`.
     target: Option<EntityRef>,
-    /// Set to retire the running driver; replaced on every `attack`.
-    cancel: Option<Arc<AtomicBool>>,
+    /// The running attack loop; every `attack` starts a new one.
+    op: OpSlot,
     /// The upstream field surface (`followRange`, `viewDistance`, …).
     opts: PvpOpts,
 }
@@ -215,27 +209,18 @@ impl Pvp<'_> {
             },
             true,
         )?;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let recorded = with_component_mut::<PvpState, _>(&bot.client, |s| {
-            // a retarget retires the previous driver — it sees the flag or
-            // the replaced cancel and exits silently
-            if let Some(old) = s.cancel.replace(cancel.clone()) {
-                old.store(true, atomic::Ordering::Relaxed);
-            }
+        // a retarget cancels the previous loop, which then exits silently
+        let started = with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.target = Some(entity.clone());
+            s.op.start(&bot.root)
         });
-        if recorded.is_none() {
+        let Some(op) = started else {
             // the client entity vanished between logged_in and here —
             // unwind the goal we just set
             bot.pathfinder().stop();
             return Err(Error::NotConnected);
-        }
-        tokio::spawn(drive(
-            bot.driver_handle(),
-            entity.clone(),
-            cancel,
-            bot.shutdown.clone(),
-        ));
+        };
+        tokio::spawn(drive(bot.driver_handle(), entity.clone(), op));
         bot.emit_event(BotEvent::StartedAttacking);
         Ok(())
     }
@@ -320,13 +305,11 @@ impl Pvp<'_> {
         self.set_opts(|o| o.movements = movements);
     }
 
-    /// Clear the target + retire the driver flag; the target when an
-    /// attack was running. Shared by `stop`/`force_stop`.
+    /// Clear the target and cancel the loop; the target when an attack
+    /// was running. Shared by `stop`/`force_stop`.
     fn take_target(&self) -> Option<EntityRef> {
         with_component_mut::<PvpState, _>(&self.bot.client, |s| {
-            if let Some(cancel) = s.cancel.take() {
-                cancel.store(true, atomic::Ordering::Relaxed);
-            }
+            s.op.cancel();
             s.target.take()
         })
         .flatten()
@@ -351,24 +334,16 @@ impl Pvp<'_> {
 /// made the loop stale); a stale or cancelled driver exits silently so
 /// the event can never double-fire.
 ///
-/// `shutdown` is the disconnect signal (see [`TickStream`]); the loop ends
-/// on it and reports the end.
-async fn drive(
-    bot: Bot,
-    entity: EntityRef,
-    cancel: Arc<AtomicBool>,
-    shutdown: tokio::sync::watch::Receiver<()>,
-) {
-    let mut ticks = TickStream::new(&bot.client, shutdown);
+/// `op` ends on a retarget, a `stop()`, or a disconnect; only the last
+/// leaves the outcome to the loop, which then reports the end.
+async fn drive(bot: Bot, entity: EntityRef, op: Op) {
+    let mut ticks = TickStream::new(&bot.client, op.token.clone());
     // upstream `timeToNextAttack` — attack() resets it to 0, each tick
     // decrements, and `=== -1` attempts a swing
     let mut time_to_next_attack: i64 = 0;
     let mut was_in_range = false;
     let mut rng = seed_rng(&entity);
     while ticks.next().await {
-        if cancel.load(atomic::Ordering::Relaxed) {
-            return;
-        }
         // copy what we need out and drop the component guards before any
         // other ECS access — a read guard held across another lock
         // deadlocks behind a queued writer
@@ -389,7 +364,7 @@ async fn drive(
             _ => false,
         };
         if gone {
-            report_end_if_ours(&bot, &cancel);
+            report_end_if_ours(&bot, &op);
             return;
         }
         let Some(target_pos) = target.0 else {
@@ -412,7 +387,7 @@ async fn drive(
         // as defeated — `stop()` ends the loop (and reports it)
         let dist = bot.position().distance_to(target_pos);
         if dist > view_distance {
-            report_end_if_ours(&bot, &cancel);
+            report_end_if_ours(&bot, &op);
             return;
         }
         let in_range = dist <= attack_range;
@@ -439,7 +414,7 @@ async fn drive(
         bot.emit_event(BotEvent::AttackedTarget);
         time_to_next_attack = rate.ticks(cooldown_ticks(&bot), &mut rng);
     }
-    report_end_if_ours(&bot, &cancel);
+    report_end_if_ours(&bot, &op);
 }
 
 /// The held weapon's cooldown in ticks — the `getCooldown(heldItem)`
@@ -468,11 +443,9 @@ fn seed_rng(entity: &EntityRef) -> u64 {
 /// target, release the follow goal, and emit `StoppedAttacking`. A
 /// `stop()`/retarget that beat the driver here already owns the outcome,
 /// so a stale driver exits silently.
-fn report_end_if_ours(bot: &Bot, cancel: &Arc<AtomicBool>) {
+fn report_end_if_ours(bot: &Bot, op: &Op) {
     let ended = with_component_mut::<PvpState, _>(&bot.client, |s| {
-        let mine = s.cancel.as_ref().is_some_and(|c| Arc::ptr_eq(c, cancel));
-        if mine {
-            s.cancel = None;
+        if s.op.finish(op) {
             s.target.take()
         } else {
             None
@@ -729,14 +702,13 @@ mod tests {
         // well past the default 128 — no components for the driver to
         // attack, but Position is enough for the distance check
         let target = spawn_target(&bot, 200., 0.);
-        let cancel = Arc::new(AtomicBool::new(false));
-        with_component_mut::<PvpState, _>(&bot.client, |s| {
-            s.cancel = Some(cancel.clone());
+        let op = with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.target = Some(target.clone());
-        });
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+            s.op.start(&bot.root)
+        })
+        .unwrap();
         let sender = crate::test_util::tick_sender(&bot.client);
-        let driver = tokio::spawn(drive(bot.clone(), target.clone(), cancel, shutdown_rx));
+        let driver = tokio::spawn(drive(bot.clone(), target.clone(), op));
 
         // a broadcast send lands only for receivers already subscribed —
         // let the driver park on its tick receiver first
@@ -759,14 +731,13 @@ mod tests {
     async fn view_distance_retune_ends_a_running_loop() {
         let bot = tick_bot();
         let target = spawn_target(&bot, 50., 0.);
-        let cancel = Arc::new(AtomicBool::new(false));
-        with_component_mut::<PvpState, _>(&bot.client, |s| {
-            s.cancel = Some(cancel.clone());
+        let op = with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.target = Some(target.clone());
-        });
-        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+            s.op.start(&bot.root)
+        })
+        .unwrap();
         let sender = crate::test_util::tick_sender(&bot.client);
-        let driver = tokio::spawn(drive(bot.clone(), target.clone(), cancel, shutdown_rx));
+        let driver = tokio::spawn(drive(bot.clone(), target.clone(), op));
 
         // inside the default 128 the loop keeps running
         bot.pvp().set_view_distance(10.);
@@ -798,24 +769,24 @@ mod tests {
 
     /// Disconnect retires the driver: the tick channel can't close on its
     /// own (the driver's `Client` keeps the `TickBroadcast` sender alive),
-    /// so the shutdown sender dropping — what the bridge does on exit —
-    /// is the only signal. Dropping it plays the bridge's exit.
+    /// so the root token, which the bridge cancels on exit, is the only
+    /// signal.
     #[tokio::test]
     async fn disconnect_ends_the_loop_and_reports() {
         let bot = tick_bot();
         let mut rx = bot.events();
         let target = spawn_target(&bot, 5., 0.);
-        let cancel = Arc::new(AtomicBool::new(false));
-        with_component_mut::<PvpState, _>(&bot.client, |s| {
-            s.cancel = Some(cancel.clone());
+        let op = with_component_mut::<PvpState, _>(&bot.client, |s| {
             s.target = Some(target.clone());
-        });
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-        let driver = tokio::spawn(drive(bot.clone(), target.clone(), cancel, shutdown_rx));
+            s.op.start(&bot.root)
+        })
+        .unwrap();
+        let driver = tokio::spawn(drive(bot.clone(), target.clone(), op));
         // parked on ticks like a live connection — target still recorded
         assert_eq!(bot.pvp().target().map(|t| t.id()), Some(target.id()));
 
-        drop(shutdown_tx);
+        // the bridge's exit
+        bot.root.cancel();
 
         tokio::time::timeout(std::time::Duration::from_secs(5), driver)
             .await

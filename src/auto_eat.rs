@@ -12,9 +12,9 @@
 //! other plugin progress events.
 //!
 //! The monitor driver follows [`crate::pvp`]'s rules: it selects on the
-//! tick broadcast and `bot.shutdown` (the tick sender is a World resource
-//! the driver's own `Client` keeps alive, so `Closed` is unreachable and
-//! shutdown is the disconnect signal), tolerates `Lagged`, and exits
+//! tick broadcast and the bot's root token (the tick sender is a World
+//! resource the driver's own `Client` keeps alive, so `Closed` is
+//! unreachable and the token is the disconnect signal), tolerates `Lagged`, and exits
 //! silently — upstream emits nothing when the plugin's listener dies.
 
 use std::{
@@ -269,7 +269,7 @@ impl AutoEat<'_> {
             tokio::spawn(drive(
                 self.bot.driver_handle(),
                 cancel,
-                self.bot.shutdown.clone(),
+                self.bot.root.clone(),
             ));
         }
     }
@@ -572,9 +572,9 @@ impl AutoEat<'_> {
 /// when the monitor ends, so a cancelled or disconnected driver exits
 /// silently.
 ///
-/// `shutdown` is the disconnect signal (see [`TickStream`]).
-async fn drive(bot: Bot, cancel: Arc<AtomicBool>, shutdown: tokio::sync::watch::Receiver<()>) {
-    let mut ticks = TickStream::new(&bot.client, shutdown);
+/// `root` is the disconnect signal (see [`TickStream`]).
+async fn drive(bot: Bot, cancel: Arc<AtomicBool>, root: tokio_util::sync::CancellationToken) {
+    let mut ticks = TickStream::new(&bot.client, root);
     while ticks.next().await {
         if cancel.load(atomic::Ordering::Relaxed) {
             return;
@@ -625,12 +625,13 @@ mod tests {
         )))
     }
 
-    /// A tick-capable bot for driver tests, wired to a shutdown sender.
+    /// A tick-capable bot for driver tests, and a guard that plays the
+    /// bridge's exit when dropped.
     fn monitored_bot(
         food: u32,
         health: f32,
         items: &[(usize, ItemKind)],
-    ) -> (Bot, tokio::sync::watch::Sender<()>) {
+    ) -> (Bot, tokio_util::sync::DropGuard) {
         bot_with_shutdown(tick_client((
             WorldName(Identifier::from("minecraft:overworld")),
             food_inventory(items),
@@ -929,8 +930,7 @@ mod tests {
         bot.auto_eat().set_opts(opts);
 
         let cancel = Arc::new(AtomicBool::new(false));
-        let (_tx, rx) = tokio::sync::watch::channel(());
-        let _driver = tokio::spawn(drive(bot.clone(), cancel, rx));
+        let _driver = tokio::spawn(drive(bot.clone(), cancel, bot.root.clone()));
         let mut events = bot.events();
 
         // once the driver is parked on recv, overflow the capacity-1
@@ -950,7 +950,7 @@ mod tests {
     async fn driver_exits_on_shutdown() {
         let (bot, shutdown_tx) = monitored_bot(10, 20., &[(36, ItemKind::Apple)]);
         let cancel = Arc::new(AtomicBool::new(false));
-        let driver = tokio::spawn(drive(bot.clone(), cancel.clone(), bot.shutdown.clone()));
+        let driver = tokio::spawn(drive(bot.clone(), cancel.clone(), bot.root.clone()));
 
         // parked on ticks like a live connection — and cancel alone
         // can't be observed until a tick or shutdown arrives
@@ -965,7 +965,7 @@ mod tests {
         // and cancel retires it on the next tick
         let (bot, _tx) = monitored_bot(20, 20., &[]);
         let cancel = Arc::new(AtomicBool::new(false));
-        let driver = tokio::spawn(drive(bot.clone(), cancel.clone(), bot.shutdown.clone()));
+        let driver = tokio::spawn(drive(bot.clone(), cancel.clone(), bot.root.clone()));
         tokio::time::sleep(Duration::from_millis(20)).await;
         cancel.store(true, atomic::Ordering::Relaxed);
         send_tick(&bot.client).await;

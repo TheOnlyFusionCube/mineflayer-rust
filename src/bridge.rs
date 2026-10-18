@@ -44,9 +44,9 @@ pub(crate) struct BridgeOptions {
 /// Spawn the bridge task. The task ends — and calls `client.exit()` — when
 /// The engine's event channel closes (disconnect/shutdown) or when the last
 /// `Bot` handle drops (all `alive` senders gone → `changed()` errors).
-/// `shutdown` is held for its drop: the task's end resolves `changed()`
-/// on every `Bot::shutdown` receiver, retiring the tick-driven driver
-/// tasks whose `TickBroadcast` sender outlives the connection.
+/// The task's end cancels the bot's root token, which retires the
+/// tick-driven driver tasks whose `TickBroadcast` sender outlives the
+/// connection.
 ///
 /// `check_timeout_interval` is `options.checkTimeoutInterval`: the server
 /// keepalive watchdog, armed on every `Event::KeepAlive` like upstream's
@@ -56,7 +56,6 @@ pub(crate) fn spawn(
     mut rx: UnboundedReceiver<Event>,
     check_timeout_interval: std::time::Duration,
     mut alive: watch::Receiver<()>,
-    shutdown: watch::Sender<()>,
 ) {
     tokio::spawn(async move {
         // Mark the initial watch value as seen so `changed()` below only
@@ -112,7 +111,7 @@ pub(crate) fn spawn(
             &mut bridge.state,
             &bridge.shared.quit_reason,
             &bridge.shared.events,
-            shutdown,
+            &bridge.root,
             &bridge.client,
         );
     });
@@ -123,6 +122,7 @@ pub(crate) fn spawn(
 pub(crate) struct Bridge {
     client: mineflayer_engine::Client,
     shared: crate::bot::BotShared,
+    root: tokio_util::sync::CancellationToken,
     client_information: Option<ClientInformation>,
     brand: Option<String>,
     packet_events: bool,
@@ -133,6 +133,7 @@ impl Bridge {
     pub(crate) fn new(
         client: mineflayer_engine::Client,
         shared: crate::bot::BotShared,
+        root: tokio_util::sync::CancellationToken,
         options: BridgeOptions,
     ) -> Self {
         let state = BridgeState {
@@ -142,6 +143,7 @@ impl Bridge {
         Self {
             client,
             shared,
+            root,
             client_information: options.client_information,
             brand: options.brand,
             packet_events: options.packet_events,
@@ -201,8 +203,8 @@ impl Bridge {
 }
 
 /// The engine stopped feeding events or all `Bot` handles are gone — shut
-/// the client down so the ECS runner doesn't leak. Dropping the shutdown
-/// sender retires driver tasks parked on `ticks.recv()` — that broadcast's
+/// the client down so the ECS runner doesn't leak. Cancelling the root
+/// token retires driver tasks parked on `ticks.recv()` — that broadcast's
 /// sender lives in the World, which their own `Client` handle keeps
 /// alive, so the channel never closes on its own.
 ///
@@ -214,7 +216,7 @@ fn exit(
     state: &mut BridgeState,
     quit_reason: &Mutex<Option<String>>,
     events: &tokio::sync::broadcast::Sender<BotEvent>,
-    shutdown: watch::Sender<()>,
+    root: &tokio_util::sync::CancellationToken,
     client: &mineflayer_engine::Client,
 ) {
     if !state.ended {
@@ -225,7 +227,7 @@ fn exit(
             .unwrap_or_else(|| "socketClosed".to_string());
         let _ = events.send(BotEvent::End(reason));
     }
-    drop(shutdown);
+    root.cancel();
     client.exit();
 }
 
@@ -1080,11 +1082,12 @@ mod tests {
         let mut rx = shared.events.subscribe();
         let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_alive_tx, alive_rx) = watch::channel(());
-        let (shutdown_tx, _shutdown_rx) = watch::channel(());
+        let root = tokio_util::sync::CancellationToken::new();
         spawn(
             Bridge::new(
                 despawned(),
                 shared,
+                root.clone(),
                 BridgeOptions {
                     client_information: None,
                     brand: None,
@@ -1094,7 +1097,6 @@ mod tests {
             input_rx,
             std::time::Duration::from_secs(30),
             alive_rx,
-            shutdown_tx,
         );
         input_tx.send(respawn_packet()).unwrap();
         drop(input_tx);
@@ -1130,11 +1132,12 @@ mod tests {
         let mut end_rx = shared.events.subscribe();
         let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_alive_tx, alive_rx) = watch::channel(());
-        let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+        let root = tokio_util::sync::CancellationToken::new();
         spawn(
             Bridge::new(
                 despawned(),
                 shared,
+                root.clone(),
                 BridgeOptions {
                     client_information: None,
                     brand: None,
@@ -1144,7 +1147,6 @@ mod tests {
             input_rx,
             std::time::Duration::from_secs(30),
             alive_rx,
-            shutdown_tx,
         );
         // close the engine event channel without a Disconnect event
         drop(input_tx);
@@ -1164,7 +1166,7 @@ mod tests {
                 | tokio::sync::broadcast::error::TryRecvError::Closed)
         ));
         // and the bridge retired the drivers
-        assert!(shutdown_rx.changed().await.is_err());
+        root.cancelled().await;
     }
 
     fn label(event: &BotEvent) -> String {
@@ -1238,11 +1240,12 @@ mod tests {
         let mut rx = shared.events.subscribe();
         let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel();
         let (_alive_tx, alive_rx) = watch::channel(());
-        let (shutdown_tx, _shutdown_rx) = watch::channel(());
+        let root = tokio_util::sync::CancellationToken::new();
         spawn(
             Bridge::new(
                 client,
                 shared,
+                root.clone(),
                 BridgeOptions {
                     client_information: None,
                     brand: None,
@@ -1252,7 +1255,6 @@ mod tests {
             input_rx,
             std::time::Duration::from_secs(30),
             alive_rx,
-            shutdown_tx,
         );
 
         // A death so the health packet exercises the re-arm path.

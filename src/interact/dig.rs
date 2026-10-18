@@ -334,9 +334,7 @@ impl Bot {
         deadline: tokio::time::Instant,
     ) -> DigExit {
         let mut ticks = self.client.get_tick_broadcaster();
-        let mut shutdown = self.shutdown.clone();
-        // mark the initial value seen so only the sender's drop resolves
-        let _ = shutdown.borrow_and_update();
+        let root = self.root.clone();
         let mut started = false;
         let mut start_grace = DIG_START_GRACE_TICKS;
         // once `Mining` disappears the finish (or an engine abort) has been
@@ -393,7 +391,7 @@ impl Bot {
                         }
                     }
                 }
-                _ = shutdown.changed() => break DigExit::Disconnected,
+                _ = root.cancelled() => break DigExit::Disconnected,
                 _ = tokio::time::sleep_until(deadline) => {
                     break DigExit::Aborted(DigAbortReason::Timeout);
                 }

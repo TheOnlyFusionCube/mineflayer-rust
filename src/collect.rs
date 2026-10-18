@@ -602,8 +602,7 @@ impl CollectBlock<'_> {
         // upstream `bot.pathfinder.stop()` — wakes a parked goto so the
         // loop can see its stale generation promptly
         bot.pathfinder().stop();
-        let mut shutdown = bot.shutdown.clone();
-        let _ = shutdown.borrow_and_update();
+        let root = bot.root.clone();
         loop {
             tokio::select! {
                 r = rx.recv() => match r {
@@ -611,7 +610,7 @@ impl CollectBlock<'_> {
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
-                _ = shutdown.changed() => return,
+                _ = root.cancelled() => return,
             }
         }
     }
