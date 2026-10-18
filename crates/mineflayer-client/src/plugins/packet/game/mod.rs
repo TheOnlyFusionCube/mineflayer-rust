@@ -208,8 +208,20 @@ pub struct GamePacketHandler<'a> {
     pub player: Entity,
 }
 impl GamePacketHandler<'_> {
+    fn reset_window_buffers(&mut self) {
+        if let Some(mut inventory) = self.ecs.get_mut::<Inventory>(self.player) {
+            inventory.early_content = None;
+            inventory.last_closed = None;
+        }
+    }
+
     pub fn login(&mut self, p: &ClientboundLogin) {
         debug!("Got login packet");
+        // a new server-side player starts its window ids again, so no
+        // buffered content or closed container can describe a later
+        // window (upstream mineflayer drops `windowItems` and
+        // `lastClosedWindow` here too)
+        self.reset_window_buffers();
 
         as_system::<(
             Commands,
@@ -1402,6 +1414,11 @@ impl GamePacketHandler<'_> {
 
     pub fn respawn(&mut self, p: &ClientboundRespawn) {
         debug!("Got respawn packet {p:?}");
+        // a new server-side player starts its window ids again, so no
+        // buffered content or closed container can describe a later
+        // window (upstream mineflayer drops `windowItems` and
+        // `lastClosedWindow` here too)
+        self.reset_window_buffers();
 
         as_system::<(
             Commands,

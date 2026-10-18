@@ -125,6 +125,12 @@ merge; plan item E2 keeps this list current):
     `handle_raw_packet` calls before `process_packet` (through
     `resource_scope`, no allocation per packet). `PacketPlugin` inits it
     empty. Test: `mineflayer-client/tests/simulation/packet_pre_apply.rs`.
+24. (ST4) The `login` and `respawn` game handlers clear
+    `Inventory::early_content` and `Inventory::last_closed`, as upstream
+    mineflayer drops `windowItems` and `lastClosedWindow`. The port's
+    window tracker used to clear its own copies; the engine kept stale
+    ones. Test: `login_and_respawn_drop_early_content_and_the_last_closed_container`
+    in `mineflayer-client/tests/simulation/inventory_packets.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

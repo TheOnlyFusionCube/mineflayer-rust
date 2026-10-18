@@ -273,3 +273,43 @@ fn trailing_syncs_under_a_client_closed_id_reach_the_player_menu() {
         Some(&stone(8))
     );
 }
+
+/// A login or a respawn replaces the server-side player, whose window ids
+/// start again. Upstream mineflayer then drops `windowItems` and
+/// `lastClosedWindow`, so a new window that reuses an old id does not get
+/// the old early content or the old trailing-sync remap.
+#[test]
+fn login_and_respawn_drop_early_content_and_the_last_closed_container() {
+    let _lock = init();
+    for reset in ["login", "respawn"] {
+        let mut simulation = logged_in();
+        open_chest(&mut simulation, 9);
+        simulation.trigger(CloseContainerEvent {
+            entity: simulation.entity,
+            id: 9,
+        });
+        simulation.receive_packet(content(
+            4,
+            1,
+            vec![ItemStack::Empty; CHEST_LEN],
+            ItemStack::Empty,
+        ));
+        simulation.tick();
+        let inv = inventory(&simulation);
+        assert!(inv.last_closed.is_some() && inv.early_content.is_some());
+
+        if reset == "login" {
+            simulation.receive_packet(default_login_packet());
+        } else {
+            use mineflayer_registry::DataRegistry;
+            simulation.receive_packet(make_basic_respawn_packet(
+                mineflayer_registry::data::DimensionKind::new_raw(0),
+                mineflayer_registry::identifier::Identifier::new("minecraft:overworld"),
+            ));
+        }
+        simulation.tick();
+        let inv = inventory(&simulation);
+        assert_eq!(inv.early_content, None, "after {reset}");
+        assert_eq!(inv.last_closed, None, "after {reset}");
+    }
+}
