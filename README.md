@@ -86,9 +86,13 @@ async fn main() {
 }
 ```
 
-Runnable ports of upstream examples live in `examples/`: `echo.rs`,
-`digger.rs` (dig/build/equip on chat command), `chest.rs` (open a chest,
-deposit/withdraw). Run one against a local offline-mode server:
+Runnable ports of 23 upstream examples live in `examples/`: `echo`,
+`digger`, `chest`, `inventory`, `sleeper`, `fisherman`, `farmer`, `guard`,
+`trader`, `book`, `anvil`, `scoreboard`, `titles`, `tab_complete`,
+`blockfinder`, `raycast`, `sound`, `multiple`, `reconnector`, `pathfinder`
+(upstream's `pathfinder/gps.js`), `collectblock`, `auto_eat`, and
+`attack`; `event_rate` measures the event throughput. Run one against a
+local offline-mode server:
 
 ```sh
 cargo run --example echo -- localhost 25566

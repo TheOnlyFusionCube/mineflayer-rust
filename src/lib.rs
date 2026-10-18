@@ -17,7 +17,7 @@
 //! [`craft`] (recipe book + crafting), [`misc`] (settings, bed, fish,
 //! creative, resource packs), [`scoreboard`] (objectives, teams, boss bars),
 //! [`state`] (health/food/experience/dimension reads). Runnable ports of
-//! upstream's examples live in `examples/` (`echo`, `digger`, `chest`).
+//! upstream's examples live in `examples/` (23 of them, from `echo` to `attack`).
 
 mod bot;
 mod bridge;

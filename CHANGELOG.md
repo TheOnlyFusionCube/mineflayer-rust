@@ -58,6 +58,11 @@
 
 ### Added
 
+- Twenty more ports of upstream examples (`inventory`, `sleeper`,
+  `fisherman`, `farmer`, `guard`, `trader`, `book`, `anvil`,
+  `scoreboard`, `titles`, `tab_complete`, `blockfinder`, `raycast`,
+  `sound`, `multiple`, `reconnector`, `pathfinder`, `collectblock`,
+  `auto_eat`, `attack`), on a shared `examples/common` connect helper.
 - `docs/porting.md`: the mineflayer-to-Rust porting guide; its examples
   compile as doctests. CI uploads the API docs as the `api-docs`
   artifact.

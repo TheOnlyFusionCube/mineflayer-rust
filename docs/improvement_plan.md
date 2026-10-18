@@ -1354,7 +1354,7 @@ the commit that completes the item.
 | AD0 | done; DEC-1 waits for the owner | (this commit) |
 | AD1 | open | |
 | AD2 | open | |
-| AD3 | open | |
+| AD3 | done; 24 examples build; no per-example live test (the examples wait for a player's chat), `titles` checked by hand on the fixture | (this commit) |
 | AD4 | done; the CI artifact is not observed yet (no remote) | (this commit) |
 | AD5 | open | |
 | AD6 | done | `4659c99`, (this commit) |
