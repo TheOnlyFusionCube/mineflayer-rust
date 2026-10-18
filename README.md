@@ -94,6 +94,13 @@ deposit/withdraw). Run one against a local offline-mode server:
 cargo run --example echo -- localhost 25566
 ```
 
+## Porting a bot
+
+[`docs/porting.md`](docs/porting.md) maps `createBot` options,
+`bot.on`, `once`, `loadPlugin`, and upstream's error names to the Rust
+API, with an example for each that compiles as a doctest. CI uploads
+the API docs (`cargo doc`) as the `api-docs` artifact of each run.
+
 ## Writing a plugin
 
 mineflayer's `bot.loadPlugin(plugin)` takes a function that adds methods

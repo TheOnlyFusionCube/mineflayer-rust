@@ -33,6 +33,15 @@ jobs:
       - name: Verify
         run: bash scripts/verify.sh
 
+      # The API docs of the port, the plugin crate, and the engine, which
+      # the gate's doc steps just built, as a downloadable site until the
+      # crates are published to docs.rs.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: target/doc
+          retention-days: 30
+
   # Three live tests (lifecycle, chat, movement) on every push, so that a
   # wire regression fails the commit that caused it; same fixture and jar
   # cache as the live job below.

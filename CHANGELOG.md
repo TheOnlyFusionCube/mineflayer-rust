@@ -58,6 +58,9 @@
 
 ### Added
 
+- `docs/porting.md`: the mineflayer-to-Rust porting guide; its examples
+  compile as doctests. CI uploads the API docs as the `api-docs`
+  artifact.
 - `Bot::set_physics`: change `gravity`, `airdrag`, and `airborne_inertia`
   at run time (the engine's new `physics::PhysicsSettings` resource);
   `Bot::physics` reads the live values. `BotBuilder::physics(false)`

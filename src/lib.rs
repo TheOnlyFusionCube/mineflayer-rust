@@ -114,3 +114,8 @@ pub mod test_util;
 #[doc = include_str!("../README.md")]
 #[cfg(doctest)]
 pub struct ReadmeDoctests;
+
+/// The porting guide's Rust blocks, compiled as doctests.
+#[doc = include_str!("../docs/porting.md")]
+#[cfg(doctest)]
+pub struct PortingDoctests;

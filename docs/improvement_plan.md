@@ -1355,6 +1355,6 @@ the commit that completes the item.
 | AD1 | open | |
 | AD2 | open | |
 | AD3 | open | |
-| AD4 | open | |
+| AD4 | done; the CI artifact is not observed yet (no remote) | (this commit) |
 | AD5 | open | |
 | AD6 | done | `4659c99`, (this commit) |
