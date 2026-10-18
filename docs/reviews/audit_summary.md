@@ -1,213 +1,266 @@
-# Code quality audit: summary
+# Code quality audit: summary (third audit)
 
-Date: 2026-10-16. Baseline: commit `7a2bc95` on `main` (the engine in
-`crates/`, the log-subscriber fix applied).
-Scope: the port (`src/`, about 17,000 production lines in 40 files), its
-tests, docs, and tooling, and the boundary between the port and the
-in-tree engine. The engine crates themselves (about 123,000 lines) were
-audited only where the port touches them; see
-[`04_engine_fork.md`](04_engine_fork.md).
+Date: 2026-10-17. Baseline: commit `ef06f74` on `main`.
+Scope: the port (`src/`, 26,234 lines in 43 files, about 18,000 of them
+before the test modules), its tests, docs, and tooling, the engine crates
+where the port depends on their behavior, and a comparison with upstream
+mineflayer 4.39.0 (`ref/mineflayer`, commit `f2b236a`).
+Previous audit: commit `ef06f74`, `docs/reviews/` (second audit, all
+findings closed by the second plan).
 Plan: [`docs/improvement_plan.md`](../improvement_plan.md) turns these
 findings into work items.
 
 ## Verdict
 
-The port works. The gate passes (fmt, clippy, 260 port tests and 9
-doctests, 382 engine tests, docs) and the live suite passes 14 of 14 on a
-fresh seeded world. The earlier plan was carried out completely: typed
-errors, `parking_lot` locks with a written lock order, one shared event
-wait, and split domain modules.
+The port is clean at the level of single functions. The 254 unit tests
+pass in 0.35 s, five production functions are over 100 lines (down from
+fourteen), the second plan landed in full, and the bridge now has one
+ordered observer list. A reviewer who reads one file at a time will find
+little to fix.
 
-The structure is still not acceptable as a long-term base. Most of the
-remaining complexity has one cause, and that cause disappeared today.
-The port was written against a third-party engine that it could not
-change, so every engine gap was papered over from the outside. The port
-diffs ECS components every tick to recover events the engine never
-emits. It writes into the engine's `Inventory` component to correct
-packets the engine handles wrongly. It mirrors the engine's private app
-bootstrap to slip in one plugin. It disables the engine's auto-reconnect
-with a sentinel duration, and it carries a "stop pathfinding" workaround
-for an engine bug. Each workaround is careful and well commented, and
-together they make up a large share of the hardest code in the
-repository.
+The structure is still not acceptable as the base for a library that
+should match or beat mineflayer. Two design choices cause most of the
+remaining complexity, and both are visible only across files.
 
-The engine is now in this repository. Every one of those workarounds can
-move to the layer that owns the behavior, and most of them can then be
-deleted. That is the main code-judo move of this audit, and the plan is
-built around it.
+First, the port keeps a second model of the game beside the engine's ECS.
+`BotShared` holds seven domain trackers behind nine locks, and an async
+bridge task fills them by decoding every packet again after the engine
+has already applied it. Because the port looks at a packet after the
+engine changed the world, it has lost the information it needs: the old
+block of a `blockUpdate`, the entity handle of a removed entity, and the
+pre-open window state. The port then rebuilds that information with
+shadow maps, retained id maps, and a copy of the engine's own window
+state machine. The lock-order rule in `src/bot/mod.rs` exists only
+because two lock families now hold the same facts.
 
-Second-order problems remain inside the port: six copies of the same ECS
-state accessor pair, four copies of the same tick-driver loop, a bridge
-whose observers have seven different shapes, a 207-arm hand-written tag
-table, fourteen functions over 100 lines, and an exclusive ECS lock taken
-for every clientbound packet. None of these is a defect today, but each
-makes the next change harder than it needs to be.
+Second, every long-running operation invents its own cancellation. The
+pathfinder has `goal_gen`, `set_gen`, `last_failure`, a watcher cancel
+flag, and a "fresh drop" skip window. Digging has `dig_seq`,
+`aborted_seq`, and two grace counters. Eating has `eat_generation`.
+Collect has its own generation. Auto-eat and pvp each keep `AtomicBool`
+cancel flags. There are about 145 such sites in 13 files. Each one is
+careful, and together they are the hardest code in the port to change.
+
+Both problems have the same code-judo answer, and the engine already has
+the hook for it. The engine runs on Bevy and exposes
+`StartClientOpts::new_with_plugins` and the `ReceiveGamePacketEvent`
+message. If the port's packet reducers become Bevy systems in a port-owned
+plugin group, the state moves into ECS components and resources, the
+domain locks and the lock-order rule disappear, and operation outcomes
+become typed ECS messages that a future awaits by id. The same plugin
+surface, exposed on `BotBuilder`, is the Rust answer to
+`bot.loadPlugin`, which the port lists as `wontfix` today.
+
+Upstream comparison: the port covers the API table (342 ported, 126
+diverges, 47 wontfix, 11 additive), but it is behind mineflayer on
+reach. Mineflayer has a plugin ecosystem, 58 examples (48 scripts and 10
+projects), 46 external test files run against 28 Minecraft versions, a stable runtime, and a published
+package. The port has no extension model, three examples, 14 live tests
+on one version, a nightly-only toolchain that dependents must copy, and
+no published crate. The port also has three correctness defects that
+mineflayer does not have (F3).
+
+The approval bar of the review skill is not met. F1 (a duplicated state
+machine) and F2 (scattered special-case bookkeeping) are presumptive
+blockers.
 
 ## Findings
 
-### F1. Engine gaps are patched from outside the engine (structural)
+### F1. The port keeps a second model of the game (structural)
 
-Detail: [`01_engine_boundary.md`](01_engine_boundary.md).
+Detail: [`01_state_ownership.md`](01_state_ownership.md).
 
-The worst case is `src/pathfinder/tracking.rs`. The engine reports path
-results through ECS messages (`PathFoundEvent`, `StopPathfindingEvent`)
-that never reach the client `Event` stream, so the port snapshots the
-`Pathfinder` and `ExecutingPath` components on every tick and infers what
-happened. The engine runs its goto chain once per frame (about 17 ms)
-while the diff runs per game tick (50 ms), so a fast search can start and
-fail inside one gap. The port then needs a "steady-state wedge" heuristic
-with a 100 ms grace window, a cumulative search budget, and a latch
-against repeated timeout reports. `bridge_events` is 297 lines, the
-longest function in the port, and nine unit tests guard the heuristic.
-If the engine emitted path results as events, the heuristic, the budget
-tracking, and most of that function would go away.
+`src/windows/tracker.rs` keeps `pending`, `early_items`, `last_closed`,
+and per-window slot snapshots. The engine keeps the same state after plan
+item A3: `Inventory::early_content: Option<(i32, Vec<ItemStack>)>` and
+`Inventory::last_closed: Option<(i32, usize, usize)>`
+(`crates/mineflayer-entity/src/inventory.rs:68-72`) have the same types
+as the port's fields. Two copies of one state machine must now agree on
+every packet. `src/world/tracker.rs` keeps up to 65,536 block states in
+`last_block_updates` because the port reads the world after the engine
+applied the update; the first update of any position still reports
+`old == new`, which upstream never does. `src/entity/tracker.rs` keeps
+nine `HashMap`s keyed by protocol id beside the ECS, with hand-written
+`forget` and `forget_other_entities` lifecycles, and decodes metadata by
+raw index (`6`, `14`, `0`) and bit mask although the engine has typed
+components (`FallFlying`, `AbstractEntityShiftKeyDown`, `SleepingPos`).
+The remedy is a port-owned Bevy plugin group that runs the reducers
+inside the ECS, stores state as components and resources, and reads
+pre-apply state through one small engine hook. `BotShared` then shrinks
+to the event sender, and the lock-order rule is deleted.
 
-`src/windows/tracker.rs` has the same problem with inventory. The engine
-ignores `carried_item` on `container_set_content`, drops
-`set_player_inventory`, skips non-hotbar `set_slot` writes while a
-container is open, drops slot data that arrives before `open_screen`, and
-adopts `state_id` from only some packets. The bridge corrects all of this
-by writing into the engine's `Inventory` component in seven places, each
-under a domain lock with a lock-order comment. These are engine bugs that
-desync the cursor and send clicks with a stale state id. The fix belongs
-in the engine's inventory packet handlers, where it also stops the domain
-lock from ever needing the ECS write lock.
+### F2. Each async operation re-invents cancellation (spaghetti)
 
-Smaller cases follow the same pattern. `src/client_app.rs` copies the
-engine's private `StartClientOpts::new` plugin list because the engine
-has no plugin hook, and a "re-check when the engine changes" contract
-guards the copy. `connect` inserts `AutoReconnectDelay(Duration::MAX)` to
-switch off a plugin the port never wants. `stop_pathfinding_patched`
-works around an engine stop handler that leaves `is_calculating` set. The
-dig-abort reconciler and its generation bookkeeping exist because engine
-mining has no cancel. The remedy is the same each time: fix or extend the
-engine, then delete the port-side copy.
+Detail: [`02_async_operations.md`](02_async_operations.md).
 
-### F2. The bridge has no single observer contract (structural)
+The port runs operations as tokio futures that poll ECS state once per
+tick and race the ECS systems that change it. To tell "my operation" from
+"a newer one" it needs generation counters, and to survive the gap
+between an ECS change and the next poll it needs grace windows. The
+pathfinder facade alone has 47 such sites (`src/pathfinder/mod.rs`),
+including `follow_driver` and `dynamic_watcher`, two tokio tasks that
+re-issue goals and need a `fresh_drop` skip so that they do not resurrect
+a failed search. The remedy has two parts. One `Operation` primitive
+built on `tokio_util::sync::CancellationToken` (the workspace already
+depends on `tokio-util`) gives supersede and shutdown semantics in one
+place. Completion becomes a typed ECS message with an operation id, so a
+future waits for its own id instead of polling. `Goal::Follow` and
+dynamic goals move into an ECS system, which deletes both watcher tasks.
 
-Detail: [`02_bridge_and_events.md`](02_bridge_and_events.md).
+### F3. Packets and errors are dropped without a signal (correctness)
 
-`bridge::spawn` is a 191-line loop that calls seven domain observers with
-seven different signatures: `movement::bridge_events`,
-`pathfinder::bridge_events`, `entity::observe_event`,
-`windows::observe_event`, `window_types::observe_event`,
-`craft::observe_event` (which returns nothing), and
-`world::observe_event`. It then sends each result vector in its own
-`for` loop. The misc domain is different again: `misc::after_event` runs
-once per translated `BotEvent`, decodes `BotEvent::Packet` instead of the
-engine event, and also routes all scoreboard packets, although the
-scoreboard state lives in `BotShared` and has nothing to do with misc.
-One contract (each domain takes the context and the engine event and
-returns its events, called in a fixed list) would turn the loop body into
-a short ordered list and make the event order visible in one place.
+Detail: [`05_engine_defects.md`](05_engine_defects.md).
 
-`misc::handle_packet` takes the exclusive ECS write lock for every
-non-scoreboard clientbound packet, about 5,000 times a second at the
-measured peak (8,751 events/s, about 60% raw packets), although only `ResourcePackPush` changes misc state. The
-write lock competes with the engine's own systems. Matching the packet
-kind first removes almost all of these lock acquisitions.
+A `score`, `selector`, `keybind`, `nbt`, or `object` chat component
+anywhere in a packet makes `FormattedText::mc_read` fail
+(`crates/mineflayer-chat/src/component.rs:569-597`). The engine then logs
+the error and drops the whole packet
+(`crates/mineflayer-client/src/plugins/connection.rs:101`). Vanilla's
+server sends `keybind` components unchanged, so a chat line or title
+that names a key is lost even on a vanilla server, and a container whose
+title holds one never opens, so `open_container` times out. Server
+software that does not resolve `selector` and `score` loses more. The
+port has no subscriber by default, so the user sees nothing. Vanilla
+renders these components as plain text, and so should the engine.
+Related: `Event`, `PathEvent`, and four other enums of the owned engine
+are `#[non_exhaustive]`, so the bridge needs wildcard arms that hide new
+variants. Microsoft device-code login prints to stdout from library code
+(`crates/mineflayer-auth/src/auth.rs:412`), with no callback.
 
-### F3. The same helpers are written many times (spaghetti)
+### F4. There is no extension model (structural, ecosystem)
 
-Detail: [`03_domain_modules.md`](03_domain_modules.md).
+Detail: [`03_bridge_and_events.md`](03_bridge_and_events.md),
+[`06_parity_and_ecosystem.md`](06_parity_and_ecosystem.md).
 
-Six modules (`tool`, `pvp`, `collect`, `auto_eat`, `pathfinder`, `misc`)
-each define a pair of functions that read an ECS component on the client
-entity, or insert a default one and mutate it. The bodies are the same
-apart from the type name; there are eleven of these functions. One
-generic pair over `T: Component + Default` replaces all of them.
+Mineflayer's value is its plugin ecosystem. The port marks
+`loadPlugin`, `loadPlugins`, `hasPlugin`, and `options.plugins` as
+`wontfix` ("compile-time plugin model"), but there is no compile-time
+model either. The plugin analogs (`pathfinder`, `pvp`, `collect`,
+`auto_eat`, `tool`) live in the core crate and depend on crate-private
+helpers (`with_component`, `TickStream`, `subscribe`, `emit_event`,
+`driver_handle`). Their events (`EatStart`, `CollectDone`,
+`StartedAttacking`, …) are variants of the closed core `BotEvent`. A
+third-party crate cannot keep per-bot state, observe packets in order, or
+emit its own events. `BotBuilder` does not expose the engine's
+`new_with_plugins`. The remedy is a public plugin surface (a Bevy plugin
+plus a typed event channel per plugin), and then the five plugin analogs
+move out of the core crate onto that public surface as proof that it is
+enough.
 
-Four background drivers (`pathfinder::follow_driver`,
-`pathfinder::dynamic_watcher`, `pvp::drive`, `auto_eat::drive`) open with
-the same block: take the tick broadcaster, mark the shutdown receiver
-seen, then `select!` on ticks (tolerating `Lagged`) and shutdown. The
-`goto` and `dig` waits repeat the first half of it. A single tick-loop helper would carry
-the shutdown rule that `Bot`'s field docs spend three paragraphs
-explaining.
+### F5. The event API pushes boilerplate onto every user (devex)
 
-Inside `windows/tracker.rs`, nine pushes of `WindowUpdateSlot` follow
-the same "snapshot, then push" shape, `held_sig_changed` plus a
-`HeldItemChanged` push appears eleven times, and the selected-slot
-closure is written three times. Six production receive loops are still
-written by hand next to the shared `wait::await_event` (two in
-`interact/place.rs`, and one each in `wait_for_chunks_to_load`,
-`misc/creative.rs`, `await_window_open`, and `chat::await_message_on`).
-They exist because `await_event` returns `Option`, so a caller cannot
-tell a timeout from a closed stream. A result type with those two cases
-would let all six use the shared wait.
+Detail: [`03_bridge_and_events.md`](03_bridge_and_events.md).
 
-### F4. A data table is written by hand (missed simplification)
+Every example writes the same `recv()` loop with arms for `Lagged` and
+`Closed`. The crate's own `await_event`/`await_map` helpers are
+`pub(crate)`, so users have no `once(bot, 'event')`. A lagged receiver
+loses events with no counter. Some payloads are weakly typed:
+`PathReset { reason: &'static str }`, `Kicked(String, bool)`,
+`PistonMove { direction: u8 }`, boss bars keyed by `String` instead of
+`Uuid`. `HardcodedSound` is a variant that is never emitted. The remedy is
+a public wait helper, typed `Stream` adapters, typed payloads, and
+removal of the dead variant.
 
-`craft::item_tag` (`src/craft.rs:492`) is a 215-line `match` with 207
-arms that maps tag names to the static tags in the registry crate. The
-registry crate is generated code that we now own. Its generator can emit
-a name lookup next to the statics, and the port function becomes one
-line. The current table also goes stale silently when a Minecraft
-version adds a tag.
+### F6. Local duplication and stale text (legibility)
 
-### F5. Long functions in busy flows (legibility)
+Detail: [`04_domain_modules.md`](04_domain_modules.md).
 
-Fourteen production functions are over 100 lines. The top five are
-`pathfinder::tracking::bridge_events` (297), `entity::tracker::handle_packet`
-(217), `craft::item_tag` (215), `windows::tracker::observe_event` (210),
-and `scoreboard::handle` (197). F1 and F4 remove three of them outright.
-`entity::tracker::handle_packet` and `scoreboard::handle` are packet
-reducers that should split into one function per packet family, as
-`misc::handle_packet_state` already does.
+There are two copies of the spiral block scan with early exit and sort
+(`find_states`, `find_matching_unlocked` in `src/world/mod.rs`), three
+eye-position helpers, three DDA raycast wrappers over `traverse_blocks`,
+and two "best tool" scorers over `get_mine_progress`
+(`Pathfinder::best_harvest_tool`, `Tool::best_tool_for`).
+`Window::slot` clones the whole `Menu` for one read, against its own doc.
+`misc::tick_diffs` takes the exclusive ECS write lock 20 times a second
+to update port-owned baselines. `Window::close` still writes the engine
+`Inventory`. Docs went stale after the second plan: the `windows` module
+header still says the port patches `carried_item` and
+`set_player_inventory`, `interact/mod.rs` names the engine `Mining`
+component as the dig-target source of truth while `dig.rs` owns it, and
+an orphan doc fragment from the deleted `stop_pathfinding_patched` sits
+on top of `follow_driver` (`src/pathfinder/mod.rs:795`). Thirty-three
+comments cite plan IDs (`N-3`, `M-4`, `U9`, …) instead of the rule.
 
-### F6. Test-only scaffolding lives in the public type (boundary)
+### F7. File size comes from inline tests (decomposition)
 
-`Bot::new` is `pub` with `#[doc(hidden)]`, and every caller is a unit
-test. It is the only reason `Bot` carries `_shutdown_tx: Option<..>`, and
-the "scaffold bot" mode adds a paragraph to the field docs. Moving it to
-`test_util` deletes the field and the mode. In the same file,
-`BotBuilder::connect_engine` inserts three components with three separate
-`ecs.write()` calls where one bundle insert would do the same thing
-atomically.
+Detail: [`04_domain_modules.md`](04_domain_modules.md).
 
-### F7. The engine fork needs ownership rules (lifecycle)
+Eleven port files are over 1,000 lines, all because of in-file test
+modules (`src/bridge.rs`: 517 production lines, 771 test lines).
+`src/pathfinder/mod.rs` (960 production lines) and `src/world/mod.rs`
+(957) are close to the limit on production code alone. Moving each large
+test module to a sibling `tests.rs` file fixes the first group. F2
+removes the watcher tasks from `pathfinder/mod.rs`, and the scan merge in
+F6 shortens `world/mod.rs`.
 
-Detail: [`04_engine_fork.md`](04_engine_fork.md).
+### F8. Capability gaps against upstream (product)
 
-The fork compiles, passes its own tests, and is clippy and fmt clean
-under the pinned toolchain. Three ownership questions are open. The
-generator that produced the registry, block, and packet code was not
-copied, so the next Minecraft version depends on the upstream generator.
-About 1,300 lines of swarm code are compiled only because the copied
-bootstrap adds `DefaultSwarmPlugins`, and auto-reconnect is compiled only
-to be switched off. All 22 crate names are free on crates.io today, but
-publishing the port would mean publishing 21 engine crates first; if
-that is not planned, the engine crates should be `publish = false`.
+Detail: [`06_parity_and_ecosystem.md`](06_parity_and_ecosystem.md).
 
-### F8. Tests, docs, and tooling (maintenance)
+Several `diverges` rows are missing features, not naming differences. The
+engine stores no block entities, so sign text and `block.blockEntity`
+cannot be read. Physics settings are read-only and physics cannot be
+switched off. The pathfinder never places blocks, opens doors, or honors
+`allowSprinting` and `maxDropDown`; six of the ten public `Movements`
+fields are accepted and ignored. Config-phase resource packs are not
+visible, and the engine accepts every pack with no opt-out. Auto-respawn
+cannot be switched off. `recipes_for` sees only recipes that the server
+unlocked in the recipe book. Each is a feature that mineflayer users
+depend on.
 
-Detail: [`05_tests_docs_tooling.md`](05_tests_docs_tooling.md).
+### F9. No in-process test drives the real engine (tests)
 
-The live suite runs only on a developer machine; CI runs the gate
-without it. `docs/surveys/engine-features.md` describes an engine
-revision older than the base commit (it mentions types that do not
-exist at `ddef371`) and now reads as a historical note. `scripts/argon-unit.py`
-and its test are personal model-delegation tooling, unrelated to the
-crate. `target/` is 31 GB again because the gate now also builds the
-engine crates with a second feature set.
+Detail: [`07_tests_docs_tooling.md`](07_tests_docs_tooling.md).
+
+The port's unit tests build engine `Event`s by hand over a client with no
+systems running. Nothing tests the order the port depends on: the engine
+applies a packet, and then the port observes it. The engine has a
+`Simulation` harness that feeds real packets through the real systems,
+and the port does not use it. The live suite (14 tests) runs only on a
+schedule. Typed windows have 5 to 36 percent line coverage, and the
+fixture cannot produce chests, villagers, or anvils. A port-level
+simulation harness would test packet-in to `BotEvent`-out on every push,
+with no Java and no network. Upstream cannot do this; its tests need a
+real server.
+
+### F10. Adoption barriers (ecosystem)
+
+Detail: [`06_parity_and_ecosystem.md`](06_parity_and_ecosystem.md).
+
+A dependent crate must copy the pinned nightly toolchain file and the
+`-Znext-solver=no` rustflag (README, "Use as a dependency"). The engine
+needs only seven feature gates, and each is local (two trait aliases,
+three `default fn` sites, one `#[backtrace]`, one const-expression site,
+one struct-update site), so stable Rust is within reach. Nothing is
+published and there is no public repository, so there is no docs.rs page.
+There are three ported examples against upstream's 48 example
+scripts and 10 example projects.
 
 ## Remediation sequence
 
-1. Engine events for pathfinder results (F1). This deletes the most
-   code and the only heuristic in the port.
-2. Engine inventory handler fixes (F1). This removes seven ECS writes
-   from the bridge and the lock-order exceptions that go with them.
-3. Engine plugin hook and opt-out (F1). This deletes `client_app`'s copy
-   of the bootstrap, the auto-reconnect sentinel, and the swarm plugins.
-4. One observer contract in the bridge, with scoreboard routed directly
-   and the misc lock fixed (F2).
-5. Shared helpers: the state accessor pair, the tick loop, the slot
-   event helpers (F3).
-6. Generated tag lookup (F4) and reducer splits (F5).
-7. Test scaffolding and atomic connect (F6).
-8. Fork ownership: generator, dead plugins, crate names (F7).
-9. Live suite in CI, doc and tooling cleanup (F8).
+1. Engine defects (F3): chat components degrade to text, decode errors
+   surface as a warning event, owned enums lose `#[non_exhaustive]`, auth
+   takes a code callback. Small changes with a user-visible result.
+2. The port simulation harness (F9). It is the safety net for steps 3
+   and 4, which move code between layers.
+3. State ownership (F1): the port plugin group and the pre-apply hook,
+   then one domain at a time (world, windows, entities, scoreboard and
+   chat, misc). Delete the domain locks and the lock-order rule at the
+   end.
+4. The operation primitive and completion messages (F2). Follow and
+   dynamic goals move into the ECS.
+5. The public plugin surface and the event DX (F4, F5). Move the five
+   plugin analogs out of the core crate.
+6. Local cleanups and file splits (F6, F7).
+7. Capability parity (F8), in the order users need it.
+8. Adoption (F10): stable toolchain, a publish decision, examples, docs.
 
-Each step keeps behavior and is checked by the gate and the live suite.
-Steps 1 to 3 change the engine and should each land with an engine-level
-test that shows the old wrong behavior.
+Steps 1 and 2 can start at once and run in parallel. The parts of step
+6 that touch code which steps 3 and 4 do not rewrite (the block scan,
+the eye and raycast helpers, the stale text, the test file splits) can
+run beside them. The operation primitive of step 4 can start beside
+step 3, but the rewrites of `goto`, `dig`, and the eat paths wait for
+step 3, because they change the same files. Step 4 must finish before
+step 5. Each step keeps public
+behavior unless its plan item says otherwise, and each is checked by the
+gate, the simulation harness, and the live suite.
