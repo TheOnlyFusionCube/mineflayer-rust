@@ -370,3 +370,27 @@ async fn fish_exits_on_end() {
     .expect("fish ignored End");
     assert!(matches!(result, Err(Error::NotConnected)));
 }
+
+/// The per-tick diff: the first tick sets the baselines, then a pose
+/// change to sleeping and back gives `Sleep` and `Wake`, and an air
+/// change gives `Breath`.
+#[test]
+fn tick_diffs_report_sleep_wake_and_breath() {
+    use mineflayer_engine::entity::{Pose, metadata::AirSupply};
+
+    let client = crate::test_util::live_entity_client((Pose::Standing, AirSupply(300)));
+    let mut baselines = TickBaselines::default();
+    let mut tick = || observe(&client, &mut baselines, &Event::Tick);
+    assert!(tick().is_empty(), "the first tick only sets the baselines");
+
+    let set = |pose: Pose, air: i32| {
+        let mut ecs = client.ecs.write();
+        let mut entity = ecs.entity_mut(client.entity);
+        entity.insert((pose, AirSupply(air)));
+    };
+    set(Pose::Sleeping, 300);
+    assert!(matches!(&tick()[..], [BotEvent::Sleep]));
+    set(Pose::Standing, 280);
+    assert!(matches!(&tick()[..], [BotEvent::Wake, BotEvent::Breath]));
+    assert!(tick().is_empty());
+}

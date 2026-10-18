@@ -49,11 +49,6 @@ pub(crate) struct MiscState {
     /// `bot.settings.difficulty` — stored client-side like upstream; it is
     /// not a `ClientInformation` field.
     pub difficulty: u8,
-    /// Baseline for the `Sleep`/`Wake` diff — `None` until the first tick
-    /// read (an uninitialized baseline never emits).
-    was_sleeping: Option<bool>,
-    /// Baseline for the `Breath` diff — `None` until the first read.
-    last_air: Option<i32>,
     /// Cancellation for an in-flight `fish()` — a second call cancels the
     /// first, like upstream.
     fishing: Option<oneshot::Sender<()>>,
@@ -67,8 +62,6 @@ impl Default for MiscState {
             latest_resource_pack: None,
             // upstream's default `bot.settings.difficulty`
             difficulty: 2,
-            was_sleeping: None,
-            last_air: None,
             fishing: None,
             creative_slots_in_flight: Default::default(),
         }
@@ -77,28 +70,42 @@ impl Default for MiscState {
 
 /// The bridge observer. Packets are decoded into misc-domain state and
 /// events; `Tick` drives the pose/air diffs for `Sleep`/`Wake`/`Breath`.
-pub(crate) fn observe(client: &mineflayer_engine::Client, event: &Event) -> Vec<BotEvent> {
+pub(crate) fn observe(
+    client: &mineflayer_engine::Client,
+    baselines: &mut TickBaselines,
+    event: &Event,
+) -> Vec<BotEvent> {
     match event {
         Event::Packet(packet) => handle_packet(client, packet),
-        Event::Tick => tick_diffs(client),
+        Event::Tick => tick_diffs(client, baselines),
         _ => Vec::new(),
     }
+}
+
+/// The last pose and air supply the tick diff saw, kept by the bridge.
+/// `None` until the first tick read (an uninitialized baseline never
+/// emits).
+#[derive(Default)]
+pub(crate) struct TickBaselines {
+    was_sleeping: Option<bool>,
+    last_air: Option<i32>,
 }
 
 /// `Sleep`/`Wake` (from `Pose`) and `Breath` (from `AirSupply`), by diffing
 /// components once per game tick. Upstream fires these off the
 /// entity-metadata packets; a tick-aligned diff produces the same event
 /// sequence at ≤50ms latency.
-fn tick_diffs(client: &mineflayer_engine::Client) -> Vec<BotEvent> {
+fn tick_diffs(client: &mineflayer_engine::Client, state: &mut TickBaselines) -> Vec<BotEvent> {
     let mut events = Vec::new();
-    let mut ecs = client.ecs.write();
-    let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
-        return events;
-    };
-    let sleeping = entity.get::<Pose>().map(|pose| *pose == Pose::Sleeping);
-    let air = entity.get::<AirSupply>().map(|a| a.0);
-    let Some(mut state) = entity.get_mut::<MiscState>() else {
-        return events;
+    let (sleeping, air) = {
+        let ecs = client.ecs.read();
+        let Ok(entity) = ecs.get_entity(client.entity) else {
+            return events;
+        };
+        (
+            entity.get::<Pose>().map(|pose| *pose == Pose::Sleeping),
+            entity.get::<AirSupply>().map(|a| a.0),
+        )
     };
     if let Some(sleeping) = sleeping {
         match state.was_sleeping {

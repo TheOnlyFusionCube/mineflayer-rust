@@ -246,7 +246,7 @@ type Observer = fn(&mut Observe<'_>, &Event) -> Vec<BotEvent>;
 /// before the re-arm `spawn`, which this order keeps.
 const OBSERVERS: &[Observer] = &[
     |cx, e| translate(cx.local, &cx.shared.quit_reason, cx.client, e.clone()),
-    |cx, e| crate::misc::observe(cx.client, e),
+    |cx, e| crate::misc::observe(cx.client, &mut cx.local.misc, e),
     |cx, e| {
         with_component_mut::<crate::scoreboard::ScoreboardState, _>(cx.client, |s| {
             crate::scoreboard::observe(s, e)
@@ -306,6 +306,8 @@ struct BridgeState {
     lids: crate::world::LidCounts,
     /// Movement tracking for `move`/`mount`/`dismount`.
     movement: crate::movement::MovementTracker,
+    /// The misc domain's per-tick `Sleep`/`Wake`/`Breath` baselines.
+    misc: crate::misc::TickBaselines,
     /// Pathfinder component-diff state for the goal/path events.
     pathfinder: crate::pathfinder::PathTracker,
 }
