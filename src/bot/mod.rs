@@ -90,12 +90,13 @@ pub(crate) struct BotShared {
     pub end_reason: Arc<Mutex<Option<String>>>,
 }
 
-/// The game ticks a driver task loops on, until `token` is cancelled.
+/// The game ticks a driver task loops on, until the connection ends
+/// (see [`Bot::ticks`]).
 ///
 /// The token is what ends a driver: the `TickBroadcast` sender is a World
 /// resource kept alive by the `Client` the driver holds, so the tick
 /// channel never closes while the driver runs.
-pub(crate) struct TickStream {
+pub struct TickStream {
     ticks: broadcast::Receiver<()>,
     token: CancellationToken,
 }
@@ -111,7 +112,7 @@ impl TickStream {
     /// Wait for the next tick. `false` once the token is cancelled or the
     /// tick channel closed. The channel holds one tick, so a slow driver
     /// loses ticks, not its loop.
-    pub(crate) async fn next(&mut self) -> bool {
+    pub async fn next(&mut self) -> bool {
         tokio::select! {
             biased;
             _ = self.token.cancelled() => false,

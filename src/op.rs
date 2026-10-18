@@ -10,14 +10,26 @@ use tokio_util::sync::CancellationToken;
 
 /// One started operation: its token, and which start it was.
 #[derive(Clone, Debug)]
-pub(crate) struct Op {
+pub struct Op {
     id: u64,
     pub(crate) token: CancellationToken,
 }
 
+impl Op {
+    /// A newer start, a cancel, or the end of the connection ended it.
+    pub fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+
+    /// Resolves when [`Self::is_cancelled`] becomes true.
+    pub async fn cancelled(&self) {
+        self.token.cancelled().await
+    }
+}
+
 /// The running operation of one kind.
 #[derive(Debug, Default)]
-pub(crate) struct OpSlot {
+pub struct OpSlot {
     started: u64,
     current: Option<Op>,
 }
@@ -37,7 +49,7 @@ impl OpSlot {
     }
 
     /// Cancel the running operation, if any.
-    pub(crate) fn cancel(&mut self) {
+    pub fn cancel(&mut self) {
         if let Some(op) = self.current.take() {
             op.token.cancel();
         }
@@ -46,7 +58,7 @@ impl OpSlot {
     /// End `op` when it is still the running operation. `true` means the
     /// caller owns the outcome; `false` means a newer start or a
     /// [`Self::cancel`] already ended it.
-    pub(crate) fn finish(&mut self, op: &Op) -> bool {
+    pub fn finish(&mut self, op: &Op) -> bool {
         let current = self.current.as_ref().is_some_and(|c| c.id == op.id);
         if current {
             self.current = None;

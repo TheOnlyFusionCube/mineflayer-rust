@@ -23,11 +23,13 @@ run_step() {
 
 run_step "fmt"    cargo fmt --check
 run_step "clippy" cargo clippy --all-targets -- -D warnings
-# the live tests compile only with the feature; lint them too (their
-# warnings otherwise stay invisible to this gate)
-run_step "clippy (live)" cargo clippy --features live --all-targets -- -D warnings
+# the live tests and the plugin test compile only with their features;
+# lint them too (their warnings otherwise stay invisible to this gate)
+run_step "clippy (live, test-util)" cargo clippy --features live,test-util --all-targets -- -D warnings
 run_step "clippy (engine)" env CARGO_TARGET_DIR=target/engine-log cargo clippy --workspace --exclude mineflayer --all-targets --features mineflayer-client/log -- -D warnings
 run_step "test"   cargo test
+# the plugin written against the public API, on the exported harness
+run_step "test (plugin)" cargo test --features test-util --test plugin
 # the engine crates, with the `log` feature their simulation tests capture
 # logs through (off for the port, which never installs a subscriber). The
 # two `log` steps build into target/engine-log, so either build directory

@@ -1,5 +1,6 @@
-# The verify gate (scripts/verify.sh: fmt, clippy, clippy with `live`,
-# port and engine unit tests and doctests, build, docs) and a live smoke
+# The verify gate (scripts/verify.sh: fmt, clippy, clippy with `live` and
+# `test-util`, port and engine unit tests and doctests, the public-API
+# plugin test, build, docs) and a live smoke
 # subset on every push and pull request, and the whole live suite on a
 # schedule and by hand.
 name: verify

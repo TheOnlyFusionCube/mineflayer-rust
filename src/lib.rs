@@ -36,6 +36,7 @@ pub mod mcdata;
 pub mod misc;
 pub mod movement;
 pub mod pathfinder;
+pub mod plugin;
 pub mod pvp;
 pub mod scoreboard;
 pub mod state;
@@ -116,5 +117,5 @@ pub mod prelude {
     };
 }
 
-#[cfg(test)]
-pub(crate) mod test_util;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;

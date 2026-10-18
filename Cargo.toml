@@ -19,6 +19,9 @@ workspace = true
 # Enables the tests in tests/live/ that talk to the local offline-mode
 # fixture server (scripts/live-server.sh). Never used for Mojang traffic.
 live = []
+# Exports `test_util::sim::BotSim`, the harness that runs a bot on the
+# real engine with no server, for the tests of plugin crates.
+test-util = ["mineflayer-engine/test-utils"]
 
 [dependencies]
 # The client engine: protocol, ECS world state, physics, pathfinding
@@ -46,6 +49,11 @@ mineflayer-engine = { path = "crates/mineflayer-engine", version = "0.16.0", fea
 # for the examples' RUST_LOG-driven subscriber (the crate itself only
 # emits; it never installs a subscriber)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[test]]
+name = "plugin"
+path = "tests/plugin.rs"
+required-features = ["test-util"]
 
 [[test]]
 name = "live"

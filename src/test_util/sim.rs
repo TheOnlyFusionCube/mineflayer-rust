@@ -29,8 +29,9 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 use crate::{Bot, BotBuilder, BotEvent, bridge::Bridge};
 
-pub(crate) struct BotSim {
-    pub(crate) bot: Bot,
+pub struct BotSim {
+    /// The bot under test.
+    pub bot: Bot,
     ecs: Arc<RwLock<World>>,
     engine_events: mpsc::UnboundedReceiver<Event>,
     bridge: Bridge,
@@ -43,15 +44,21 @@ pub(crate) struct BotSim {
     _rt: tokio::runtime::Runtime,
 }
 
+impl Default for BotSim {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BotSim {
     /// A bot that has logged in and spawned in an empty chunk at the
     /// origin.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::spawned(BotBuilder::default())
     }
 
     /// [`Self::new`] for a bot built from `builder`.
-    pub(crate) fn spawned(builder: BotBuilder) -> Self {
+    pub fn spawned(builder: BotBuilder) -> Self {
         let mut sim = Self::connected(builder);
         // in separate passes, as a server's packets arrive
         sim.receive(default_login_packet());
@@ -64,7 +71,7 @@ impl BotSim {
     }
 
     /// A bot in the game state that has received no game packet yet.
-    pub(crate) fn connected(builder: BotBuilder) -> Self {
+    pub fn connected(builder: BotBuilder) -> Self {
         let mut sim =
             Simulation::new_with_plugins(ConnectionProtocol::Game, builder.plugins.clone());
         let sent = SentPackets::new(&mut sim);
@@ -97,7 +104,7 @@ impl BotSim {
     }
 
     /// Queue a clientbound packet; the next [`Self::tick`] reads it.
-    pub(crate) fn receive(&mut self, packet: impl Packet<ClientboundGamePacket>) {
+    pub fn receive(&mut self, packet: impl Packet<ClientboundGamePacket>) {
         let bytes = mineflayer_engine::protocol::write::serialize_packet(&packet.into_variant())
             .expect("a test packet serializes");
         let entity = self.bot.client.entity;
@@ -112,7 +119,7 @@ impl BotSim {
 
     /// One step of the engine's runner, then the bridge on the engine
     /// events of that step.
-    pub(crate) fn tick(&mut self) {
+    pub fn tick(&mut self) {
         {
             let mut ecs = self.ecs.write();
             ecs.run_schedule(Main);
@@ -124,7 +131,7 @@ impl BotSim {
     }
 
     /// The `BotEvent`s since the last call.
-    pub(crate) fn events(&mut self) -> Vec<BotEvent> {
+    pub fn events(&mut self) -> Vec<BotEvent> {
         let mut out = Vec::new();
         loop {
             match self.events.try_recv() {
@@ -138,13 +145,13 @@ impl BotSim {
     }
 
     /// The serverbound packets since the last call.
-    pub(crate) fn sent(&mut self) -> Vec<ServerboundGamePacket> {
+    pub fn sent(&mut self) -> Vec<ServerboundGamePacket> {
         std::iter::from_fn(|| self.sent.next()).collect()
     }
 }
 
 /// The variant name of each event, for order checks.
-pub(crate) fn names(events: &[BotEvent]) -> Vec<String> {
+pub fn names(events: &[BotEvent]) -> Vec<String> {
     events
         .iter()
         .map(|e| {

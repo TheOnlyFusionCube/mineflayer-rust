@@ -63,6 +63,16 @@
   such a packet; before, only a `tracing` error log showed it. The engine
   side is `engine::Event::PacketDecodeFailed` and the ECS message
   `engine::packet::game::GamePacketDecodeFailedEvent`.
+- `mineflayer::plugin`, what a plugin crate needs from a `Bot`:
+  `Bot::state` and `Bot::state_mut` for per-bot state in a component,
+  `Bot::ticks` (a `TickStream` that ends with the connection),
+  `Bot::driver` (a handle that does not keep the connection open),
+  `Bot::start_op` with `OpSlot` and `Op` (a newer start or a disconnect
+  cancels the running action), and `Bot::plugin_events` with
+  `Bot::emit_plugin_event` (a typed event channel per plugin event type).
+  `tests/plugin.rs` is a plugin written against this API only.
+- The `test-util` feature exports `test_util::sim::BotSim`, which runs a
+  bot on the real engine and bridge with no server, for plugin tests.
 
 ### Changed
 
