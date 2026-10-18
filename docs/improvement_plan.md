@@ -1351,7 +1351,7 @@ the commit that completes the item.
 | CP6 | open | |
 | CP7 | open | |
 | CP8 | open | |
-| AD0 | open | |
+| AD0 | done; DEC-1 waits for the owner | (this commit) |
 | AD1 | open | |
 | AD2 | open | |
 | AD3 | open | |

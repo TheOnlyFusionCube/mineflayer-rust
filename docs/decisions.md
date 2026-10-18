@@ -147,6 +147,33 @@ crates need nightly. The nightly current at scaffold time stopped with an
 internal compiler error on the entity crate, and the next-gen trait solver
 cannot infer `mineflayer-core`'s const generics. Review monthly (first plan, H2, at `775ba66`).
 
+**DEC-1 (open, for the owner). Must the port and the engine build on
+stable Rust?** Spike (plan item AD0, 2026-10-17): `cargo +stable check
+--workspace --all-targets` with stable 1.98.1, `RUSTFLAGS` cleared, and
+`--ignore-rust-version` (the crate declares `rust-version = 1.101`).
+Results:
+
+1. `simdnbt 0.10.0`, the newest release, does not build on stable: it
+   uses `#![feature(portable_simd)]` (`swap_endianness.rs`, `mutf8.rs`)
+   and `#![feature(allocator_api)]` (`FastVec<T, A: Allocator>` in
+   `fastvec.rs`). Seven engine crates depend on it, so the check stops
+   there and cannot reach the engine's own gates. This blocker is outside
+   the seven local gates that the audit listed.
+2. `mineflayer-engine/build.rs` panics on any compiler that is not
+   nightly (`check_nightly`).
+3. Not yet seen, because of item 1: the local gates
+   (`generic_const_exprs` in core, `type_changing_struct_update` in
+   engine, `min_specialization` in inventory and buf, `trait_alias` in
+   physics, `error_generic_member_access` in buf, protocol, and client)
+   and the `-Znext-solver=no` need.
+
+Estimate for AD1: the 3 HD of the plan for the local gates and the build
+script, plus 1.5 to 2 HD for a stable `simdnbt` (a fork in `crates/` or a
+`[patch]`: scalar code in place of `std::simd`, and `FastVec` without the
+allocator parameter), plus its merge cost, because each `simdnbt` release
+must be ported again. Next step if the owner says yes: patch `simdnbt`
+locally and rerun the check to list the remaining errors.
+
 **D-locks (first plan B8). Every crate lock is `parking_lot`.** The engine's ECS lock is
 already `parking_lot`, and the type has no poisoning, so one panic under a
 lock cannot break a domain for the rest of the session.
