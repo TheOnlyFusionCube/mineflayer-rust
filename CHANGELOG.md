@@ -58,6 +58,9 @@
 
 ### Added
 
+- `test_util::sim::BotSim::drive` runs a bot future while the engine
+  steps, with a closure playing the server; `BotSim::echo_clicks`
+  confirms window clicks as vanilla does.
 - README: "Writing a plugin", compiled as a doctest with the other README
   examples. The `loadPlugin`, `loadPlugins`, `hasPlugin`,
   `options.plugins`, and `options.loadInternalPlugins` rows are

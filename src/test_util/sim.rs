@@ -156,6 +156,81 @@ impl BotSim {
     }
 }
 
+impl BotSim {
+    /// Run `future` to its end while the engine steps, with `server`
+    /// answering each serverbound packet of each step. The future runs on
+    /// a runtime of its own, so its timers advance in real time.
+    ///
+    /// # Panics
+    ///
+    /// When `future` has not ended after 10 s.
+    pub fn drive<T>(
+        &mut self,
+        future: impl std::future::Future<Output = T>,
+        mut server: impl FnMut(&mut BotSim, &ServerboundGamePacket),
+    ) -> T {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("a runtime for the driven future");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        rt.block_on(async {
+            let mut future = std::pin::pin!(future);
+            loop {
+                if let std::task::Poll::Ready(out) = futures::poll!(future.as_mut()) {
+                    return out;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the driven future did not end in 10 s"
+                );
+                self.tick();
+                for packet in self.sent() {
+                    server(self, &packet);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+    }
+
+    /// A server that confirms each window click as vanilla does: it sends
+    /// back the slots the click changed, with the contents the client
+    /// predicted. Other packets get no answer.
+    pub fn echo_clicks(&mut self, packet: &ServerboundGamePacket) {
+        let ServerboundGamePacket::ContainerClick(click) = packet else {
+            return;
+        };
+        let (state_id, slots) = {
+            let ecs = self.ecs.read();
+            let inventory = ecs
+                .get::<mineflayer_engine::entity::inventory::Inventory>(self.bot.client.entity)
+                .expect("the bot has an inventory");
+            let menu = inventory.menu();
+            let slots: Vec<_> = click
+                .changed_slots
+                .keys()
+                .map(|&slot| {
+                    (
+                        slot,
+                        menu.slot(usize::from(slot)).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect();
+            (inventory.state_id, slots)
+        };
+        for (slot, item_stack) in slots {
+            self.receive(
+                mineflayer_engine::protocol::packets::game::ClientboundContainerSetSlot {
+                    container_id: click.container_id,
+                    state_id,
+                    slot,
+                    item_stack,
+                },
+            );
+        }
+    }
+}
+
 /// The variant name of each event, for order checks.
 pub fn names(events: &[BotEvent]) -> Vec<String> {
     events

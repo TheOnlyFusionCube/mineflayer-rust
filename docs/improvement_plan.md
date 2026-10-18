@@ -1311,7 +1311,7 @@ the commit that completes the item.
 | DF5 | done | `ee1afa8` |
 | TS1 | done | `eb342dc` |
 | TS2 | done | (this commit) |
-| TS3 | open | |
+| TS3 | done; `src/window_types/` 86% line coverage, the crate 74% (the 80% crate target of section 2 is not met) | (this commit) |
 | TS4 | done; the job's first push run is not observed yet (no remote) | (this commit) |
 | TS5 | done: `tests/plugin.rs` uses `BotSim`, and `mineflayer-plugins` uses the exported scaffolds, through the feature | (this commit) |
 | ST1 | replaced by D-port-plugins: the bridge stays, `BotPlugins` added | (ST3 commit) |

@@ -290,6 +290,9 @@ async fn wait_for_slot_updates(
 }
 
 #[cfg(test)]
+mod sim_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use mineflayer_engine::protocol::packets::game::{
