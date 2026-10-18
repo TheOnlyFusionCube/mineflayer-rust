@@ -9,7 +9,6 @@ use derive_more::{Deref, DerefMut};
 use mineflayer_chat::FormattedText;
 use mineflayer_client::join::ConnectionFailedEvent;
 use mineflayer_core::{
-    entity_id::MinecraftEntityId,
     position::{BlockPos, ChunkPos},
     tick::GameTick,
 };
@@ -242,14 +241,25 @@ pub fn init_listener(query: Query<&LocalPlayerEvents, Added<LocalPlayerEvents>>)
     }
 }
 
-// when MinecraftEntityId is added, it means the player is now in the world
+/// One [`Event::Login`] for each login packet, as upstream mineflayer
+/// emits `login`; a proxy that moves the bot to another server sends a
+/// second one.
 pub fn login_listener(
-    query: Query<(Entity, &LocalPlayerEvents), Added<MinecraftEntityId>>,
+    query: Query<&LocalPlayerEvents>,
+    mut packets: MessageReader<super::packet::game::ReceiveGamePacketEvent>,
     mut commands: Commands,
 ) {
-    for (entity, local_player_events) in &query {
-        let _ = local_player_events.send(Event::Login);
-        commands.entity(entity).remove::<SentSpawnEvent>();
+    for event in packets.read() {
+        if !matches!(
+            *event.packet,
+            mineflayer_protocol::packets::game::ClientboundGamePacket::Login(_)
+        ) {
+            continue;
+        }
+        if let Ok(local_player_events) = query.get(event.entity) {
+            let _ = local_player_events.send(Event::Login);
+        }
+        commands.entity(event.entity).remove::<SentSpawnEvent>();
     }
 }
 

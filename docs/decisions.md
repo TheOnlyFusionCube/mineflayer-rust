@@ -139,6 +139,11 @@ merge; plan item E2 keeps this list current):
     `PathEvent::Timeout` goes out once and the goal stays (upstream
     `thinkTimeout`). Test: `a_goto_over_its_total_time_times_out_once_and_keeps_its_goal`
     in `mineflayer-engine/src/pathfinder/tests.rs`.
+26. (CP7) `events::login_listener` sends `Event::Login` for each
+    `ClientboundLogin` packet; it fired once per entity before
+    (`Added<MinecraftEntityId>`), so a proxy's second login gave no
+    `login`. Test: `each_login_packet_gives_login` in the port's
+    `src/test_util/sim.rs` (it runs the real `EventsPlugin`).
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

@@ -1349,7 +1349,7 @@ the commit that completes the item.
 | CP4 | open | |
 | CP5 | open | |
 | CP6 | open | |
-| CP7 | open | |
+| CP7 | done | (this commit) |
 | CP8 | open | |
 | AD0 | done; DEC-1 waits for the owner | (this commit) |
 | AD1 | open | |

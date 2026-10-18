@@ -103,7 +103,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot._warn(...)` | lifecycle | `n/a` | wontfix | n/a — tracing/logging, not an API |
 | `bot._getDimensionName() (internal)` | lifecycle | `bot.dimension() -> Option<WorldName>` | ported | upstream internal helper reads `bot.game.dimension`; ours is the public `dimension()` getter (WorldName = the dimension identifier) |
 | `event('inject_allowed')` | lifecycle | `BotEvent::Init` | ported | the engine Event::Init analog; the first `bot.events()` receiver is subscribed before the bridge starts, so an Init queued during `connect` can't be missed |
-| `event('login')` | lifecycle | `BotEvent::Login` | diverges | the engine `Event::Login` fires once per entity lifetime (never refires in 0.16) — a mid-session `ClientboundLogin` (proxy/config-cycle relogin) does not re-emit it; upstream emits per login packet |
+| `event('login')` | lifecycle | `BotEvent::Login` | ported | one per `ClientboundLogin`, also a proxy's second login |
 | `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | initial `Event::Spawn`; post-respawn 'spawn' from the first `c_set_health` with health > 0 while dead — upstream's `isAlive` re-arm (The engine Spawn never refires in 0.16) |
 | `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | emitted per `c_respawn` packet — death respawn and dimension change alike, like upstream's `respawn` packet handler |
 | `event('connect') (undoc)` | lifecycle | `BotEvent::Connected` | diverges | upstream fires on raw socket connect (pre-login); the engine surfaces no socket-level event — emitted right before the first `Login` (earliest wire-up proof), once per connection (The engine Login is also once-only, so the edge is exactly once) |

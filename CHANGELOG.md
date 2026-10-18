@@ -118,6 +118,8 @@
   engine's `log` feature (bevy's log plugin) is off by default, so a
   dependent's own `tracing_subscriber` `init()` after `connect` cannot
   panic.
+- `BotEvent::Login` goes out for each login packet, as upstream's
+  `login` does; a proxy that moves the bot to another server gave none.
 - `WindowUpdateSlot.old` is the stack the packet replaced in the engine's
   window, read before the engine applies the packet. After a click, the
   server's confirming slot update now reports the stack the click left,

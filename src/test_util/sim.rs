@@ -194,6 +194,22 @@ mod tests {
         assert_in_order(&names, &["Init", "Connected", "Login", "Spawn"]);
     }
 
+    /// Upstream emits `login` for each login packet, also for the second
+    /// one of a proxy that moves the bot to another server.
+    #[test]
+    fn each_login_packet_gives_login() {
+        let mut sim = BotSim::new();
+        sim.events();
+        sim.receive(default_login_packet());
+        sim.tick();
+        let names = names(&sim.events());
+        assert_eq!(
+            names.iter().filter(|n| *n == "Login").count(),
+            1,
+            "{names:?}"
+        );
+    }
+
     #[test]
     fn a_chat_packet_gives_chat_message_message_str() {
         let mut sim = BotSim::new();
