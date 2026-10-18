@@ -99,6 +99,10 @@
 - `dig` ends on the engine's report for its own mining start, with no
   per-tick poll and no grace windows. A newer `dig` and `stop_digging`
   cancel it through the dig's operation.
+- `consume`, `auto_eat().eat`, `collect`, and the auto-eat monitor run as
+  operations: a newer call or a cancel ends the older one through its
+  operation, not a generation number. A disconnect ends a pending
+  `consume` with `NotConnected` (it waited 2.5 s for `Timeout`).
 - `engine::mining::StartMiningBlockEvent`, `MiningQueued`, `Mining`, and
   `FinishMiningBlockEvent` have an `id: MiningId` field. Each start ends in
   one `engine::mining::MiningFinished` message.

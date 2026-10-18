@@ -48,11 +48,21 @@ impl OpSlot {
         op
     }
 
-    /// Cancel the running operation, if any.
-    pub fn cancel(&mut self) {
-        if let Some(op) = self.current.take() {
+    /// The running operation, or a new one under `root` when none runs.
+    pub(crate) fn join(&mut self, root: &CancellationToken) -> Op {
+        match &self.current {
+            Some(op) if !op.is_cancelled() => op.clone(),
+            _ => self.start(root),
+        }
+    }
+
+    /// Cancel the running operation, if any; `true` when one was running.
+    pub fn cancel(&mut self) -> bool {
+        let running = self.current.take();
+        if let Some(op) = &running {
             op.token.cancel();
         }
+        running.is_some()
     }
 
     /// End `op` when it is still the running operation. `true` means the

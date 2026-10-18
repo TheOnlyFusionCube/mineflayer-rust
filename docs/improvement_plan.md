@@ -1326,7 +1326,7 @@ the commit that completes the item.
 | OP3 | done | (this commit) |
 | OP4 | done; follow and dynamic goals step in the bridge on each `Tick`, not in an ECS system (D-port-plugins: the bridge is the one sender, and a goal step must read the facade between passes) | (this commit) |
 | OP5 | done; a non-`Broken` outcome counts as a break when the block is air | (this commit) |
-| OP6 | open | |
+| OP6 | done; the eat stays beside `using_held_item` in the window tracker (the held-item packets end it); `creative().set_inventory_slot` keeps its per-slot in-flight set, which rejects a second call for the slot, because the supersede rule of `OpSlot` would change that | (this commit) |
 | EV1 | done | `a8f77a5` |
 | EV2 | done | (this commit) |
 | EV3 | done | (this commit) |

@@ -17,13 +17,7 @@
 //! unreachable and the token is the disconnect signal), tolerates `Lagged`, and exits
 //! silently — upstream emits nothing when the plugin's listener dies.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
-    time::Duration,
-};
+use std::time::Duration;
 
 use mineflayer_engine::{
     ecs::{self as bevy_ecs, prelude::Component},
@@ -32,7 +26,12 @@ use mineflayer_engine::{
 };
 
 use crate::bot::{TickStream, with_component, with_component_mut};
-use crate::{Bot, BotEvent, Error, Result, inventory::EquipDest, windows::Item};
+use crate::{
+    Bot, BotEvent, Error, Result,
+    inventory::{EatEnd, EquipDest},
+    op::{Op, OpSlot},
+    windows::Item,
+};
 
 /// Upstream `mineflayer-auto-eat`'s default `bannedFood` — foods with
 /// harmful or disorienting side effects in vanilla.
@@ -181,8 +180,8 @@ pub struct EatOpts {
 }
 
 /// Facade state the engine has no slot for: the opts, the enabled/eating
-/// flags, the in-flight eat's cancel flag, and the monitor driver's
-/// cancel flag — the same shape [`crate::pvp`] uses for its driver.
+/// flags, the in-flight eat (for `cancel_eat`), and the monitor driver —
+/// operations, as [`crate::pvp`] keeps its driver.
 /// Stored as an ECS component created on first use — rule 2 of the
 /// storage rule on `bot::BotShared`.
 #[derive(Component, Default)]
@@ -193,10 +192,10 @@ struct AutoEatState {
     enabled: bool,
     /// `bot.autoEat.isEating` — an eat is in flight.
     is_eating: bool,
-    /// Set per eat for [`AutoEat::cancel_eat`]; taken when it ends.
-    eat_cancel: Option<Arc<AtomicBool>>,
-    /// Retires the monitor driver; replaced on every `enable_auto`.
-    driver: Option<Arc<AtomicBool>>,
+    /// The eat [`AutoEat::cancel_eat`] reaches, while it waits.
+    eat: OpSlot,
+    /// The monitor driver; started by `enable_auto`.
+    monitor: OpSlot,
 }
 
 /// The `bot.autoEat` namespace — a borrowed view onto the [`Bot`], like
@@ -252,25 +251,15 @@ impl AutoEat<'_> {
     /// like upstream; the driver retires on [`AutoEat::disable_auto`] or
     /// disconnect.
     pub fn enable_auto(&self) {
-        let spawned = with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
+        let started = with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             if s.enabled {
                 return None;
             }
             s.enabled = true;
-            let cancel = Arc::new(AtomicBool::new(false));
-            // a stale driver (shouldn't exist while disabled) gets
-            // retired so only one monitor ever runs
-            if let Some(old) = s.driver.replace(cancel.clone()) {
-                old.store(true, atomic::Ordering::Relaxed);
-            }
-            Some(cancel)
+            Some(s.monitor.start(&self.bot.root))
         });
-        if let Some(Some(cancel)) = spawned {
-            tokio::spawn(drive(
-                self.bot.driver_handle(),
-                cancel,
-                self.bot.root.clone(),
-            ));
+        if let Some(Some(op)) = started {
+            tokio::spawn(drive(self.bot.driver_handle(), op));
         }
     }
 
@@ -279,9 +268,7 @@ impl AutoEat<'_> {
     pub fn disable_auto(&self) {
         with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             s.enabled = false;
-            if let Some(cancel) = s.driver.take() {
-                cancel.store(true, atomic::Ordering::Relaxed);
-            }
+            s.monitor.cancel();
         });
     }
 
@@ -297,7 +284,6 @@ impl AutoEat<'_> {
     /// [`BotEvent::EatFinish`] fires either way (upstream's `finally`),
     /// and the call returns `Err` under `strict_errors`.
     pub async fn eat(&self, opts: EatOpts) -> Result<()> {
-        let cancel = Arc::new(AtomicBool::new(false));
         match with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
             if s.is_eating {
                 return false;
@@ -309,13 +295,10 @@ impl AutoEat<'_> {
             Some(false) => return Err(Error::InvalidState("Already eating!".into())),
             Some(true) => {}
         }
-        let result = self.run_eat(opts, &cancel).await;
+        let result = self.run_eat(opts).await;
         // upstream leaks _eating on the equip-failure throw; releasing it
         // on every path is strictly better
-        with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
-            s.is_eating = false;
-            s.eat_cancel = None;
-        });
+        with_component_mut::<AutoEatState, _>(&self.bot.client, |s| s.is_eating = false);
         result
     }
 
@@ -323,28 +306,21 @@ impl AutoEat<'_> {
     /// with `Eating manually canceled!` and releases the item use), a
     /// no-op when nothing is eating.
     pub fn cancel_eat(&self) {
-        let in_flight = with_component_mut::<AutoEatState, _>(&self.bot.client, |s| {
-            if let Some(cancel) = &s.eat_cancel {
-                cancel.store(true, atomic::Ordering::Relaxed);
-                true
-            } else {
-                false
-            }
-        })
-        .unwrap_or(false);
+        let in_flight = with_component_mut::<AutoEatState, _>(&self.bot.client, |s| s.eat.cancel())
+            .unwrap_or(false);
         if !in_flight {
             return;
         }
-        // wake the eat's waiter the way a second consume() would — it sees
-        // the generation bump and reports the cancellation
-        self.bot.start_eat();
+        // end the eat's wait the way a second consume() would; the eat
+        // sees its own cancel and reports it as manual
+        self.bot.windows(|t| t.eat.cancel());
         // upstream deactivateItem() in cancelEat
         self.bot.deactivate_item();
     }
 
     /// Everything between the `is_eating` claim and its release:
     /// resolve the food, equip it, activate, wait, restore, report.
-    async fn run_eat(&self, opts: EatOpts, cancel: &Arc<AtomicBool>) -> Result<()> {
+    async fn run_eat(&self, opts: EatOpts) -> Result<()> {
         let bot = self.bot;
         let (offhand, equip_old, priority, timeout, strict) =
             with_component::<AutoEatState, _>(&bot.client, |s| {
@@ -383,9 +359,7 @@ impl AutoEat<'_> {
                 .map_err(|e| Error::Failed(format!("Failed to equip: {}! ({e})", food.name())))?;
         }
 
-        let outcome = self
-            .use_food(&food, offhand, equip_old, timeout, cancel)
-            .await;
+        let outcome = self.use_food(&food, offhand, equip_old, timeout).await;
 
         // upstream's finally: restore the previous item first, then
         // report — eatFinish fires even on failure
@@ -430,20 +404,17 @@ impl AutoEat<'_> {
         offhand: bool,
         equip_old: bool,
         timeout: Duration,
-        cancel: &Arc<AtomicBool>,
     ) -> Result<()> {
         let bot = self.bot;
-        // register the finish waiter before activating, like
-        // `Bot::consume` — a finish packet landing between the use_item
-        // write and the await can't be missed
-        let (generation, notify) = bot.start_eat();
-        // `eat_cancel` goes live with the wait — upstream's
-        // `_rejectionBinding` only exists during `buildEatingListener`,
-        // so a `cancel_eat` before this point is a silent no-op there too
-        with_component_mut::<AutoEatState, _>(&bot.client, |s| s.eat_cancel = Some(cancel.clone()));
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
+        // start the eat before activating, like `Bot::consume` — a finish
+        // packet landing between the use_item write and the wait can't be
+        // missed
+        let (op, on_finish) = bot.start_eat().ok_or(Error::NotConnected)?;
+        // `cancel_eat` reaches the eat from here on — upstream's
+        // `_rejectionBinding` only exists during `buildEatingListener`, so
+        // a `cancel_eat` before this point is a silent no-op there too
+        let manual = with_component_mut::<AutoEatState, _>(&bot.client, |s| s.eat.start(&bot.root))
+            .ok_or(Error::NotConnected)?;
 
         // sanitize any prior use state before activating, like upstream
         bot.deactivate_item();
@@ -454,36 +425,32 @@ impl AutoEat<'_> {
             equip_old_item: equip_old,
         });
 
-        if cancel.load(atomic::Ordering::Relaxed) {
-            // cancel landed between waiter registration and here — its
-            // notify_waiters fired before `enable()` and can't be caught
-            Err(Error::Cancelled("Eating manually canceled!".into()))
-        } else if tokio::time::timeout(timeout, notified).await.is_err() {
-            Err(Error::Failed(format!(
+        let end = bot.wait_eat(&op, on_finish, timeout).await;
+        with_component_mut::<AutoEatState, _>(&bot.client, |s| s.eat.finish(&manual));
+        match end {
+            EatEnd::Superseded if manual.is_cancelled() => {
+                Err(Error::Cancelled("Eating manually canceled!".into()))
+            }
+            EatEnd::Superseded => Err(Error::Cancelled(
+                "Eating cancelled due to calling bot.consume() again".into(),
+            )),
+            EatEnd::Timeout => Err(Error::Failed(format!(
                 "Eating timed out with a time of {} milliseconds!",
                 timeout.as_millis()
-            )))
-        } else if bot.eat_generation() != generation {
-            if cancel.load(atomic::Ordering::Relaxed) {
-                Err(Error::Cancelled("Eating manually canceled!".into()))
-            } else {
-                Err(Error::Cancelled(
-                    "Eating cancelled due to calling bot.consume() again".into(),
-                ))
-            }
-        } else {
-            // the wake fired: upstream's itemListener rejects when the
-            // slot's item changed type mid-eat — an empty slot is a
-            // finished stack, not a switch. (Upstream appends
-            // `\nItem: ${newItem}` — JS prints "[object Object]", so the
-            // first line carries all the information.)
-            match self.hand_item(offhand) {
+            ))),
+            EatEnd::Disconnected => Err(Error::NotConnected),
+            // upstream's itemListener rejects when the slot's item changed
+            // type mid-eat — an empty slot is a finished stack, not a
+            // switch. (Upstream appends `\nItem: ${newItem}` — JS prints
+            // "[object Object]", so the first line carries all the
+            // information.)
+            EatEnd::Finished => match self.hand_item(offhand) {
                 Some(held) if held.kind() != food.kind() => Err(Error::Failed(format!(
                     "Item switched early to: {}!",
                     held.name()
                 ))),
                 _ => Ok(()),
-            }
+            },
         }
     }
 
@@ -563,13 +530,10 @@ impl AutoEat<'_> {
 /// when the monitor ends, so a cancelled or disconnected driver exits
 /// silently.
 ///
-/// `root` is the disconnect signal (see [`TickStream`]).
-async fn drive(bot: Bot, cancel: Arc<AtomicBool>, root: tokio_util::sync::CancellationToken) {
-    let mut ticks = TickStream::new(&bot.client, root);
+/// `op` ends it: `disable_auto` or the disconnect.
+async fn drive(bot: Bot, op: Op) {
+    let mut ticks = TickStream::new(&bot.client, op.token.clone());
     while ticks.next().await {
-        if cancel.load(atomic::Ordering::Relaxed) {
-            return;
-        }
         // upstream statusCheck: `(bot.food < opts.minHunger ||
         // bot.health < opts.minHealth) && !isEating` → eat. `eat` gates
         // on is_eating itself, so only the thresholds are read here.

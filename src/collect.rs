@@ -31,6 +31,7 @@ use mineflayer_engine::{
 use tokio::sync::broadcast;
 
 use crate::bot::{with_component, with_component_mut};
+use crate::op::{Op, OpSlot};
 use crate::{
     Bot, BotEvent, Error, Result,
     pathfinder::{Goal, Movements},
@@ -113,11 +114,9 @@ pub struct CollectOpts {
 /// storage rule on `bot::BotShared`.
 #[derive(Component)]
 struct CollectState {
-    /// The in-flight collects' generation — `collect` snapshots it,
-    /// `cancel_task` and non-`append` collects bump it; a stale
-    /// generation is the cancellation signal (the flag-shape
-    /// [`crate::pvp`] drivers use).
-    generation: u64,
+    /// The running collect: a non-`append` collect and `cancel_task`
+    /// cancel it, and an `append` collect joins it.
+    task: OpSlot,
     /// How many collect calls are in flight (`append` can overlap them).
     active: usize,
     /// Plugin `chestLocations`.
@@ -132,7 +131,7 @@ struct CollectState {
 impl Default for CollectState {
     fn default() -> Self {
         Self {
-            generation: 0,
+            task: OpSlot::default(),
             active: 0,
             chest_locations: vec![],
             item_filter: default_item_filter(),
@@ -149,10 +148,10 @@ enum Attempt {
     Cancelled,
 }
 
-/// `true` when `generation` went stale — `cancel_task` or a newer
-/// non-`append` collect retired this run (or the state itself is gone).
-fn stale(client: &mineflayer_engine::Client, generation: u64) -> bool {
-    with_component::<CollectState, _>(client, |s| s.generation != generation).unwrap_or(true)
+/// `true` when `cancel_task` or a newer non-`append` collect ended this
+/// run. A disconnect is not a cancel: the run's next call reports it.
+fn stale(bot: &Bot, op: &Op) -> bool {
+    op.is_cancelled() && !bot.root.is_cancelled()
 }
 
 /// What [`CollectBlock::collect`] digs up — the `target` argument.
@@ -370,15 +369,16 @@ impl CollectBlock<'_> {
         };
         // non-append collects retire the in-flight run the way
         // upstream's `await this.cancelTask()` does; append shares its
-        // generation (and its fate under a later cancel)
-        let Some((generation, chest_locations, item_filter, movements)) =
+        // operation (and its fate under a later cancel)
+        let Some((op, chest_locations, item_filter, movements)) =
             with_component_mut::<CollectState, _>(&bot.client, |s| {
-                if !opts.append {
-                    s.generation += 1;
-                }
                 s.active += 1;
                 (
-                    s.generation,
+                    if opts.append {
+                        s.task.join(&bot.root)
+                    } else {
+                        s.task.start(&bot.root)
+                    },
                     opts.chest_locations
                         .unwrap_or_else(|| s.chest_locations.clone()),
                     opts.item_filter.unwrap_or_else(|| s.item_filter.clone()),
@@ -398,7 +398,7 @@ impl CollectBlock<'_> {
             .run(
                 &mut target,
                 &world,
-                generation,
+                &op,
                 &chest_locations,
                 &item_filter,
                 opts.ignore_no_path,
@@ -413,15 +413,15 @@ impl CollectBlock<'_> {
         result
     }
 
-    /// The find → goto → equip → dig → vacuum loop. `generation` is the
-    /// cancellation handle: once it goes stale the run wraps up like
+    /// The find → goto → equip → dig → vacuum loop. Once `op` is
+    /// cancelled the run wraps up like
     /// upstream's `PathStopped` catch — returning the partial haul, no
     /// error.
     async fn run(
         &self,
         target: &mut CollectTarget,
         world: &WorldRef,
-        generation: u64,
+        op: &Op,
         chest_locations: &[BlockPos],
         item_filter: &ItemFilter,
         ignore_no_path: bool,
@@ -435,7 +435,7 @@ impl CollectBlock<'_> {
         let mut last_err = None;
         let mut cancelled = false;
         while collected.len() < target.count {
-            if stale(&bot.client, generation) {
+            if stale(bot, op) {
                 cancelled = true;
                 break;
             }
@@ -443,7 +443,7 @@ impl CollectBlock<'_> {
                 .empty_inventory_if_full(chest_locations, item_filter)
                 .await
             {
-                if stale(&bot.client, generation) {
+                if stale(bot, op) {
                     cancelled = true;
                     break;
                 }
@@ -469,14 +469,14 @@ impl CollectBlock<'_> {
             }
             bot.emit_event(BotEvent::CollectBlockFound(block.clone()));
             let attempt = self
-                .attempt(world, &target.opts, pos, generation, ignore_no_path)
+                .attempt(world, &target.opts, pos, op, ignore_no_path)
                 .await?;
             tried.insert(pos);
             match attempt {
                 Attempt::Collected(block) => {
                     bot.emit_event(BotEvent::Collected(block.clone()));
                     collected.push(block);
-                    self.vacuum_drops(generation).await;
+                    self.vacuum_drops(op).await;
                 }
                 Attempt::Skipped(err) => last_err = err.or(last_err),
                 Attempt::Cancelled => {
@@ -507,7 +507,7 @@ impl CollectBlock<'_> {
         world: &WorldRef,
         opts: &FindBlocksOpts,
         pos: BlockPos,
-        generation: u64,
+        op: &Op,
         ignore_no_path: bool,
     ) -> Result<Attempt> {
         let bot = self.bot;
@@ -527,7 +527,7 @@ impl CollectBlock<'_> {
                     )))
                 }
             };
-        if stale(&bot.client, generation) {
+        if stale(bot, op) {
             return Ok(Attempt::Cancelled);
         }
         if let Err(e) = walked {
@@ -562,7 +562,7 @@ impl CollectBlock<'_> {
             )
             .await;
         if let Err(e) = equipped {
-            return if stale(&bot.client, generation) {
+            return if stale(bot, op) {
                 Ok(Attempt::Cancelled)
             } else {
                 Err(e)
@@ -592,7 +592,7 @@ impl CollectBlock<'_> {
             if s.active == 0 {
                 return false;
             }
-            s.generation += 1;
+            s.task.cancel();
             true
         })
         .unwrap_or(false);
@@ -600,7 +600,7 @@ impl CollectBlock<'_> {
             return;
         }
         // upstream `bot.pathfinder.stop()` — wakes a parked goto so the
-        // loop can see its stale generation promptly
+        // loop sees its cancel promptly
         bot.pathfinder().stop();
         let root = bot.root.clone();
         loop {
@@ -728,11 +728,11 @@ impl CollectBlock<'_> {
     /// them. Best-effort and bounded: a drop that never spawns, lands out
     /// of reach, or sits in lava costs at most the attempts/timeout above,
     /// then collect moves on — the drop is reported dug either way.
-    async fn vacuum_drops(&self, generation: u64) {
+    async fn vacuum_drops(&self, op: &Op) {
         // drops spawn a tick or two after the break lands server-side
         let _ = self.bot.wait_for_ticks(2).await;
         for _ in 0..MAX_VACUUM_ATTEMPTS {
-            if stale(&self.bot.client, generation) {
+            if stale(self.bot, op) {
                 return;
             }
             let my = self.bot.position();

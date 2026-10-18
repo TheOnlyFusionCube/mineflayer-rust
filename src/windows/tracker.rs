@@ -16,7 +16,7 @@ use mineflayer_engine::{
     protocol::packets::game::ClientboundGamePacket,
     registry::builtin::{ItemKind, MenuKind},
 };
-use tokio::sync::{Notify, broadcast};
+use tokio::sync::broadcast;
 
 use crate::{BotEvent, bot::with_component_mut};
 
@@ -53,12 +53,10 @@ pub(crate) struct WindowTracker {
     pub last_held: Option<(ItemKind, i32)>,
     /// `bot.usingHeldItem`.
     pub using_held_item: bool,
-    /// Bumped per `consume` call — a stale waiter resolves as cancelled,
-    /// like upstream's `eatingTask.cancel`.
-    pub eat_generation: u64,
-    /// Wakes `consume` on eat-finish (entity status 9, matching cooldown,
-    /// or a held-item type/count change).
-    pub eat_notify: Arc<Notify>,
+    /// The running eat. It sits beside `using_held_item` because the same
+    /// held-item packets end it: entity status 9, a cooldown for the held
+    /// item, or a held-item type/count change.
+    pub eat: crate::inventory::Eating,
     /// The quickbar slot we've told the server (or it told us) —
     /// `set_selected_hotbar_slot`'s component write lands a tick late,
     /// so reads route through here (upstream `carriedIndex`).
@@ -77,7 +75,7 @@ impl WindowTracker {
         if sig != self.last_held {
             self.last_held = sig;
             self.using_held_item = false;
-            self.eat_notify.notify_waiters();
+            self.eat.finish();
         }
     }
 
@@ -392,7 +390,7 @@ pub(crate) fn observe_event(
             t.using_held_item = false;
             // entity status 9 on our own entity = "finish using item"
             if p.event_id == 9 && self_id == Some(p.entity_id) {
-                t.eat_notify.notify_waiters();
+                t.eat.finish();
             }
             Vec::new()
         }
@@ -403,7 +401,7 @@ pub(crate) fn observe_event(
                 return Vec::new();
             }
             t.using_held_item = false;
-            t.eat_notify.notify_waiters();
+            t.eat.finish();
             Vec::new()
         }
         P::Respawn(_) | P::Login(_) => {

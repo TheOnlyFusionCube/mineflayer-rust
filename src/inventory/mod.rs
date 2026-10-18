@@ -12,7 +12,7 @@
 //! `activate_item`, and `deactivate_item` are synchronous upstream and
 //! only write a packet or emit an event, so they are plain `fn`.
 
-use std::{ops::Range, sync::Arc, time::Duration};
+use std::{ops::Range, time::Duration};
 
 use mineflayer_engine::{
     BlockPos,
@@ -32,11 +32,12 @@ use mineflayer_engine::{
     },
     registry::builtin::{BlockKind, ItemKind, MenuKind},
 };
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::{
     Bot, BotEvent, Error, Result,
     bot::wait::{await_event, await_map},
+    op::{Op, OpSlot},
     windows::{Item, Window, find_item_in, first_empty_in, held_item},
     world::Block,
 };
@@ -47,6 +48,37 @@ mod transfer;
 
 pub use transfer::TransferOpts;
 use transfer::put_selected;
+
+/// The running eat: a newer eat cancels it, and the finish signal ends it.
+#[derive(Debug, Default)]
+pub(crate) struct Eating {
+    op: OpSlot,
+    finished: Option<oneshot::Sender<()>>,
+}
+
+impl Eating {
+    /// End the eat as superseded.
+    pub(crate) fn cancel(&mut self) {
+        self.op.cancel();
+        self.finished = None;
+    }
+
+    /// The server or the held item ended the eat.
+    pub(crate) fn finish(&mut self) {
+        if let Some(finished) = self.finished.take() {
+            let _ = finished.send(());
+        }
+    }
+}
+
+/// How an eat wait ended.
+pub(crate) enum EatEnd {
+    Finished,
+    /// A newer eat started.
+    Superseded,
+    Timeout,
+    Disconnected,
+}
 pub(crate) use transfer::transfer;
 
 pub const QUICK_BAR_START: usize = 36;
@@ -214,21 +246,40 @@ impl Bot {
         crate::bot::with_component_mut(&self.client, f)
     }
 
-    /// Start an eat: bump the eat generation and wake the waiter of the
-    /// eat it supersedes. Returns the new generation and the notifier the
-    /// eat waits on.
-    pub(crate) fn start_eat(&self) -> (u64, Arc<tokio::sync::Notify>) {
+    /// Start an eat, which cancels the eat it supersedes (upstream's
+    /// `eatingTask.cancel`). The receiver resolves on the finish signal.
+    pub(crate) fn start_eat(&self) -> Option<(Op, oneshot::Receiver<()>)> {
         self.windows(|t| {
-            t.eat_generation += 1;
-            t.eat_notify.notify_waiters();
-            (t.eat_generation, t.eat_notify.clone())
+            let op = t.eat.op.start(&self.root);
+            let (finished, on_finish) = oneshot::channel();
+            t.eat.finished = Some(finished);
+            (op, on_finish)
         })
-        .unwrap_or_default()
     }
 
-    /// The generation of the last started eat.
-    pub(crate) fn eat_generation(&self) -> u64 {
-        self.windows(|t| t.eat_generation).unwrap_or_default()
+    /// Wait for the eat `op` to end, and release it.
+    pub(crate) async fn wait_eat(
+        &self,
+        op: &Op,
+        on_finish: oneshot::Receiver<()>,
+        timeout: Duration,
+    ) -> EatEnd {
+        let end = tokio::select! {
+            biased;
+            _ = self.root.cancelled() => EatEnd::Disconnected,
+            _ = op.cancelled() => EatEnd::Superseded,
+            finished = on_finish => match finished {
+                Ok(()) => EatEnd::Finished,
+                Err(_) => EatEnd::Superseded,
+            },
+            _ = tokio::time::sleep(timeout) => EatEnd::Timeout,
+        };
+        self.windows(|t| {
+            if t.eat.op.finish(op) {
+                t.eat.finished = None;
+            }
+        });
+        end
     }
 
     /// `bot.inventory` — the player's own inventory as a [`Window`] (id
@@ -690,29 +741,21 @@ impl Bot {
             // and the eat task then hangs; erroring is strictly better
             return Err(Error::InvalidState("Nothing held to consume".into()));
         }
-        // resolve a superseded consume() immediately, like upstream's
-        // eatingTask.cancel — it wakes here and fails the generation check
-        // below
-        let (generation, notify) = self.start_eat();
-        // register the waiter before activate_item so a finish packet
-        // that lands between the use_item write and the await can't be
-        // missed (upstream creates the eat task before activating)
-        let notified = notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
+        // start the eat before activate_item so a finish packet that
+        // lands between the use_item write and the wait can't be missed
+        // (upstream creates the eat task before activating)
+        let (op, on_finish) = self.start_eat().ok_or(Error::NotConnected)?;
         self.activate_item(false);
-        if tokio::time::timeout(Duration::from_millis(2500), notified)
+        match self
+            .wait_eat(&op, on_finish, Duration::from_millis(2500))
             .await
-            .is_err()
         {
-            return Err(Error::Timeout);
-        }
-        if self.eat_generation() == generation {
-            Ok(())
-        } else {
-            Err(Error::Cancelled(
+            EatEnd::Finished => Ok(()),
+            EatEnd::Superseded => Err(Error::Cancelled(
                 "Consuming cancelled due to calling bot.consume() again".into(),
-            ))
+            )),
+            EatEnd::Timeout => Err(Error::Timeout),
+            EatEnd::Disconnected => Err(Error::NotConnected),
         }
     }
 

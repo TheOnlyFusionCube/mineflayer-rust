@@ -174,8 +174,8 @@ async fn eat_emits_start_then_finish_on_consume_end() {
     assert!(bot.auto_eat().is_eating());
 
     // the bridge's real consume-finish (entity status 9 / held-stack
-    // change) fires `eat_notify`; simulate the wake directly
-    bot.windows(|t| t.eat_notify.notify_waiters());
+    // change) ends the eat; end it directly
+    bot.windows(|t| t.eat.finish());
 
     eating.await.unwrap().unwrap();
     assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
@@ -330,8 +330,8 @@ async fn driver_survives_lagged_ticks() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let cancel = Arc::new(AtomicBool::new(false));
-    let _driver = tokio::spawn(drive(bot.clone(), cancel, bot.root.clone()));
+    let op = OpSlot::default().start(&bot.root);
+    let _driver = tokio::spawn(drive(bot.clone(), op));
     let mut events = bot.events();
 
     // once the driver is parked on recv, overflow the capacity-1
@@ -344,17 +344,15 @@ async fn driver_survives_lagged_ticks() {
     assert_eq!(next_eat_start(&mut events).await, ItemKind::Apple);
 }
 
-/// The bridge's shutdown sender dropping (disconnect) is the only
-/// exit signal — the tick channel can never close while the driver's
-/// own `Client` holds the sender.
+/// The disconnect and the driver's own cancel end it — the tick channel
+/// can never close while the driver's own `Client` holds the sender.
 #[tokio::test]
 async fn driver_exits_on_shutdown() {
     let (bot, shutdown_tx) = monitored_bot(10, 20., &[(36, ItemKind::Apple)]);
-    let cancel = Arc::new(AtomicBool::new(false));
-    let driver = tokio::spawn(drive(bot.clone(), cancel.clone(), bot.root.clone()));
+    let op = OpSlot::default().start(&bot.root);
+    let driver = tokio::spawn(drive(bot.clone(), op));
 
-    // parked on ticks like a live connection — and cancel alone
-    // can't be observed until a tick or shutdown arrives
+    // parked on ticks like a live connection
     tokio::time::sleep(Duration::from_millis(20)).await;
     drop(shutdown_tx);
 
@@ -363,13 +361,12 @@ async fn driver_exits_on_shutdown() {
         .expect("driver outlived the connection")
         .unwrap();
 
-    // and cancel retires it on the next tick
+    // and a cancel retires it with no tick
     let (bot, _tx) = monitored_bot(20, 20., &[]);
-    let cancel = Arc::new(AtomicBool::new(false));
-    let driver = tokio::spawn(drive(bot.clone(), cancel.clone(), bot.root.clone()));
+    let mut slot = OpSlot::default();
+    let driver = tokio::spawn(drive(bot.clone(), slot.start(&bot.root)));
     tokio::time::sleep(Duration::from_millis(20)).await;
-    cancel.store(true, atomic::Ordering::Relaxed);
-    send_tick(&bot.client).await;
+    slot.cancel();
     tokio::time::timeout(Duration::from_secs(5), driver)
         .await
         .expect("cancelled driver kept running")
@@ -516,7 +513,7 @@ async fn held_item_type_switch_fails_the_eat() {
         let mut inv = ecs.get_mut::<Inventory>(bot.client.entity).unwrap();
         *inv.inventory_menu.slot_mut(36).unwrap() = ItemStack::new(ItemKind::Stone, 1);
     }
-    bot.windows(|t| t.eat_notify.notify_waiters());
+    bot.windows(|t| t.eat.finish());
 
     let err = eating.await.unwrap().unwrap_err();
     assert_eq!(err.to_string(), "Item switched early to: stone!");
@@ -526,8 +523,8 @@ async fn held_item_type_switch_fails_the_eat() {
 
 #[tokio::test]
 async fn superseding_consume_reports_distinctly() {
-    // a generation bump without the cancel flag — what a second
-    // consume() does — must not be mislabeled a manual cancellation
+    // a superseding eat — what a second consume() does — must not be
+    // mislabeled a manual cancellation
     let bot = eating_bot(&[(36, ItemKind::Apple)]);
     let mut opts = bot.auto_eat().opts();
     opts.eating_timeout = Duration::from_secs(5);
@@ -547,4 +544,39 @@ async fn superseding_consume_reports_distinctly() {
         "Eating cancelled due to calling bot.consume() again"
     );
     assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
+}
+
+/// A second `consume` cancels the first; the finish signal resolves the
+/// second; the disconnect ends a pending one.
+#[tokio::test]
+async fn consume_is_superseded_finished_and_disconnected() {
+    let (bot, shutdown) = monitored_bot(10, 20., &[(36, ItemKind::Apple)]);
+    let first = tokio::spawn({
+        let bot = bot.clone();
+        async move { bot.consume().await }
+    });
+    tokio::task::yield_now().await;
+    let second = tokio::spawn({
+        let bot = bot.clone();
+        async move { bot.consume().await }
+    });
+    let err = first.await.unwrap().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        Error::Cancelled("Consuming cancelled due to calling bot.consume() again".into())
+            .to_string()
+    );
+    bot.windows(|t| t.eat.finish());
+    second.await.unwrap().unwrap();
+
+    let third = tokio::spawn({
+        let bot = bot.clone();
+        async move { bot.consume().await }
+    });
+    tokio::task::yield_now().await;
+    drop(shutdown);
+    assert!(matches!(
+        third.await.unwrap().unwrap_err(),
+        Error::NotConnected
+    ));
 }
