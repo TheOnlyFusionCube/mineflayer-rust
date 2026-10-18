@@ -13,13 +13,13 @@ use mineflayer_engine::{
     core::{direction::Direction, game_type::GameMode, hit_result::BlockHitResult},
     ecs::{entity::Entity, prelude::Component, world::World},
     entity::{
-        ActiveEffects, Attributes, FluidOnEyes, Physics, Position, dimensions::EntityDimensions,
-        inventory::Inventory, mining::get_mine_progress,
+        ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory,
+        mining::get_mine_progress,
     },
     interact::pick::HitResultComponent,
     local_player::WorldHolder,
     mining::{CancelMiningEvent, Mining, MiningQueued},
-    physics::{clip::traverse_blocks, collision::BlockWithShape},
+    physics::collision::BlockWithShape,
 };
 use tokio::sync::broadcast;
 
@@ -505,7 +505,7 @@ impl Bot {
     /// center only when nothing obstructs the view and the block has no
     /// collision shape (tall grass), else `'Block not in view'`.
     async fn dig_raycast_look(&self, block: &Block, force: bool) -> Result<()> {
-        let Some(eye) = self.dig_eye_pos() else {
+        let Some((eye, _)) = self.eye_and_look() else {
             return Err(Error::NotConnected);
         };
         let center = block.pos.center();
@@ -558,34 +558,14 @@ impl Bot {
         Err(Error::InvalidState("Block not in view".to_string()))
     }
 
-    /// Eye position at feet + `EntityDimensions::eye_height` (the same
-    /// accessor `entity_at_cursor` uses internally).
-    fn dig_eye_pos(&self) -> Option<Vec3> {
-        self.client
-            .try_query_self::<(&Position, &EntityDimensions), _>(|(p, d)| p.up(d.eye_height as f64))
-            .ok()
-    }
-
-    /// Block-collision raycast — same machinery as `entity_at_cursor`'s
-    /// block pass: first collision-shape clip along the ray, `None` past
-    /// `range` or through unloaded chunks.
+    /// The first collision-shape clip along the ray; `None` past `range`
+    /// or through unloaded chunks.
     fn raycast_hit(&self, from: Vec3, direction: Vec3, range: f64) -> Option<BlockHitResult> {
-        if range <= 0. || direction.length_squared() == 0. {
-            return None;
-        }
         let shared = self.client.get_component::<WorldHolder>()?.shared.clone();
         let world = shared.read();
-        let to = from + direction * (range / direction.length());
-        traverse_blocks(
-            from,
-            to,
-            (),
-            |_, pos| {
-                let state = world.chunks.get_block_state(pos)?;
-                state.collision_shape().clip(from, to, pos).map(Some)
-            },
-            |_| None,
-        )
+        crate::world::raycast(&world, from, direction, range, |pos, state, to| {
+            state.collision_shape().clip(from, to, pos)
+        })
     }
 }
 

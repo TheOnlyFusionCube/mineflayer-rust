@@ -1,4 +1,3 @@
-
 use mineflayer_engine::protocol::packets::game::{
     c_boss_event::{AddOperation, BossBarColor, BossBarOverlay, Operation, Properties, Style},
     c_set_objective::Method,

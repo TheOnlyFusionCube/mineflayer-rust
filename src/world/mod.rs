@@ -500,10 +500,6 @@ impl Time {
     }
 }
 
-fn euclidean(a: BlockPos, b: BlockPos) -> f64 {
-    a.distance_to(b)
-}
-
 /// `world.getBlock` via the client's shared world, without naming the
 /// lock type.
 fn with_world<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&World) -> R) -> Option<R> {
@@ -521,10 +517,33 @@ fn block_at(client: &mineflayer_engine::Client, pos: BlockPos) -> Option<Block> 
         .map(|state| Block::new(client, pos, state))
 }
 
-/// Spiral-scan `find_blocks_in_chunk` over the chunk columns within
-/// `ceil((max_distance+8)/16)` chunk layers — port of mineflayer's
-/// findBlocks octahedron scan with its "stop a layer after reaching
-/// count" early exit.
+/// The chunk columns within `ceil((max_distance+8)/16)` chunk layers of
+/// `point`, in mineflayer's findBlocks spiral order, with its "stop a
+/// layer after reaching count" early exit; `chunk_matches` adds one
+/// chunk's matches. Closest first, at most `count`.
+fn spiral_find(
+    point: BlockPos,
+    max_distance: f64,
+    count: usize,
+    mut chunk_matches: impl FnMut(ChunkPos, &mut Vec<BlockPos>),
+) -> Vec<BlockPos> {
+    let mut found = vec![];
+    let layers = ((max_distance + 8.) / 16.).ceil().max(1.) as u32;
+    let mut iter = ChunkIterator::new(ChunkPos::from(point), layers);
+    let mut started_layer = 0;
+    while let Some(chunk_pos) = iter.next() {
+        chunk_matches(chunk_pos, &mut found);
+        if started_layer != iter.layer && found.len() >= count {
+            break;
+        }
+        started_layer = iter.layer;
+    }
+    found.sort_by(|a, b| a.distance_to(point).total_cmp(&b.distance_to(point)));
+    found.truncate(count);
+    found
+}
+
+/// [`spiral_find`] over the palette fast path of `find_blocks_in_chunk`.
 fn find_states(
     world: &World,
     point: BlockPos,
@@ -532,11 +551,7 @@ fn find_states(
     max_distance: f64,
     count: usize,
 ) -> Vec<BlockPos> {
-    let mut found = vec![];
-    let layers = ((max_distance + 8.) / 16.).ceil().max(1.) as u32;
-    let mut iter = ChunkIterator::new(ChunkPos::from(point), layers);
-    let mut started_layer = 0;
-    while let Some(chunk_pos) = iter.next() {
+    spiral_find(point, max_distance, count, |chunk_pos, found| {
         if let Some(chunk) = world.chunks.get(&chunk_pos) {
             find_blocks_in_chunk(
                 states,
@@ -544,24 +559,13 @@ fn find_states(
                 &chunk.read(),
                 world.chunks.min_y(),
                 |pos| {
-                    if euclidean(pos, point) <= max_distance {
+                    if pos.distance_to(point) <= max_distance {
                         found.push(pos)
                     }
                 },
             );
         }
-        if started_layer != iter.layer && found.len() >= count {
-            break;
-        }
-        started_layer = iter.layer;
-    }
-    found.sort_by(|a, b| {
-        euclidean(*a, point)
-            .partial_cmp(&euclidean(*b, point))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    found.truncate(count);
-    found
+    })
 }
 
 /// One chunk's in-range `(pos, state)` cells, in scan order — the part of
@@ -586,7 +590,7 @@ fn collect_chunk_cells(
                     y: base_y + sp.y as i32,
                     z: chunk_pos.z * 16 + sp.z as i32,
                 };
-                if euclidean(pos, point) <= max_distance {
+                if pos.distance_to(point) <= max_distance {
                     cells.push((pos, section.states.get_at_index(idx)));
                 }
             }
@@ -612,11 +616,7 @@ fn find_matching_unlocked(
     max_distance: f64,
     count: usize,
 ) -> Vec<BlockPos> {
-    let mut found = vec![];
-    let layers = ((max_distance + 8.) / 16.).ceil().max(1.) as u32;
-    let mut iter = ChunkIterator::new(ChunkPos::from(point), layers);
-    let mut started_layer = 0;
-    while let Some(chunk_pos) = iter.next() {
+    spiral_find(point, max_distance, count, |chunk_pos, found| {
         let cells = with_world(client, |w| {
             collect_chunk_cells(w, chunk_pos, point, max_distance)
         })
@@ -626,18 +626,7 @@ fn find_matching_unlocked(
                 found.push(pos);
             }
         }
-        if started_layer != iter.layer && found.len() >= count {
-            break;
-        }
-        started_layer = iter.layer;
-    }
-    found.sort_by(|a, b| {
-        euclidean(*a, point)
-            .partial_cmp(&euclidean(*b, point))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    found.truncate(count);
-    found
+    })
 }
 
 /// Matcher-mode `world.raycast` with the matcher outside the world lock:
@@ -653,27 +642,14 @@ fn raycast_unlocked(
     range: f64,
     matcher: &BlockMatcher,
 ) -> Option<Block> {
-    let len = direction.length();
-    if range <= 0. || len == 0. {
-        return None;
-    }
-    let to = from + direction * (range / len);
     let cells = with_world(client, |w| {
         // `traverse_blocks` takes an `Fn`, not `FnMut`; the visitor runs on
         // this thread only
         let cells = std::cell::RefCell::new(vec![]);
-        let _ = traverse_blocks(
-            from,
-            to,
-            (),
-            |_, pos| -> Option<Option<(BlockPos, BlockState)>> {
-                if let Some(state) = w.chunks.get_block_state(pos) {
-                    cells.borrow_mut().push((pos, state));
-                }
-                None
-            },
-            |_| None,
-        );
+        let _: Option<()> = raycast(w, from, direction, range, |pos, state, _| {
+            cells.borrow_mut().push((pos, state));
+            None
+        });
         cells.into_inner()
     })?;
     cells.into_iter().find_map(|(pos, state)| {
@@ -684,15 +660,15 @@ fn raycast_unlocked(
 
 /// `world.raycast` core — Amanatides & Woo DDA via the engine's
 /// `traverse_blocks`, faithful to upstream `WorldSync.raycast`: the first
-/// block whose *collision* shape is clipped wins (upstream's
-/// `iter.intersect(block.shapes)`). Matcher-mode rays go through
-/// [`raycast_unlocked`] so the user matcher stays outside the world lock.
-fn raycast_blocks(
+/// loaded block that `hit` accepts wins. `hit` gets the block and the ray's
+/// end point. `None` for a zero range or direction.
+pub(crate) fn raycast<T>(
     world: &World,
     from: Vec3,
     direction: Vec3,
     range: f64,
-) -> Option<(BlockPos, BlockState)> {
+    hit: impl Fn(BlockPos, BlockState, Vec3) -> Option<T>,
+) -> Option<T> {
     let len = direction.length();
     if range <= 0. || len == 0. {
         return None;
@@ -704,13 +680,27 @@ fn raycast_blocks(
         (),
         |_, pos| {
             let state = world.chunks.get_block_state(pos)?;
-            state
-                .collision_shape()
-                .clip(from, to, pos)
-                .map(|_| Some((pos, state)))
+            hit(pos, state, to).map(Some)
         },
         |_| None,
     )
+}
+
+/// The first block whose *collision* shape the ray clips (upstream's
+/// `iter.intersect(block.shapes)`). Matcher-mode rays go through
+/// [`raycast_unlocked`] so the user matcher stays outside the world lock.
+fn raycast_blocks(
+    world: &World,
+    from: Vec3,
+    direction: Vec3,
+    range: f64,
+) -> Option<(BlockPos, BlockState)> {
+    raycast(world, from, direction, range, |pos, state, to| {
+        state
+            .collision_shape()
+            .clip(from, to, pos)
+            .map(|_| (pos, state))
+    })
 }
 
 /// `canSeeBlock`'s matcher (upstream `match` in blocks.js): the ray
@@ -762,10 +752,6 @@ impl Bot {
     /// `bot.findBlocks({matching, point, maxDistance, count})` — positions
     /// of matching blocks, closest first.
     pub fn find_blocks(&self, opts: FindBlocksOpts) -> Vec<BlockPos> {
-        let mut opts = opts;
-        if opts.point.is_none() {
-            opts.point = Some(self.position());
-        }
         self.world()
             .map(|w| w.find_blocks(&opts))
             .unwrap_or_default()
@@ -819,7 +805,7 @@ impl Bot {
             };
             (hit.entity, hit.location)
         };
-        let eye = self.eye_pos()?;
+        let (eye, _) = self.eye_and_look()?;
         if location.distance_to(eye) > max_distance {
             return None;
         }
@@ -853,7 +839,7 @@ impl Bot {
     /// center; the first block upstream's matcher accepts must be the
     /// target (see `can_see_accepts`).
     pub fn can_see_block(&self, block: &Block) -> bool {
-        let (Some(eye), Some(world)) = (self.eye_pos(), self.world()) else {
+        let (Some((eye, _)), Some(world)) = (self.eye_and_look(), self.world()) else {
             return false;
         };
         let target = block.pos;
@@ -940,13 +926,9 @@ impl Bot {
         }
     }
 
-    fn eye_pos(&self) -> Option<Vec3> {
-        self.client
-            .try_query_self::<(&Position, &EntityDimensions), _>(|(p, d)| p.up(d.eye_height as f64))
-            .ok()
-    }
-
-    fn eye_and_look(&self) -> Option<(Vec3, LookDirection)> {
+    /// The eye position (feet plus `EntityDimensions::eye_height`) and the
+    /// look direction.
+    pub(crate) fn eye_and_look(&self) -> Option<(Vec3, LookDirection)> {
         self.client
             .try_query_self::<(&Position, &EntityDimensions, &LookDirection), _>(|(p, d, l)| {
                 (p.up(d.eye_height as f64), *l)

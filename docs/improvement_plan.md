@@ -1337,7 +1337,7 @@ the commit that completes the item.
 | PL4 | open | |
 | PL5 | open | |
 | CL1 | done | (this commit) |
-| CL2 | open | |
+| CL2 | done | (this commit) |
 | CL3 | open | |
 | CL4 | open | |
 | CL5 | open | |
