@@ -18,7 +18,7 @@ use mineflayer_engine::{
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{broadcast, watch};
 
-use crate::{Error, Result, chat::ChatShared};
+use crate::{Error, Result};
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
@@ -88,9 +88,6 @@ pub(crate) struct BotShared {
     /// `endReason` (`_client.once('end', ...)`), read by `chat`/`whisper`
     /// to distinguish "never entered play" from "disconnected pre-play".
     pub end_reason: Arc<Mutex<Option<String>>>,
-    /// Chat-domain state (pattern registry, tablist header/footer,
-    /// `tab_complete` correlation) — see `chat::ChatShared`.
-    pub chat: Arc<Mutex<ChatShared>>,
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links) — see `entity::EntityTracker`.
     pub entities: Arc<RwLock<crate::entity::EntityTracker>>,
@@ -174,7 +171,6 @@ impl BotShared {
         Self {
             quit_reason: Arc::new(Mutex::new(None)),
             end_reason: Arc::new(Mutex::new(None)),
-            chat: Arc::new(Mutex::new(ChatShared::default())),
             entities: Arc::new(RwLock::new(crate::entity::EntityTracker::default())),
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
                 events.clone(),
@@ -515,34 +511,21 @@ impl Bot {
 mod tests {
     use super::*;
 
-    /// Lock policy: a panic while a domain lock is held must not break
-    /// the domain for later calls. Every crate lock is `parking_lot`, which
-    /// does not poison; `std::sync` would panic on the second call.
+    /// Lock policy: a panic while a crate lock is held must not break it
+    /// for later calls. Every crate lock is `parking_lot`, which does not
+    /// poison; `std::sync` would panic on the second call.
     #[test]
-    fn domain_lock_survives_a_panicking_observer() {
+    fn a_lock_survives_a_panic_while_held() {
         let (events, _) = broadcast::channel(8);
         let shared = BotShared::new(events);
-        let chat = shared.chat.clone();
+        let quit = shared.quit_reason.clone();
         let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = chat.lock();
-            panic!("an observer panicked while holding the chat lock");
+            let _guard = quit.lock();
+            panic!("a task panicked while holding the lock");
         }));
-        assert!(panicked.is_err(), "the observer panic must unwind");
-        // the domain still works
-        chat.lock().patterns.add(
-            "probe",
-            vec![regex::Regex::new("probe").unwrap()],
-            crate::ChatPatternOpts::default(),
-        );
-        let events = chat
-            .lock()
-            .message_events(&mineflayer_engine::client_chat::ChatPacket::new("probe"));
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, BotEvent::ChatPattern { name, .. } if name == "probe")),
-            "the chat domain stopped working after the panic: {events:?}"
-        );
+        assert!(panicked.is_err(), "the panic must unwind");
+        *quit.lock() = Some("still works".into());
+        assert_eq!(quit.lock().as_deref(), Some("still works"));
     }
 
     #[test]

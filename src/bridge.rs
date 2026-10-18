@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use crate::{
     BotEvent,
     bot::with_component_mut,
-    chat::{ChatShared, TabList},
+    chat::{ChatState, TabList},
     entity,
 };
 
@@ -137,10 +137,7 @@ impl Bridge {
         root: tokio_util::sync::CancellationToken,
         options: BridgeOptions,
     ) -> Self {
-        let state = BridgeState {
-            chat: shared.chat.clone(),
-            ..Default::default()
-        };
+        let state = BridgeState::default();
         Self {
             client,
             shared,
@@ -256,7 +253,7 @@ const OBSERVERS: &[Observer] = &[
         })
         .unwrap_or_default()
     },
-    |cx, e| packet_events(cx.local, e),
+    |cx, e| packet_events(cx.client, cx.local, e),
     |cx, e| crate::movement::bridge_events(cx.client, &mut cx.local.movement, e),
     |cx, e| crate::pathfinder::bridge_events(cx.client, &mut cx.local.pathfinder, e),
     |cx, e| entity::observe_event(&cx.shared.entities, cx.client, e),
@@ -309,9 +306,6 @@ struct BridgeState {
     lids: crate::world::LidCounts,
     /// Movement tracking for `move`/`mount`/`dismount`.
     movement: crate::movement::MovementTracker,
-    /// Chat-domain state shared with `Bot` (pattern registry, tablist,
-    /// `tab_complete` correlation).
-    chat: Arc<Mutex<ChatShared>>,
     /// Pathfinder component-diff state for the goal/path events.
     pathfinder: crate::pathfinder::PathTracker,
 }
@@ -336,7 +330,10 @@ fn translate(
         }
         Event::Chat(packet) => {
             let mut out = vec![BotEvent::Chat(packet.clone())];
-            out.extend(state.chat.lock().message_events(&packet));
+            out.extend(
+                with_component_mut::<ChatState, _>(client, |c| c.message_events(&packet))
+                    .unwrap_or_default(),
+            );
             out
         }
         Event::Tick => vec![BotEvent::Tick],
@@ -488,12 +485,16 @@ fn player_list_events(
 
 /// The lifecycle and chat events derived from a packet. They go out after
 /// the misc and scoreboard events of the same packet.
-fn packet_events(state: &mut BridgeState, event: &Event) -> Vec<BotEvent> {
+fn packet_events(
+    client: &mineflayer_engine::Client,
+    state: &mut BridgeState,
+    event: &Event,
+) -> Vec<BotEvent> {
     let Event::Packet(packet) = event else {
         return Vec::new();
     };
     let mut out = lifecycle_packet_events(state, packet);
-    out.extend(packet_side_events(&state.chat, packet));
+    out.extend(packet_side_events(client, packet));
     out
 }
 
@@ -530,7 +531,10 @@ fn lifecycle_packet_events(
 /// same message family as a chat packet, `c_tab_list` updates the stored
 /// header/footer, and `c_command_suggestions` resolves a `tab_complete` call.
 /// The raw packet itself still goes out as `BotEvent::Packet` first.
-fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) -> Vec<BotEvent> {
+fn packet_side_events(
+    client: &mineflayer_engine::Client,
+    packet: &ClientboundGamePacket,
+) -> Vec<BotEvent> {
     match packet {
         ClientboundGamePacket::SetActionBarText(p) => {
             // upstream routes game_info text through
@@ -540,18 +544,21 @@ fn packet_side_events(chat: &Mutex<ChatShared>, packet: &ClientboundGamePacket) 
                 content: p.text.clone(),
                 overlay: true,
             }));
-            chat.lock().message_events(&chat_packet)
+            with_component_mut::<ChatState, _>(client, |c| c.message_events(&chat_packet))
+                .unwrap_or_default()
         }
         ClientboundGamePacket::TabList(p) => {
-            chat.lock().tablist = TabList {
-                header: p.header.clone(),
-                footer: p.footer.clone(),
-            };
+            with_component_mut::<ChatState, _>(client, |c| {
+                c.tablist = TabList {
+                    header: p.header.clone(),
+                    footer: p.footer.clone(),
+                }
+            });
             vec![]
         }
         ClientboundGamePacket::CommandSuggestions(p) => {
             let matches = p.suggestions.list().iter().map(|s| s.text()).collect();
-            chat.lock().complete_suggestions(p.id, matches);
+            with_component_mut::<ChatState, _>(client, |c| c.complete_suggestions(p.id, matches));
             vec![]
         }
         _ => vec![],

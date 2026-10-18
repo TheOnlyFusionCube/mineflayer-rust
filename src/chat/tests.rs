@@ -12,15 +12,21 @@ fn re(s: &str) -> Regex {
 /// its correlation entry behind.
 #[tokio::test]
 async fn cancelled_tab_complete_leaves_no_pending_entry() {
-    let client = crate::test_util::live_entity_client(mineflayer_engine::world::WorldName(
-        mineflayer_engine::Identifier::new("minecraft:overworld"),
+    let client = crate::test_util::live_entity_client((
+        mineflayer_engine::world::WorldName(mineflayer_engine::Identifier::new(
+            "minecraft:overworld",
+        )),
+        ChatState::default(),
     ));
     let bot = crate::test_util::bot(client);
     let call = bot.tab_complete("/he");
     // poll once so the entry is registered, then cancel
     let cancelled = tokio::time::timeout(Duration::from_millis(10), call).await;
     assert!(cancelled.is_err(), "no server, so no reply arrives");
-    assert!(bot.shared.chat.lock().completion_pending.is_empty());
+    assert_eq!(
+        crate::bot::with_component::<ChatState, _>(&bot.client, |c| c.completion_pending.len()),
+        Some(0)
+    );
 }
 
 #[test]
@@ -198,7 +204,7 @@ fn pattern_remove_by_id_and_name() {
 #[test]
 fn empty_pattern_set_never_matches() {
     // an empty set must not panic the bridge-side matcher
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     shared
         .patterns
         .add("empty", vec![], ChatPatternOpts::default());
@@ -252,7 +258,7 @@ async fn await_message_errors_on_closed_stream() {
 
 #[test]
 fn message_events_system_chat() {
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     let events = shared.message_events(&ChatPacket::new("server motd"));
     assert!(matches!(
         &events[..],
@@ -268,7 +274,7 @@ fn message_events_system_chat() {
 
 #[test]
 fn message_events_whisper() {
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     let events = shared.message_events(&ChatPacket::new("bob whispers: psst"));
     assert!(
         events.iter().any(|e| matches!(e, BotEvent::Whisper(_))),
@@ -281,9 +287,9 @@ fn message_events_whisper_gated_by_default_chat_patterns() {
     // options.defaultChatPatterns: false — upstream never registers the
     // legacy whisper patterns, so no whisper event; message/messagestr
     // still fire (they come from packet listeners, not patterns).
-    let mut shared = ChatShared {
+    let mut shared = ChatState {
         default_chat_patterns: false,
-        ..ChatShared::default()
+        ..ChatState::default()
     };
     let events = shared.message_events(&ChatPacket::new("bob whispers: psst"));
     assert!(
@@ -298,7 +304,7 @@ fn message_events_whisper_gated_by_default_chat_patterns() {
 
 #[test]
 fn message_events_game_info_gets_action_bar() {
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     let packet = ChatPacket::System(Arc::new(
         mineflayer_engine::protocol::packets::game::c_system_chat::ClientboundSystemChat {
             content: FormattedText::from("action!"),
@@ -321,7 +327,7 @@ fn message_events_game_info_gets_action_bar() {
 
 #[test]
 fn message_events_runs_patterns_on_messagestr() {
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     shared
         .patterns
         .add("shout", vec![re("LOUD")], ChatPatternOpts::default());
@@ -335,7 +341,7 @@ fn message_events_runs_patterns_on_messagestr() {
 
 #[test]
 fn completion_reply_resolves_pending() {
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     let (id, mut rx) = shared.register_completion();
     assert_eq!(id, 0);
     shared.complete_suggestions(id, vec!["gamemode".to_string()]);
@@ -346,7 +352,7 @@ fn completion_reply_resolves_pending() {
 
 #[test]
 fn tablist_stores_and_defaults_empty() {
-    let mut shared = ChatShared::default();
+    let mut shared = ChatState::default();
     assert_eq!(shared.tablist.header.to_string(), "");
     shared.tablist = TabList {
         header: FormattedText::from("h"),

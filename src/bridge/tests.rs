@@ -16,7 +16,7 @@ fn translate(
     event: Event,
 ) -> Vec<BotEvent> {
     let mut out = super::translate(state, quit_reason, client, event.clone());
-    out.extend(packet_events(state, &event));
+    out.extend(packet_events(client, state, &event));
     out
 }
 
@@ -416,7 +416,7 @@ fn translate_keepalive_dropped() {
 
 #[test]
 fn translate_chat_emits_message_family() {
-    let client = despawned();
+    let client = crate::test_util::live_entity_client(ChatState::default());
     let mut s = BridgeState::default();
     let qr = Mutex::new(None);
     let out = translate(
@@ -440,7 +440,7 @@ fn translate_chat_emits_message_family() {
 fn translate_action_bar_packet_feeds_message_family() {
     use mineflayer_engine::protocol::packets::game::c_set_action_bar_text::ClientboundSetActionBarText;
 
-    let client = despawned();
+    let client = crate::test_util::live_entity_client(ChatState::default());
     let mut s = BridgeState::default();
     let qr = Mutex::new(None);
     let packet = ClientboundGamePacket::SetActionBarText(ClientboundSetActionBarText {
@@ -463,7 +463,7 @@ fn translate_action_bar_packet_feeds_message_family() {
 fn translate_tab_list_packet_updates_shared() {
     use mineflayer_engine::protocol::packets::game::c_tab_list::ClientboundTabList;
 
-    let client = despawned();
+    let client = crate::test_util::live_entity_client(ChatState::default());
     let mut s = BridgeState::default();
     let qr = Mutex::new(None);
     let packet = ClientboundGamePacket::TabList(ClientboundTabList {
@@ -472,7 +472,8 @@ fn translate_tab_list_packet_updates_shared() {
     });
     let out = translate(&mut s, &qr, &client, Event::Packet(Arc::new(packet)));
     assert!(matches!(&out[..], [BotEvent::Packet(_)]));
-    let tablist = s.chat.lock().tablist.clone();
+    let tablist =
+        crate::bot::with_component::<ChatState, _>(&client, |c| c.tablist.clone()).unwrap();
     assert_eq!(tablist.header.to_string(), "h");
     assert_eq!(tablist.footer.to_string(), "f");
 }
@@ -487,10 +488,12 @@ fn translate_command_suggestions_resolves_pending() {
         protocol::packets::game::c_command_suggestions::ClientboundCommandSuggestions,
     };
 
-    let client = despawned();
+    let client = crate::test_util::live_entity_client(ChatState::default());
     let mut s = BridgeState::default();
     let qr = Mutex::new(None);
-    let (id, mut rx) = s.chat.lock().register_completion();
+    let (id, mut rx) =
+        crate::bot::with_component_mut::<ChatState, _>(&client, ChatState::register_completion)
+            .unwrap();
     let packet = ClientboundGamePacket::CommandSuggestions(ClientboundCommandSuggestions {
         id,
         suggestions: Suggestions::new(
@@ -505,14 +508,16 @@ fn translate_command_suggestions_resolves_pending() {
 
 #[test]
 fn translate_chat_runs_patterns() {
-    let client = despawned();
+    let client = crate::test_util::live_entity_client(ChatState::default());
     let mut s = BridgeState::default();
     let qr = Mutex::new(None);
-    s.chat.lock().patterns.add(
-        "probe",
-        vec![regex::Regex::new("worked").unwrap()],
-        crate::ChatPatternOpts::default(),
-    );
+    crate::bot::with_component_mut::<ChatState, _>(&client, |c| {
+        c.patterns.add(
+            "probe",
+            vec![regex::Regex::new("worked").unwrap()],
+            crate::ChatPatternOpts::default(),
+        )
+    });
     let out = translate(
         &mut s,
         &qr,

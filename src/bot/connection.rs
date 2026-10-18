@@ -375,15 +375,14 @@ impl BotBuilder {
         // before the first packet, inserted together in one lock
         let mut misc_state = crate::misc::MiscState::default();
         misc_state.difficulty = builder.difficulty;
-        client
-            .ecs
-            .write()
-            .entity_mut(client.entity)
-            .insert((misc_state, crate::interact::InteractShared::default()));
+        client.ecs.write().entity_mut(client.entity).insert((
+            misc_state,
+            crate::interact::InteractShared::default(),
+            crate::chat::ChatState::new(builder.default_chat_patterns),
+        ));
 
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let shared = BotShared::new(events);
-        shared.chat.lock().default_chat_patterns = builder.default_chat_patterns;
         let (alive, alive_rx) = watch::channel(());
         // subscribed before the bridge starts, so `Event::Init` — which
         // The engine queues before `join` returns — and everything since is on

@@ -2,12 +2,15 @@
 //! length splitting, chat patterns (`chat:{name}` events), `await_message`,
 //! `tab_complete`, and the tab-list header/footer.
 //!
-//! Incoming messages are normalized by `ChatShared::message_events`, which
+//! Incoming messages are normalized by `ChatState::message_events`, which
 //! the bridge calls for every chat packet and for the dedicated action-bar
 //! packet (the engine drops `c_set_action_bar_text`; upstream routes game_info
 //! text through `message`/`messagestr`/`actionBar`, so we synthesize an
 //! overlay [`ChatPacket::System`] to take the same path).
 
+use mineflayer_engine::ecs::{self as bevy_ecs, prelude::Component};
+
+use crate::bot::{with_component, with_component_mut};
 use std::{
     collections::{BTreeMap, HashMap},
     time::Duration,
@@ -425,8 +428,8 @@ impl ChatPatterns {
 /// `Bot` is `Arc<Mutex<..>>` rather than purely a handle: `add_chat_pattern`
 /// on any `Bot` clone must reach the matcher that runs inside the bridge,
 /// and `tab_complete` replies arrive there too.
-#[derive(Debug)]
-pub(crate) struct ChatShared {
+#[derive(Debug, Component)]
+pub(crate) struct ChatState {
     pub(crate) patterns: ChatPatterns,
     pub(crate) tablist: TabList,
     /// Correlation counter for `tab_complete` — `s_command_suggestion` carries
@@ -442,20 +445,24 @@ pub(crate) struct ChatShared {
     pub(crate) default_chat_patterns: bool,
 }
 
-impl Default for ChatShared {
+impl Default for ChatState {
     /// `options.defaultChatPatterns` defaults to `true` upstream.
     fn default() -> Self {
+        Self::new(true)
+    }
+}
+
+impl ChatState {
+    pub(crate) fn new(default_chat_patterns: bool) -> Self {
         Self {
             patterns: ChatPatterns::default(),
             tablist: TabList::default(),
             next_completion_id: 0,
             completion_pending: HashMap::new(),
-            default_chat_patterns: true,
+            default_chat_patterns,
         }
     }
-}
 
-impl ChatShared {
     /// The upstream message-family events for one incoming chat packet, in
     /// emission order: `message`, `messagestr`, then (inside the messagestr
     /// step, like upstream) `whisper` and completed `chat:{name}` events,
@@ -512,13 +519,13 @@ impl ChatShared {
 /// when the call ends for any reason. A reply already removed it, so the
 /// second remove is a no-op.
 struct PendingCompletion<'a> {
-    chat: &'a parking_lot::Mutex<ChatShared>,
+    client: &'a mineflayer_engine::Client,
     id: u32,
 }
 
 impl Drop for PendingCompletion<'_> {
     fn drop(&mut self) {
-        self.chat.lock().completion_pending.remove(&self.id);
+        with_component_mut::<ChatState, _>(self.client, |c| c.completion_pending.remove(&self.id));
     }
 }
 
@@ -647,18 +654,20 @@ impl Bot {
         patterns: Vec<Regex>,
         opts: ChatPatternOpts,
     ) -> usize {
-        self.shared.chat.lock().patterns.add(name, patterns, opts)
+        with_component_mut::<ChatState, _>(&self.client, |c| c.patterns.add(name, patterns, opts))
+            .unwrap_or_default()
     }
 
     /// `bot.removeChatPattern(name|id)` — by id removes that set; by name
     /// removes every set with the name.
     pub fn remove_chat_pattern(&self, key: impl Into<ChatPatternKey>) {
-        self.shared.chat.lock().patterns.remove(&key.into());
+        let key = key.into();
+        with_component_mut::<ChatState, _>(&self.client, |c| c.patterns.remove(&key));
     }
 
     /// `bot.chatPatterns` — a snapshot of the registered pattern sets.
     pub fn chat_patterns(&self) -> Vec<ChatPattern> {
-        self.shared.chat.lock().patterns.list()
+        with_component::<ChatState, _>(&self.client, |c| c.patterns.list()).unwrap_or_default()
     }
 
     /// `bot.awaitMessage(...args)` — resolves with the `messagestr` text of
@@ -696,11 +705,13 @@ impl Bot {
         if !self.logged_in() {
             return Err(Error::NotConnected);
         }
-        let (id, rx) = self.shared.chat.lock().register_completion();
+        let (id, rx) =
+            with_component_mut::<ChatState, _>(&self.client, ChatState::register_completion)
+                .ok_or(Error::NotConnected)?;
         // removes the correlation entry on every exit, including a caller
         // that drops this future before the reply or the timeout
         let _pending = PendingCompletion {
-            chat: &self.shared.chat,
+            client: &self.client,
             id,
         };
         self.client.write_packet(ServerboundCommandSuggestion {
@@ -719,7 +730,7 @@ impl Bot {
     /// `bot.tablist` — the tab-list header/footer the server last sent
     /// (empty until the first `c_tab_list` packet).
     pub fn tablist(&self) -> TabList {
-        self.shared.chat.lock().tablist.clone()
+        with_component::<ChatState, _>(&self.client, |c| c.tablist.clone()).unwrap_or_default()
     }
 }
 
