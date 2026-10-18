@@ -347,6 +347,15 @@ pub(super) fn block_event(
     lids: &mut LidCounts,
     p: &ClientboundBlockEvent,
 ) -> Vec<BotEvent> {
+    // upstream emits 'noteHeard' with the block position only, so it does
+    // not wait for the block to be in a loaded chunk
+    if p.block == BlockKind::NoteBlock {
+        return vec![BotEvent::NoteHeard {
+            block: p.pos,
+            instrument: crate::misc::Instrument::from(p.action_id),
+            pitch: p.action_parameter,
+        }];
+    }
     let Some(block) = block_at(client, p.pos) else {
         return vec![];
     };
@@ -368,7 +377,6 @@ pub(super) fn block_event(
                 direction,
             }]
         }
-        BlockKind::NoteBlock => vec![], // 'noteHeard' belongs to the misc domain.
         _ => {
             // 'left' halves of a double chest are swallowed upstream.
             let second = match p.block {

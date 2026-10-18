@@ -275,3 +275,52 @@ fn updates_of_one_position_in_one_pass_chain_their_old_blocks() {
         [(Some(BlockState::AIR), stone()), (Some(stone()), dirt)]
     );
 }
+
+#[test]
+fn note_heard_instruments() {
+    let packet = |instrument: u8| {
+        ClientboundGamePacket::BlockEvent(
+            mineflayer_engine::protocol::packets::game::c_block_event::ClientboundBlockEvent {
+                pos: mineflayer_engine::BlockPos::new(1, 2, 3),
+                action_id: instrument,
+                action_parameter: 12,
+                block: BlockKind::NoteBlock,
+            },
+        )
+    };
+    let client = crate::test_util::despawned_client();
+    let run = |p: ClientboundGamePacket| {
+        let ClientboundGamePacket::BlockEvent(p) = p else {
+            unreachable!()
+        };
+        block_event(&client, &mut LidCounts::default(), &p)
+    };
+    let e = run(packet(7));
+    assert!(matches!(
+        &e[..],
+        [BotEvent::NoteHeard {
+            instrument: crate::misc::Instrument::Guitar,
+            pitch: 12,
+            ..
+        }]
+    ));
+    // out of range falls back to harp
+    let e = run(packet(99));
+    assert!(matches!(
+        &e[..],
+        [BotEvent::NoteHeard {
+            instrument: crate::misc::Instrument::Harp,
+            ..
+        }]
+    ));
+    // a piston in an unloaded chunk has no block, so no event
+    let e = run(ClientboundGamePacket::BlockEvent(
+        mineflayer_engine::protocol::packets::game::c_block_event::ClientboundBlockEvent {
+            pos: mineflayer_engine::BlockPos::new(0, 0, 0),
+            action_id: 0,
+            action_parameter: 0,
+            block: BlockKind::Piston,
+        },
+    ));
+    assert!(e.is_empty());
+}

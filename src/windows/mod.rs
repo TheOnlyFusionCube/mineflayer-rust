@@ -196,7 +196,7 @@ impl Window {
     /// Always resolves for id 0 — see `menu_for_id`.
     pub fn menu(&self) -> Option<Menu> {
         let inv = self.shared.client.get_component::<Inventory>()?;
-        menu_for_id(&inv, self.shared.id)
+        menu_for_id(&inv, self.shared.id).cloned()
     }
 
     /// `window.slots` — every slot in the window (container region then
@@ -209,11 +209,12 @@ impl Window {
     /// The [`Item`] at absolute slot `i`, `None` when empty/out of
     /// range/closed.
     pub fn slot(&self, i: i32) -> Option<Item> {
-        let menu = self.menu()?;
-        if i < 0 || i as usize >= menu.len() {
-            return None;
-        }
-        Item::of(menu.slot(i as usize).cloned()?, i as i16)
+        let index = usize::try_from(i).ok()?;
+        let stack = {
+            let inv = self.shared.client.get_component::<Inventory>()?;
+            menu_for_id(&inv, self.shared.id)?.slot(index)?.clone()
+        };
+        Item::of(stack, i as i16)
     }
 
     /// `window.selectedItem` — the stack held by the cursor, `None` when
@@ -439,12 +440,12 @@ pub type Dispenser = Window;
 /// is open (upstream keeps `bot.inventory` live during open windows; the
 /// engine applies the id-0 packets to `inventory_menu`, so it stays live
 /// here too).
-pub(crate) fn menu_for_id(inv: &Inventory, id: i32) -> Option<Menu> {
+pub(crate) fn menu_for_id(inv: &Inventory, id: i32) -> Option<&Menu> {
     if id == 0 {
-        return Some(inv.inventory_menu.clone());
+        return Some(&inv.inventory_menu);
     }
     if inv.id == id {
-        inv.container_menu.clone()
+        inv.container_menu.as_ref()
     } else {
         None
     }

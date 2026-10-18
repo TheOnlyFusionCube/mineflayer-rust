@@ -1,11 +1,10 @@
-//! Misc domains — settings, resource packs, particles & sounds, bed/sleep,
-//! fishing, and creative mode — plus the facade-kept state that backs the
-//! scoreboard module.
+//! Misc domains — settings, resource packs, particles & sounds, titles,
+//! bed/sleep, fishing, and creative mode.
 //!
-//! The engine stores none of this data (scores, teams, boss bars, pending
-//! resource packs, …), so `MiscState` is kept as an ECS component on the
-//! bot entity: the bridge writes it from decoded packets, `Bot` methods
-//! read it.
+//! The engine stores none of the state here (the pending resource pack,
+//! the difficulty setting, the in-flight fish and creative requests), so
+//! `MiscState` is an ECS component on the bot entity: the bridge writes it
+//! from decoded packets, and `Bot` methods read it.
 
 use std::time::Duration;
 
@@ -23,7 +22,7 @@ use mineflayer_engine::{
     },
     registry::{
         Registry,
-        builtin::{BlockKind, EntityKind, ParticleKind, SoundEvent},
+        builtin::{EntityKind, ParticleKind, SoundEvent},
     },
 };
 use tokio::sync::{broadcast, oneshot};
@@ -139,38 +138,38 @@ fn handle_packet(
     client: &mineflayer_engine::Client,
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
-    // Entity sounds carry a minecraft entity id instead of a position —
-    // resolve it here so the pure handler stays free of ECS access.
-    let entity_pos = match packet {
-        ClientboundGamePacket::SoundEntity(p) => entity_position(client, p.id),
-        _ => None,
-    };
-
-    // Only `ResourcePackPush` writes misc state; every other packet
-    // builds its events without the exclusive ECS lock (the bridge used
-    // to take it for every clientbound packet — about 5,000 times a
-    // second at the measured peak). `connect` inserts `MiscState` before
-    // the first packet, so there is no insert-if-missing branch.
-    if matches!(packet, ClientboundGamePacket::ResourcePackPush(_)) {
-        let mut ecs = client.ecs.write();
-        let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {
-            return vec![];
-        };
-        let Some(mut state) = entity.get_mut::<MiscState>() else {
-            return vec![];
-        };
-        return handle_packet_state(&mut state, packet, entity_pos);
+    match packet {
+        // the one packet that writes misc state; the others need no ECS
+        // write lock (the bridge sees about 5,000 packets a second at peak)
+        ClientboundGamePacket::ResourcePackPush(p) => {
+            with_component_mut::<MiscState, _>(client, |state| resource_pack_push(state, p))
+                .unwrap_or_default()
+        }
+        // entity sounds carry an entity id instead of a position
+        ClientboundGamePacket::SoundEntity(p) => vec![sound_event(
+            &p.sound,
+            entity_position(client, p.id).unwrap_or_default(),
+            p.volume,
+            p.pitch,
+        )],
+        _ => packet_events(packet),
     }
-    handle_packet_state(&mut MiscState::default(), packet, entity_pos)
 }
 
-/// The pure packet → (state, events) reducer. `entity_pos` is the resolved
-/// position for `SoundEntity` packets (`None` is fine elsewhere).
-fn handle_packet_state(
-    state: &mut MiscState,
-    packet: &ClientboundGamePacket,
-    entity_pos: Option<Vec3>,
-) -> Vec<BotEvent> {
+/// Keep the push so that accept/deny can echo the exact uuid the server
+/// sent.
+fn resource_pack_push(state: &mut MiscState, p: &ClientboundResourcePackPush) -> Vec<BotEvent> {
+    state.latest_resource_pack = Some(p.clone());
+    vec![BotEvent::ResourcePack {
+        uuid: p.id,
+        url: p.url.clone(),
+        hash: p.hash.clone(),
+        required: p.required,
+    }]
+}
+
+/// The packets whose events need no state and no ECS access.
+fn packet_events(packet: &ClientboundGamePacket) -> Vec<BotEvent> {
     match packet {
         ClientboundGamePacket::SetTitleText(p) => vec![BotEvent::Title {
             text: p.text.to_string(),
@@ -208,31 +207,6 @@ fn handle_packet_state(
             p.volume,
             p.pitch,
         )],
-        ClientboundGamePacket::SoundEntity(p) => vec![sound_event(
-            &p.sound,
-            entity_pos.unwrap_or_default(),
-            p.volume,
-            p.pitch,
-        )],
-        ClientboundGamePacket::BlockEvent(p) => {
-            if p.block != BlockKind::NoteBlock {
-                return vec![];
-            }
-            vec![BotEvent::NoteHeard {
-                block: p.pos,
-                instrument: Instrument::from(p.action_id),
-                pitch: p.action_parameter,
-            }]
-        }
-        ClientboundGamePacket::ResourcePackPush(p) => {
-            state.latest_resource_pack = Some(p.clone());
-            vec![BotEvent::ResourcePack {
-                uuid: p.id,
-                url: p.url.clone(),
-                hash: p.hash.clone(),
-                required: p.required,
-            }]
-        }
         _ => vec![],
     }
 }

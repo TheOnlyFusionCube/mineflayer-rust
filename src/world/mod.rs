@@ -5,8 +5,6 @@
 
 use std::{collections::HashMap, io::Cursor};
 
-use tracing::warn;
-
 use mineflayer_engine::{
     Event,
     block::{BlockState, BlockStates, BlockTrait},
@@ -521,10 +519,9 @@ impl Time {
 /// `world.getBlock` via the client's shared world, without naming the
 /// lock type.
 fn with_world<R>(client: &mineflayer_engine::Client, f: impl FnOnce(&World) -> R) -> Option<R> {
-    let Some(holder) = client.get_component::<WorldHolder>() else {
-        warn!("the client's WorldHolder is gone (torn-down client) — block reads return None");
-        return None;
-    };
+    // a torn-down client has no WorldHolder, and every block read is then
+    // None; a per-read log would repeat for each read after teardown
+    let holder = client.get_component::<WorldHolder>()?;
     let world = holder.shared.read();
     Some(f(&world))
 }

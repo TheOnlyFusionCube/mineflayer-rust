@@ -1319,7 +1319,7 @@ the commit that completes the item.
 | ST3 | done | (this commit) |
 | ST4 | open | |
 | ST5 | open | |
-| ST6 | in progress: scoreboard, recipes, window data done | (this commit) |
+| ST6 | done | (this commit) |
 | ST7 | open | |
 | OP1 | done | (this commit) |
 | OP2 | open | |
@@ -1340,7 +1340,7 @@ the commit that completes the item.
 | CL2 | done | (this commit) |
 | CL3 | done | (this commit) |
 | CL4 | open | |
-| CL5 | open | |
+| CL5 | done | `3a39167`, (this commit) |
 | CL6 | done | `e67a4be` |
 | CL7 | open | |
 | CP1 | open | |

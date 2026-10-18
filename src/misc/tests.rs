@@ -17,15 +17,13 @@ use mineflayer_engine::{
 
 use super::*;
 
-fn run(packet: ClientboundGamePacket) -> (MiscState, Vec<BotEvent>) {
-    let mut s = MiscState::default();
-    let events = handle_packet_state(&mut s, &packet, None);
-    (s, events)
+fn run(packet: ClientboundGamePacket) -> Vec<BotEvent> {
+    packet_events(&packet)
 }
 
 #[test]
 fn title_packets() {
-    let (_, e) = run(ClientboundGamePacket::SetTitleText(
+    let e = run(ClientboundGamePacket::SetTitleText(
         ClientboundSetTitleText {
             text: "Hello".into(),
         },
@@ -34,7 +32,7 @@ fn title_packets() {
         matches!(&e[..], [BotEvent::Title { kind: TitleKind::Title, text }] if text == "Hello")
     );
 
-    let (_, e) = run(ClientboundGamePacket::SetSubtitleText(
+    let e = run(ClientboundGamePacket::SetSubtitleText(
         ClientboundSetSubtitleText {
             text: "World".into(),
         },
@@ -43,7 +41,7 @@ fn title_packets() {
         matches!(&e[..], [BotEvent::Title { kind: TitleKind::Subtitle, text }] if text == "World")
     );
 
-    let (_, e) = run(ClientboundGamePacket::SetTitlesAnimation(
+    let e = run(ClientboundGamePacket::SetTitlesAnimation(
         ClientboundSetTitlesAnimation {
             fade_in: 10,
             stay: 70,
@@ -59,7 +57,7 @@ fn title_packets() {
         }]
     ));
 
-    let (_, e) = run(ClientboundGamePacket::ClearTitles(ClientboundClearTitles {
+    let e = run(ClientboundGamePacket::ClearTitles(ClientboundClearTitles {
         reset_times: true,
     }));
     assert!(matches!(&e[..], [BotEvent::TitleClear]));
@@ -67,7 +65,7 @@ fn title_packets() {
 
 #[test]
 fn particle_event_fields() {
-    let (_, e) = run(ClientboundGamePacket::LevelParticles(
+    let e = run(ClientboundGamePacket::LevelParticles(
         ClientboundLevelParticles {
             override_limiter: false,
             always_show: true,
@@ -104,7 +102,7 @@ fn particle_event_fields() {
 #[test]
 fn sound_event_named_and_custom() {
     // a registry reference yields the builtin name
-    let (_, e) = run(ClientboundGamePacket::Sound(ClientboundSound {
+    let e = run(ClientboundGamePacket::Sound(ClientboundSound {
         sound: Holder::Reference(SoundEvent::EntityFishingBobberSplash),
         source: SoundSource::Neutral,
         x: 80,
@@ -119,7 +117,7 @@ fn sound_event_named_and_custom() {
     );
 
     // a direct custom sound carries its own identifier
-    let (_, e) = run(ClientboundGamePacket::Sound(ClientboundSound {
+    let e = run(ClientboundGamePacket::Sound(ClientboundSound {
         sound: Holder::Direct(mineflayer_engine::core::sound::CustomSound {
             sound_id: mineflayer_engine::Identifier::new("custom:thing"),
             range: None,
@@ -136,57 +134,15 @@ fn sound_event_named_and_custom() {
 }
 
 #[test]
-fn note_heard_instruments() {
-    let packet = |instrument: u8| {
-        ClientboundGamePacket::BlockEvent(
-            mineflayer_engine::protocol::packets::game::c_block_event::ClientboundBlockEvent {
-                pos: mineflayer_engine::BlockPos::new(1, 2, 3),
-                action_id: instrument,
-                action_parameter: 12,
-                block: BlockKind::NoteBlock,
-            },
-        )
-    };
-    let (_, e) = run(packet(7));
-    assert!(matches!(
-        &e[..],
-        [BotEvent::NoteHeard {
-            instrument: Instrument::Guitar,
-            pitch: 12,
-            ..
-        }]
-    ));
-    // out of range falls back to harp
-    let (_, e) = run(packet(99));
-    assert!(matches!(
-        &e[..],
-        [BotEvent::NoteHeard {
-            instrument: Instrument::Harp,
-            ..
-        }]
-    ));
-    // non-note-block block events are not ours
-    let (_, e) = run(ClientboundGamePacket::BlockEvent(
-        mineflayer_engine::protocol::packets::game::c_block_event::ClientboundBlockEvent {
-            pos: mineflayer_engine::BlockPos::new(0, 0, 0),
-            action_id: 0,
-            action_parameter: 0,
-            block: BlockKind::Piston,
-        },
-    ));
-    assert!(e.is_empty());
-}
-
-#[test]
 fn game_event_spawn_reset() {
-    let (_, e) = run(ClientboundGamePacket::GameEvent(ClientboundGameEvent {
+    let e = run(ClientboundGamePacket::GameEvent(ClientboundGameEvent {
         event: EventType::NoRespawnBlockAvailable,
         param: 0.0,
     }));
     assert!(matches!(&e[..], [BotEvent::SpawnReset]));
 
     // other game events aren't ours (time/weather is another unit's)
-    let (_, e) = run(ClientboundGamePacket::GameEvent(ClientboundGameEvent {
+    let e = run(ClientboundGamePacket::GameEvent(ClientboundGameEvent {
         event: EventType::StartRaining,
         param: 0.0,
     }));
@@ -203,7 +159,7 @@ fn resource_pack_push_tracked() {
         required: true,
         prompt: None,
     };
-    let events = handle_packet_state(&mut s, &ClientboundGamePacket::ResourcePackPush(push), None);
+    let events = resource_pack_push(&mut s, &push);
     assert!(
         matches!(&events[..], [BotEvent::ResourcePack { uuid, url, hash, required }] if url == "https://packs.example/x.zip" && hash == "deadbeef" && *required && uuid.is_nil())
     );

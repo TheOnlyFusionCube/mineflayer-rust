@@ -728,7 +728,8 @@ async fn bridge_emission_order() {
             },
         )))
         .unwrap();
-    // A note block (misc NoteHeard) and a chest (world ChestLidMove).
+    // A note block (NoteHeard) and a chest (ChestLidMove), both from the
+    // world observer's one block-event decoder.
     input_tx
         .send(packet_event(ClientboundGamePacket::BlockEvent(
             ClientboundBlockEvent {
@@ -778,7 +779,7 @@ async fn bridge_emission_order() {
         "MessageStr",
         "ActionBar",
         "Packet",       // note block
-        "NoteHeard",    // misc, straight after its Packet
+        "NoteHeard",    // world observer
         "Packet",       // chest block event
         "ChestLidMove", // world observer, last in the list
         "End",          // fallback on channel close
