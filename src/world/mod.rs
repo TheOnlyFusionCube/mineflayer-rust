@@ -5,7 +5,6 @@
 
 use std::{collections::HashMap, io::Cursor};
 
-use parking_lot::RwLock;
 use tracing::warn;
 
 use mineflayer_engine::{
@@ -36,6 +35,25 @@ use crate::{Bot, BotEvent, Error, Result};
 mod tracker;
 
 pub(crate) use tracker::{LidCounts, WorldState, observe_event};
+
+/// Records the state each server block update replaces, for
+/// `BotEvent::BlockUpdate`'s `old` (see [`tracker::record_replaced_blocks`]).
+pub(crate) struct WorldPlugin;
+
+impl mineflayer_engine::app::Plugin for WorldPlugin {
+    fn build(&self, app: &mut mineflayer_engine::app::App) {
+        use mineflayer_engine::{
+            block_update::handle_block_update_event, chunks::handle_receive_chunk_event,
+            ecs::schedule::IntoScheduleConfigs,
+        };
+        app.add_systems(
+            mineflayer_engine::app::Update,
+            tracker::record_replaced_blocks
+                .after(handle_receive_chunk_event)
+                .before(handle_block_update_event),
+        );
+    }
+}
 
 const DEFAULT_MAX_DISTANCE: f64 = 16.;
 const DEFAULT_COUNT: usize = 1;
@@ -877,53 +895,66 @@ impl Bot {
     /// (the engine drops it). `None` until the packet arrives (upstream reads
     /// an unset spawn point as `undefined`, not the origin).
     pub fn spawn_point(&self) -> Option<BlockPos> {
-        self.shared
-            .world_state
-            .read()
-            .spawn_point
-            .as_ref()
-            .map(|g| g.pos)
+        self.world_state(|s| s.spawn_point.as_ref().map(|g| g.pos))
+            .flatten()
     }
 
     /// `bot.time` — `None` until the first `set_time` packet.
     pub fn time(&self) -> Option<Time> {
-        let state = self.shared.world_state.read();
-        Time::compute(&state, self.dimension().as_ref())
+        let dimension = self.dimension();
+        self.world_state(|s| Time::compute(s, dimension.as_ref()))
+            .flatten()
     }
 
     /// `bot.isRaining`.
     pub fn is_raining(&self) -> bool {
-        self.shared.world_state.read().is_raining
+        self.world_state(|s| s.is_raining).unwrap_or_default()
     }
 
     /// `bot.rainState` — 0.0..1.0.
     pub fn rain_state(&self) -> f32 {
-        self.shared.world_state.read().rain_state
+        self.world_state(|s| s.rain_state).unwrap_or_default()
     }
 
     /// `bot.thunderState` — 0.0..1.0.
     pub fn thunder_state(&self) -> f32 {
-        self.shared.world_state.read().thunder_state
+        self.world_state(|s| s.thunder_state).unwrap_or_default()
     }
 
     /// `bot.game` — snapshot; `None` fields weren't seen yet.
     pub fn game(&self) -> Game {
         let (min_y, height) = with_world(&self.client, |w| (w.chunks.min_y(), w.chunks.height()))
             .map_or((None, None), |(y, h)| (Some(y), Some(h)));
-        let state = self.shared.world_state.read();
-        Game {
+        let (dimension, game_mode) = (self.dimension(), self.game_mode());
+        self.world_state(|state| Game {
             level_type: state
                 .is_flat
                 .map(|flat| if flat { "flat" } else { "default" }),
-            dimension: self.dimension(),
+            dimension: dimension.clone(),
             difficulty: state.difficulty,
-            game_mode: self.game_mode(),
+            game_mode,
             hardcore: state.hardcore,
             max_players: state.max_players,
             server_brand: state.server_brand.clone(),
             min_y,
             height,
-        }
+        })
+        .unwrap_or(Game {
+            level_type: None,
+            dimension,
+            difficulty: None,
+            game_mode,
+            hardcore: None,
+            max_players: None,
+            server_brand: None,
+            min_y,
+            height,
+        })
+    }
+
+    /// Read the world state; `None` before any world packet arrived.
+    fn world_state<R>(&self, f: impl FnOnce(&WorldState) -> R) -> Option<R> {
+        crate::bot::with_component(&self.client, f)
     }
 
     /// The eye position (feet plus `EntityDimensions::eye_height`) and the

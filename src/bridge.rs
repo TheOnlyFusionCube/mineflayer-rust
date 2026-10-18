@@ -260,7 +260,7 @@ const OBSERVERS: &[Observer] = &[
         crate::craft::observe_event(&cx.shared.recipes, e);
         Vec::new()
     },
-    |cx, e| crate::world::observe_event(&cx.shared.world_state, cx.client, &mut cx.local.lids, e),
+    |cx, e| crate::world::observe_event(cx.client, &mut cx.local.lids, e),
 ];
 
 /// Bridge bookkeeping that doesn't fit in the events themselves.

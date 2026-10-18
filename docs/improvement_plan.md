@@ -1314,9 +1314,9 @@ the commit that completes the item.
 | TS3 | open | |
 | TS4 | open | |
 | TS5 | open | |
-| ST1 | open | |
+| ST1 | replaced by D-port-plugins: the bridge stays, `BotPlugins` added | (ST3 commit) |
 | ST2 | open | |
-| ST3 | open | |
+| ST3 | done | (this commit) |
 | ST4 | open | |
 | ST5 | open | |
 | ST6 | open | |

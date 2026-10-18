@@ -345,7 +345,12 @@ impl BotBuilder {
             .await
             .map_err(|e| Error::Connect(e.to_string()))?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let opts = StartClientOpts::new(account, address, Some(tx));
+        let (opts, _) = StartClientOpts::new_with_plugins(
+            account,
+            address,
+            Some(tx),
+            crate::plugins::BotPlugins,
+        );
         let opts = match builder.proxy.clone() {
             Some(proxy) => opts.proxy(proxy),
             None => opts,

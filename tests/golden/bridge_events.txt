@@ -21,13 +21,13 @@ Tick
 Move { old_pos: Vec3 { x: 0.0, y: -0.23363200604248052, z: 0.0 } }
 # a block update
 Packet(BlockUpdate)
-BlockUpdate { old: Some(Block { pos: BlockPos { x: 1, y: 2, z: 3 }, state: BlockState(id: 1, Stone), .. }), new: Block { pos: BlockPos { x: 1, y: 2, z: 3 }, state: BlockState(id: 1, Stone), .. } }
+BlockUpdate { old: Some(Block { pos: BlockPos { x: 1, y: 2, z: 3 }, state: BlockState(id: 0, Air), .. }), new: Block { pos: BlockPos { x: 1, y: 2, z: 3 }, state: BlockState(id: 1, Stone), .. } }
 Tick
 Move { old_pos: Vec3 { x: 0.0, y: -0.4641593749554445, z: 0.0 } }
 # a section update
 Packet(SectionBlocksUpdate)
-BlockUpdate { old: Some(Block { pos: BlockPos { x: 17, y: 1, z: 1 }, state: BlockState(id: 10, Dirt), .. }), new: Block { pos: BlockPos { x: 17, y: 1, z: 1 }, state: BlockState(id: 10, Dirt), .. } }
-BlockUpdate { old: Some(Block { pos: BlockPos { x: 18, y: 1, z: 1 }, state: BlockState(id: 15, OakPlanks), .. }), new: Block { pos: BlockPos { x: 18, y: 1, z: 1 }, state: BlockState(id: 15, OakPlanks), .. } }
+BlockUpdate { old: Some(Block { pos: BlockPos { x: 17, y: 1, z: 1 }, state: BlockState(id: 0, Air), .. }), new: Block { pos: BlockPos { x: 17, y: 1, z: 1 }, state: BlockState(id: 10, Dirt), .. } }
+BlockUpdate { old: Some(Block { pos: BlockPos { x: 18, y: 1, z: 1 }, state: BlockState(id: 0, Air), .. }), new: Block { pos: BlockPos { x: 18, y: 1, z: 1 }, state: BlockState(id: 15, OakPlanks), .. } }
 Tick
 Move { old_pos: Vec3 { x: 0.0, y: -0.7684762024129888, z: 0.0 } }
 # an entity spawn

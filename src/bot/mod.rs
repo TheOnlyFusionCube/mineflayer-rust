@@ -18,7 +18,7 @@ use mineflayer_engine::{
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::{broadcast, watch};
 
-use crate::{Error, Result, chat::ChatShared, world::WorldState};
+use crate::{Error, Result, chat::ChatShared};
 
 /// A connected bot — the Rust analog of the object returned by mineflayer's
 /// `createBot()`.
@@ -91,10 +91,6 @@ pub(crate) struct BotShared {
     /// Chat-domain state (pattern registry, tablist header/footer,
     /// `tab_complete` correlation) — see `chat::ChatShared`.
     pub chat: Arc<Mutex<ChatShared>>,
-    /// Facade-kept world/game state (spawn point, clocks, weather, login
-    /// metadata) fed by [`crate::world::observe_event`] inside the bridge
-    /// task — the engine drops most of these packets upstream.
-    pub world_state: Arc<RwLock<WorldState>>,
     /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
     /// vehicle links) — see `entity::EntityTracker`.
     pub entities: Arc<RwLock<crate::entity::EntityTracker>>,
@@ -187,7 +183,6 @@ impl BotShared {
             quit_reason: Arc::new(Mutex::new(None)),
             end_reason: Arc::new(Mutex::new(None)),
             chat: Arc::new(Mutex::new(ChatShared::default())),
-            world_state: Arc::new(RwLock::new(WorldState::default())),
             entities: Arc::new(RwLock::new(crate::entity::EntityTracker::default())),
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
                 events.clone(),

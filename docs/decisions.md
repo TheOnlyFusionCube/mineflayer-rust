@@ -219,6 +219,25 @@ entry is an adapter that passes one shared `Observe` context to the
 domain function with the inputs that domain needs, so the domain
 functions keep narrow arguments and their unit tests.
 
+**D-port-plugins. The bridge stays the one sender; per-bot state moves into
+the ECS** (third plan, ST1 and ST3, 2026-10-17). The third plan's ST1 put
+every observer into a Bevy system so that the event order would be a
+system order. The golden test of TS2 showed that the order problem came
+from the engine's unordered `EventsPlugin` listeners (D-engine item 22),
+and with those chained the bridge order is deterministic. Moving the
+observers into the schedule would also deadlock: they read the ECS
+through `Client`, whose lock the runner holds for the whole pass. So the
+bridge keeps translating engine events between passes, in engine-event
+order, and the port adds Bevy plugins (`src/plugins.rs`, `BotPlugins`,
+built through `StartClientOpts::new_with_plugins`) only to record facts
+the bridge cannot read after a pass. The first is the world plugin: it
+records the state each queued block update replaces, before the engine
+applies it, so `BlockUpdate.old` is right on the first update of a
+position. Domain state the bridge writes lives in components on the
+client entity (`WorldState` is one), not in `BotShared` locks. Cost if
+wrong: a domain whose events must come from inside the pass needs a
+port-side queue that the bridge drains in order.
+
 **D-redecode. The port keeps its packet re-decodes** (plan item A6,
 2026-10-17). For each place the port decodes what the engine drops or
 keeps inside the ECS (`docs/reviews/01_engine_boundary.md`, B10 to B13),

@@ -23,6 +23,7 @@ mod bot;
 mod bridge;
 mod error;
 mod op;
+mod plugins;
 
 pub mod auto_eat;
 pub mod chat;

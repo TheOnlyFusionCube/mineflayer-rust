@@ -253,10 +253,10 @@ pub enum BotEvent {
     SpawnReset,
     /// `chunkColumnUnload` — a chunk column was unloaded by the server.
     ChunkUnload(ChunkPos),
-    /// `blockUpdate` — a block changed in the world. `old` is `None` when
-    /// the previous state wasn't observed; `new` is what the server
-    /// reported. The engine applies updates to the world itself on the next
-    /// tick, so `block_at` may briefly still return `old`.
+    /// `blockUpdate` — a block changed in the world. `old` is the state
+    /// the update replaced (`None` when its chunk was not loaded); `new` is
+    /// what the server reported. The world already shows `new` when the
+    /// event arrives.
     ///
     /// mineflayer's position-filtered `blockUpdate:x,y,z` is spelled by
     /// matching `new.pos` on this variant.

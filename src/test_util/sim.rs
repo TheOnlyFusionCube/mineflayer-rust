@@ -1,7 +1,7 @@
 //! `BotSim`: a [`Bot`] over the engine's real systems and the real bridge,
 //! fed clientbound packets with no network and no server.
 //!
-//! It builds the app from [`ClientPlugins`] like `connect` does, takes the
+//! It builds the app from the bot's plugins like `connect` does, takes the
 //! world out the way the engine's runner does, and runs the schedules by
 //! hand: one [`BotSim::tick`] is one `Main` pass and one `GameTick`, the
 //! runner's step. The engine events of the step then go through
@@ -11,7 +11,6 @@
 use std::sync::Arc;
 
 use mineflayer_engine::{
-    ClientPlugins,
     app::Main,
     connection::RawConnection,
     core::{position::ChunkPos, tick::GameTick},
@@ -61,7 +60,8 @@ impl BotSim {
 
     /// A bot in the game state that has received no game packet yet.
     pub(crate) fn connected(builder: BotBuilder) -> Self {
-        let mut sim = Simulation::new_with_plugins(ConnectionProtocol::Game, ClientPlugins);
+        let mut sim =
+            Simulation::new_with_plugins(ConnectionProtocol::Game, crate::plugins::BotPlugins);
         let sent = SentPackets::new(&mut sim);
         let (tx, engine_events) = mpsc::unbounded_channel();
         sim.app

@@ -124,13 +124,11 @@ fn lid_counts_dedup() {
 #[test]
 fn block_destruction_after_self_despawn_still_emits() {
     let client = crate::test_util::despawned_client();
-    let state = RwLock::new(WorldState::default());
     let mut lids = LidCounts::default();
     // the breaker id resolves through our own entity's index — once it
     // is despawned the lookup must miss, not panic.
     let out = decode_packet(
         &client,
-        &state,
         &mut lids,
         &ClientboundGamePacket::BlockDestruction(ClientboundBlockDestruction {
             id: MinecraftEntityId(1),
@@ -154,24 +152,13 @@ fn observe_event_decodes_packets_in_call_order() {
         c_forget_level_chunk::ClientboundForgetLevelChunk, c_game_event::ClientboundGameEvent,
     };
 
-    let client = crate::test_util::despawned_client();
-    let state = RwLock::new(WorldState::default());
+    let client = crate::test_util::live_entity_client(());
     let mut lids = LidCounts::default();
     let packet = |p| Event::Packet(Arc::new(p));
 
-    // The decode used to ride a second broadcast hop: events could land
-    // out of packet order and `Lagged` silently dropped them. Running
-    // inside the bridge's event loop makes the emission synchronous —
-    // this sequence is asserted in the order the packets arrived.
-    // Seed one tracked update inside the unloaded chunk and one
-    // outside: the unload drops only the inside entry.
-    {
-        let mut s = state.write();
-        s.update_and_old(BlockPos::new(48 + 5, 64, 64 + 2), stone()); // chunk (3,4)
-        s.update_and_old(BlockPos::new(0, 64, 0), stone()); // chunk (0,0)
-    }
+    // the events come out in the order of the packets, and the state is
+    // updated by the same call
     let out = observe_event(
-        &state,
         &client,
         &mut lids,
         &packet(ClientboundGamePacket::ForgetLevelChunk(
@@ -181,16 +168,7 @@ fn observe_event_decodes_packets_in_call_order() {
         )),
     );
     assert!(matches!(&out[..], [BotEvent::ChunkUnload(_)]));
-    {
-        let s = state.read();
-        assert!(
-            !s.last_block_updates
-                .contains_key(&BlockPos::new(53, 64, 66))
-        );
-        assert!(s.last_block_updates.contains_key(&BlockPos::new(0, 64, 0)));
-    }
     let out = observe_event(
-        &state,
         &client,
         &mut lids,
         &packet(ClientboundGamePacket::GameEvent(ClientboundGameEvent {
@@ -199,14 +177,15 @@ fn observe_event_decodes_packets_in_call_order() {
         })),
     );
     assert!(matches!(&out[..], [BotEvent::Rain]));
-    // state is updated by the same call, not a later task hop
-    assert!(state.read().is_raining);
+    assert_eq!(
+        crate::bot::with_component::<WorldState, _>(&client, |s| s.is_raining),
+        Some(true)
+    );
 }
 
 #[test]
 fn observe_event_ticks_clocks_on_tick() {
-    let client = crate::test_util::despawned_client();
-    let state = RwLock::new(WorldState {
+    let client = crate::test_util::live_entity_client(WorldState {
         clocks: HashMap::from([(
             Identifier::from("minecraft:overworld"),
             ClockState {
@@ -218,94 +197,81 @@ fn observe_event_ticks_clocks_on_tick() {
         ..Default::default()
     });
     let mut lids = LidCounts::default();
-    assert!(observe_event(&state, &client, &mut lids, &Event::Tick).is_empty());
-    let clock = &state.read().clocks[&Identifier::from("minecraft:overworld")];
+    assert!(observe_event(&client, &mut lids, &Event::Tick).is_empty());
+    let clock = crate::bot::with_component::<WorldState, _>(&client, |s| {
+        s.clocks[&Identifier::from("minecraft:overworld")].clone()
+    })
+    .unwrap();
     assert_eq!(clock.total_ticks, 101);
     assert!((clock.partial_tick - 0.9).abs() < f32::EPSILON);
     // non-packet events decode to nothing
-    assert!(observe_event(&state, &client, &mut lids, &Event::Login).is_empty());
+    assert!(observe_event(&client, &mut lids, &Event::Login).is_empty());
 }
 
-/// `handle_block_update_event` applies the update inside the
-/// same `Update` pass that emits `Event::Packet`, and the bridge
-/// can't observe mid-pass — so a live world read can't supply
-/// `oldBlock`. The tracked update history must: a re-updated
-/// position reports its last-reported state even though the world
-/// already shows the new one.
+/// Upstream reads `oldBlock` before it writes the new state, so even the
+/// first update of a position reports what was there.
 #[test]
-fn block_update_old_comes_from_update_history() {
+fn the_first_update_of_a_position_reports_the_old_block() {
     use mineflayer_engine::protocol::packets::game::c_block_update::ClientboundBlockUpdate;
 
-    let client = crate::test_util::live_entity_client(());
-    let (world, _partial) = test_world();
-    let shared = std::sync::Arc::new(parking_lot::RwLock::new(world));
-    client
-        .ecs
-        .write()
-        .entity_mut(client.entity)
-        .insert(WorldHolder::new(client.entity, shared.clone()));
-
-    let state = RwLock::new(WorldState::default());
-    let mut lids = LidCounts::default();
-    let pos = BlockPos::new(1, 64, 1);
-    let dirt = BlockState::from(BlockKind::Dirt);
-    let packet = |block_state| {
-        Event::Packet(Arc::new(ClientboundGamePacket::BlockUpdate(
-            ClientboundBlockUpdate { pos, block_state },
-        )))
-    };
-
-    // Simulate the engine's real ordering: `handle_block_update_event`
-    // already wrote the new state into the world when this packet's
-    // `Event::Packet` is decoded.
-    shared.write().chunks.set_block_state(pos, stone());
-    let out = observe_event(&state, &client, &mut lids, &packet(stone()));
-    // A never-before-updated position has no history — the only
-    // answer available is the post-apply read, which echoes the new
-    // state back as `old` (the documented limit).
-    assert!(matches!(
-        &out[..],
-        [BotEvent::BlockUpdate {
-            old: Some(old),
-            new
-        }] if old.state == stone() && new.state == stone()
-    ));
-
-    // Second update: history wins over the post-apply read — `old`
-    // is stone even though the world already shows dirt.
-    shared.write().chunks.set_block_state(pos, dirt);
-    let out = observe_event(&state, &client, &mut lids, &packet(dirt));
-    assert!(matches!(
-        &out[..],
-        [BotEvent::BlockUpdate {
-            old: Some(old),
-            new
-        }] if old.state == stone() && new.state == dirt
-    ));
+    let mut sim = crate::test_util::sim::BotSim::new();
+    sim.events();
+    let pos = BlockPos::new(1, 2, 3);
+    sim.receive(ClientboundBlockUpdate {
+        pos,
+        block_state: stone(),
+    });
+    sim.tick();
+    let updates: Vec<_> = sim
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            BotEvent::BlockUpdate { old, new } => Some((old.map(|b| b.state), new.state)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(updates, [(Some(BlockState::AIR), stone())]);
 }
 
-/// The tracking bound clears wholesale at the cap — the next update
-/// reports its post-apply read again instead of a stale state.
+/// Two updates of one position in one pass: the second's `old` is the
+/// first's `new`, in packet order.
 #[test]
-fn update_history_is_bounded() {
-    let mut state = WorldState::default();
-    for x in 0..MAX_TRACKED_UPDATES as i32 {
-        assert!(
-            state
-                .update_and_old(BlockPos::new(x, 0, 0), stone())
-                .is_none()
-        );
-    }
-    // at capacity: re-updating a *tracked* position still returns
-    // its predecessor — hot positions aren't flushed wholesale
-    let pos = BlockPos::new(5, 0, 0);
+fn updates_of_one_position_in_one_pass_chain_their_old_blocks() {
+    use mineflayer_engine::{
+        core::position::{ChunkSectionBlockPos, ChunkSectionPos},
+        protocol::packets::game::c_section_blocks_update::{
+            BlockStateWithPosition, ClientboundSectionBlocksUpdate,
+        },
+    };
+
+    let mut sim = crate::test_util::sim::BotSim::new();
+    sim.events();
+    let dirt = BlockState::from(BlockKind::Dirt);
+    let at = ChunkSectionBlockPos { x: 1, y: 1, z: 1 };
+    sim.receive(ClientboundSectionBlocksUpdate {
+        section_pos: ChunkSectionPos { x: 0, y: 0, z: 0 },
+        states: vec![
+            BlockStateWithPosition {
+                pos: at,
+                state: stone(),
+            },
+            BlockStateWithPosition {
+                pos: at,
+                state: dirt,
+            },
+        ],
+    });
+    sim.tick();
+    let updates: Vec<_> = sim
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            BotEvent::BlockUpdate { old, new } => Some((old.map(|b| b.state), new.state)),
+            _ => None,
+        })
+        .collect();
     assert_eq!(
-        state.update_and_old(pos, BlockState::from(BlockKind::Dirt)),
-        Some(stone())
+        updates,
+        [(Some(BlockState::AIR), stone()), (Some(stone()), dirt)]
     );
-    // a *new* position at capacity clears wholesale and records
-    // fresh — it reports `None` (no history) again
-    let fresh = BlockPos::new(MAX_TRACKED_UPDATES as i32, 0, 0);
-    assert!(state.update_and_old(fresh, stone()).is_none());
-    assert!(state.last_block_updates.len() <= MAX_TRACKED_UPDATES);
 }

@@ -1,17 +1,29 @@
 //! The world-domain reducer: `WorldState` (spawn point, clocks, weather,
-//! login metadata, block-update history) and the packet decode that
-//! feeds it and raises the block, chest-lid, and piston events.
+//! login metadata) and the packet decode that feeds it and raises the
+//! block, chest-lid, and piston events.
+
+use std::collections::VecDeque;
+
+use mineflayer_engine::{
+    block_update::QueuedServerBlockUpdates,
+    ecs::{
+        self as bevy_ecs,
+        prelude::{Commands, Component, Entity, Query},
+    },
+    protocol::packets::game::{
+        ClientboundBlockDestruction, ClientboundCustomPayload, ClientboundSetTime,
+    },
+};
+use tracing::debug;
 
 use super::*;
-use mineflayer_engine::protocol::packets::game::{
-    ClientboundBlockDestruction, ClientboundCustomPayload, ClientboundForgetLevelChunk,
-    ClientboundLogin, ClientboundSectionBlocksUpdate, ClientboundSetTime,
-};
+use crate::bot::with_component_mut;
 
-/// Facade-kept world/game state, fed by [`observe_event`] inside the
-/// bridge's event loop. Fields that the engine already owns (dimension,
-/// gamemode) are read live off the client instead.
-#[derive(Default)]
+/// World and game state the engine drops, on the client entity. The
+/// bridge's [`observe_event`] writes it; the `Bot` world methods read it.
+/// Fields that the engine already owns (dimension, gamemode) are read live
+/// off the client instead.
+#[derive(Component, Default)]
 pub(crate) struct WorldState {
     /// `bot.spawnPoint` — from `c_set_default_spawn_position` (dropped
     /// by the engine).
@@ -29,48 +41,64 @@ pub(crate) struct WorldState {
     pub(super) max_players: Option<i32>,
     pub(super) is_flat: Option<bool>,
     pub(super) server_brand: Option<String>,
-    /// `BlockState` last *reported* per updated position — the
-    /// `blockUpdate` `oldBlock` source of truth. The bridge decodes
-    /// `Event::Packet` only after the engine's `Update` pass finished (its
-    /// `run_schedule_loop` holds the ECS write guard across the whole
-    /// pass, and both `packet_listener` and
-    /// `handle_block_update_event` run inside it — the async receiver
-    /// can't interleave mid-pass), so the live world already shows the
-    /// new state when we read `old`. Positions never seen updated fall
-    /// back to that post-apply read (they report `old == new` — the
-    /// best available without shadowing every loaded block). Cleared
-    /// on login/respawn (dimension change) and per-position on chunk
-    /// unload, bounded by [`MAX_TRACKED_UPDATES`].
-    pub(super) last_block_updates: HashMap<BlockPos, BlockState>,
 }
 
-/// Bound on [`WorldState::last_block_updates`] — generous enough for a
-/// busy redstone world; a full map clears wholesale on the next *new*
-/// position (already-tracked positions keep their history — see
-/// [`WorldState::update_and_old`]).
-pub(super) const MAX_TRACKED_UPDATES: usize = 1 << 16;
+/// The state each queued server block update replaced, in queue order.
+/// [`record_replaced_blocks`] appends during the engine pass; the bridge
+/// takes one entry per block update it decodes after the pass.
+#[derive(Component, Default)]
+pub(crate) struct ReplacedBlocks(VecDeque<(BlockPos, Option<BlockState>)>);
+
+/// Records the state each queued block update will replace. It runs after
+/// the engine applied this pass's chunks and before it applies the block
+/// updates, so a second update of one position in one pass replaces the
+/// first one's state, as upstream's `oldBlock` does.
+pub(crate) fn record_replaced_blocks(
+    mut commands: Commands,
+    mut query: Query<(
+        Entity,
+        &QueuedServerBlockUpdates,
+        &WorldHolder,
+        Option<&mut ReplacedBlocks>,
+    )>,
+) {
+    for (entity, queued, holder, replaced) in &mut query {
+        if queued.list.is_empty() {
+            continue;
+        }
+        let world = holder.shared.read();
+        let mut pending: HashMap<BlockPos, BlockState> = HashMap::new();
+        let entries = queued.list.iter().map(|&(pos, new)| {
+            let old = pending
+                .insert(pos, new)
+                .or_else(|| world.chunks.get_block_state(pos));
+            (pos, old)
+        });
+        match replaced {
+            Some(mut replaced) => replaced.0.extend(entries),
+            None => {
+                let entries = ReplacedBlocks(entries.collect());
+                commands.entity(entity).insert(entries);
+            }
+        }
+    }
+}
+
+/// The state the next decoded update of `pos` replaced. Entries for
+/// updates the bridge never decoded are dropped on the way.
+fn take_replaced(client: &mineflayer_engine::Client, pos: BlockPos) -> Option<Option<BlockState>> {
+    with_component_mut::<ReplacedBlocks, _>(client, |replaced| {
+        while let Some((at, old)) = replaced.0.pop_front() {
+            if at == pos {
+                return Some(old);
+            }
+        }
+        None
+    })
+    .flatten()
+}
 
 impl WorldState {
-    /// Record `new_state` as `pos`'s last-known state and return the
-    /// previously recorded one — the `blockUpdate` `oldBlock` source of
-    /// truth (see the field doc for why the live world can't answer).
-    /// `None` means we never saw this position updated; the caller
-    /// falls back to the post-apply world read.
-    pub(super) fn update_and_old(
-        &mut self,
-        pos: BlockPos,
-        new_state: BlockState,
-    ) -> Option<BlockState> {
-        // Only a *new* position can grow the map — re-updates to a
-        // tracked position must keep their history even at capacity.
-        if self.last_block_updates.len() >= MAX_TRACKED_UPDATES
-            && !self.last_block_updates.contains_key(&pos)
-        {
-            self.last_block_updates.clear();
-        }
-        self.last_block_updates.insert(pos, new_state)
-    }
-
     /// Vanilla clock tick: `partial_tick += rate; total_ticks += floor`.
     pub(super) fn tick_clocks(&mut self) {
         for clock in self.clocks.values_mut() {
@@ -168,57 +196,66 @@ impl LidCounts {
 /// `lids` is the bridge-kept `openCountByPos` dedup map — one per
 /// connection, like upstream's.
 pub(crate) fn observe_event(
-    state: &RwLock<WorldState>,
     client: &mineflayer_engine::Client,
     lids: &mut LidCounts,
     event: &Event,
 ) -> Vec<BotEvent> {
     match event {
         Event::Tick => {
-            state.write().tick_clocks();
+            with_component_mut::<WorldState, _>(client, WorldState::tick_clocks);
             vec![]
         }
-        Event::Packet(packet) => decode_packet(client, state, lids, packet),
+        Event::Packet(packet) => decode_packet(client, lids, packet),
         _ => vec![],
     }
 }
 
+/// Change the world state on the client entity; no events.
+fn update(client: &mineflayer_engine::Client, f: impl FnOnce(&mut WorldState)) -> Vec<BotEvent> {
+    with_component_mut::<WorldState, _>(client, f);
+    vec![]
+}
+
 pub(super) fn decode_packet(
     client: &mineflayer_engine::Client,
-    state: &RwLock<WorldState>,
     lids: &mut LidCounts,
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
     match packet {
-        ClientboundGamePacket::BlockUpdate(p) => vec![block_update_event(
-            client,
-            &mut state.write(),
-            lids,
-            p.pos,
-            p.block_state,
-        )],
-        ClientboundGamePacket::SectionBlocksUpdate(p) => {
-            section_blocks_update(client, state, lids, p)
+        ClientboundGamePacket::BlockUpdate(p) => {
+            vec![block_update_event(client, lids, p.pos, p.block_state)]
         }
-        ClientboundGamePacket::ForgetLevelChunk(p) => forget_chunk(state, p),
-        ClientboundGamePacket::SetTime(p) => set_time(client, state, p),
-        ClientboundGamePacket::GameEvent(p) => state.write().apply_game_event(p.event, p.param),
+        ClientboundGamePacket::SectionBlocksUpdate(p) => p
+            .states
+            .iter()
+            .map(|s| block_update_event(client, lids, p.section_pos + s.pos, s.state))
+            .collect(),
+        ClientboundGamePacket::ForgetLevelChunk(p) => vec![BotEvent::ChunkUnload(p.pos)],
+        ClientboundGamePacket::SetTime(p) => set_time(client, p),
+        ClientboundGamePacket::GameEvent(p) => {
+            with_component_mut::<WorldState, _>(client, |s| s.apply_game_event(p.event, p.param))
+                .unwrap_or_default()
+        }
         ClientboundGamePacket::ChangeDifficulty(p) => {
-            state.write().difficulty = Some(p.difficulty);
-            vec![]
+            update(client, |s| s.difficulty = Some(p.difficulty))
         }
-        ClientboundGamePacket::Login(p) => login(state, p),
+        ClientboundGamePacket::Login(p) => {
+            update(client, |s| {
+                s.hardcore = Some(p.hardcore);
+                s.max_players = Some(p.max_players);
+                s.is_flat = Some(p.common.is_flat);
+            });
+            vec![BotEvent::GameStateChanged]
+        }
         ClientboundGamePacket::Respawn(p) => {
-            let mut state = state.write();
-            state.is_flat = Some(p.common.is_flat);
-            state.last_block_updates.clear();
+            update(client, |s| s.is_flat = Some(p.common.is_flat));
             vec![BotEvent::GameStateChanged]
         }
         ClientboundGamePacket::SetDefaultSpawnPosition(p) => {
-            state.write().spawn_point = Some(p.global_pos.clone());
+            update(client, |s| s.spawn_point = Some(p.global_pos.clone()));
             vec![BotEvent::GameStateChanged]
         }
-        ClientboundGamePacket::CustomPayload(p) => custom_payload(state, p),
+        ClientboundGamePacket::CustomPayload(p) => custom_payload(client, p),
         ClientboundGamePacket::OpenSignEditor(p) => vec![BotEvent::SignOpen {
             block: block_at(client, p.pos),
             is_front_text: p.is_front_text,
@@ -232,89 +269,36 @@ pub(super) fn decode_packet(
     }
 }
 
-fn section_blocks_update(
-    client: &mineflayer_engine::Client,
-    state: &RwLock<WorldState>,
-    lids: &mut LidCounts,
-    p: &ClientboundSectionBlocksUpdate,
-) -> Vec<BotEvent> {
-    let mut out = Vec::with_capacity(p.states.len());
-    // one write guard across the batch — every entry updates the
-    // tracker, so sequential updates to the same position see the
-    // section's own earlier state as `old` (matching the packet
-    // order the server applied them in).
-    let mut state = state.write();
-    for s in &p.states {
-        out.push(block_update_event(
-            client,
-            &mut state,
-            lids,
-            p.section_pos + s.pos,
-            s.state,
-        ));
-    }
-    out
-}
-
-fn forget_chunk(state: &RwLock<WorldState>, p: &ClientboundForgetLevelChunk) -> Vec<BotEvent> {
-    // A tracked position whose chunk unloads mustn't keep its
-    // history — after a reload the world knows the real state,
-    // and reporting the stale pre-unload value as `old` is worse
-    // than the `old == new` fallback.
-    state
-        .write()
-        .last_block_updates
-        .retain(|pos, _| pos.x >> 4 != p.pos.x || pos.z >> 4 != p.pos.z);
-    vec![BotEvent::ChunkUnload(p.pos)]
-}
-
-fn set_time(
-    client: &mineflayer_engine::Client,
-    state: &RwLock<WorldState>,
-    p: &ClientboundSetTime,
-) -> Vec<BotEvent> {
-    {
-        let mut state = state.write();
-        state.game_time = p.game_time;
-        // lock rule: the world-state lock is held while
-        // `get_component`/`with_registry_holder` take brief ECS
-        // locks — allowed direction.
-        // `with_registry_holder` panics when the local player has
-        // been torn down (it reaches `Client::world` internally) —
-        // a `set_time` racing a disconnect must not take the client
-        // thread down with it
-        if client.get_component::<WorldHolder>().is_some() {
-            client.with_registry_holder(|registries| {
-                for (clock, clock_state) in &p.clock_updates {
-                    if let Some(key) = clock.key_owned(registries) {
-                        state.clocks.insert(key.into_ident(), clock_state.clone());
-                    }
+fn set_time(client: &mineflayer_engine::Client, p: &ClientboundSetTime) -> Vec<BotEvent> {
+    // `with_registry_holder` panics when the local player has been torn
+    // down (it reaches `Client::world` internally) — a `set_time` racing
+    // a disconnect must not take the client thread down with it
+    let mut clocks = Vec::new();
+    if client.get_component::<WorldHolder>().is_some() {
+        client.with_registry_holder(|registries| {
+            for (clock, clock_state) in &p.clock_updates {
+                if let Some(key) = clock.key_owned(registries) {
+                    clocks.push((key.into_ident(), clock_state.clone()));
                 }
-            });
-        }
+            }
+        });
     }
+    update(client, |s| {
+        s.game_time = p.game_time;
+        s.clocks.extend(clocks);
+    });
     vec![BotEvent::Time]
 }
 
-fn login(state: &RwLock<WorldState>, p: &ClientboundLogin) -> Vec<BotEvent> {
-    {
-        let mut state = state.write();
-        state.hardcore = Some(p.hardcore);
-        state.max_players = Some(p.max_players);
-        state.is_flat = Some(p.common.is_flat);
-        // a new world means the tracked states describe stale
-        // positions — drop them rather than report them as `old`
-        state.last_block_updates.clear();
-    }
-    vec![BotEvent::GameStateChanged]
-}
-
-fn custom_payload(state: &RwLock<WorldState>, p: &ClientboundCustomPayload) -> Vec<BotEvent> {
+fn custom_payload(
+    client: &mineflayer_engine::Client,
+    p: &ClientboundCustomPayload,
+) -> Vec<BotEvent> {
     // `minecraft:brand` → bot.game.serverBrand.
     if p.identifier.to_string() == "minecraft:brand"
         && let Ok(brand) = String::mc_read(&mut Cursor::new(&p.data.0[..]))
     {
-        state.write().server_brand = Some(brand);
+        update(client, |s| s.server_brand = Some(brand));
     }
     vec![]
 }
@@ -338,22 +322,16 @@ fn block_destruction(
 
 pub(super) fn block_update_event(
     client: &mineflayer_engine::Client,
-    state: &mut WorldState,
     lids: &mut LidCounts,
     pos: BlockPos,
     new_state: BlockState,
 ) -> BotEvent {
-    // The engine's `handle_block_update_event` drains the queued updates in
-    // the same `Update` pass that emits `Event::Packet`, and the async
-    // bridge can't observe mid-pass (`run_schedule_loop` only yields
-    // between iterations), so the live world already reports `new_state`
-    // here. `oldBlock` therefore comes from our own update history;
-    // positions with no history fall back to the post-apply read —
-    // `old == new` for a first update, the best available without
-    // shadowing every loaded block.
-    let old = state
-        .update_and_old(pos, new_state)
-        .or_else(|| with_world(client, |w| w.get_block_state(pos)).flatten());
+    // the engine applied the update before the bridge runs, so the old
+    // state comes from what `record_replaced_blocks` saw before the apply
+    let old = take_replaced(client, pos).unwrap_or_else(|| {
+        debug!(?pos, "no recorded old state for a block update");
+        with_world(client, |w| w.get_block_state(pos)).flatten()
+    });
     if old.map(|s| s.as_block_kind()) != Some(new_state.as_block_kind()) {
         // upstream drops the lid count when the block type changes.
         lids.0.remove(&pos);

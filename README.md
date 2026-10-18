@@ -78,7 +78,7 @@ cargo run --example echo -- localhost 25566
 public mineflayer API is a row marked `ported`, `diverges` (intentional
 semantic difference, with a note), `wontfix`, or `additive` (Rust surface
 beyond upstream). Current counts:
-**343 ported · 125 diverges · 47 wontfix · 11 additive — zero pending**.
+**344 ported · 124 diverges · 47 wontfix · 11 additive — zero pending**.
 
 ## Live testing
 

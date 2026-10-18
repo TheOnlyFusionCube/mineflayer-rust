@@ -61,6 +61,9 @@
 
 ### Changed
 
+- `BotEvent::BlockUpdate.old` is the state the update replaced, also for
+  the first update of a position (it reported `old == new` there) and for
+  repeated updates of one position in one pass.
 - The engine events of one ECS pass now reach the bot in a fixed order:
   raw packets first, then login, chunk loads, chat, the player list,
   spawn, death, and disconnect. Before, the order of these within one
