@@ -55,6 +55,10 @@
 
 ### Added
 
+- README: "Writing a plugin", compiled as a doctest with the other README
+  examples. The `loadPlugin`, `loadPlugins`, `hasPlugin`,
+  `options.plugins`, and `options.loadInternalPlugins` rows are
+  `diverges` (were `wontfix`).
 - Public API for plugin crates: `Bot::subscribe`, `Bot::logged_in`,
   `Bot::mine_progress`, `interact::mine_progress`, `Block::new`,
   `Bot::consume_with`, `Bot::cancel_consume`, `Bot::disconnected`,

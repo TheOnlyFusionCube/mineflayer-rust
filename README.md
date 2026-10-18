@@ -29,10 +29,32 @@ cheap-cloneable `Bot` running on its own thread. `bot.events()` is
 | `craft` | `recipes_for`/`recipes_all`/`craft` (server recipe book) |
 | `misc` | settings, bed/sleep, `fish`, creative mode, resource packs |
 | `scoreboard` | `ScoreBoard`/`ScoreItem`/`Team`/`BossBar` |
+| `plugin` | the API a plugin crate builds on (see [Writing a plugin](#writing-a-plugin)) |
+
+The mineflayer-tool, -auto-eat, -collectblock, and -pvp analogs are in
+the `mineflayer-plugins` crate (`crates/mineflayer-plugins`), one cargo
+feature each. Like their upstream packages, they are a second
+dependency:
+
+```rust,no_run
+use mineflayer::{Bot, Result};
+use mineflayer_plugins::{prelude::*, pvp::PvpEvent};
+
+async fn guard(bot: Bot, target: mineflayer::EntityRef) -> Result<()> {
+    let mut pvp_events = bot.plugin_events::<PvpEvent>();
+    bot.pvp().attack(&target)?;
+    while let Ok(event) = pvp_events.recv().await {
+        if event == PvpEvent::StoppedAttacking {
+            break;
+        }
+    }
+    Ok(())
+}
+```
 
 ## Quick start
 
-```rust
+```rust,no_run
 // examples/echo.rs — echoes chat back to the server.
 use mineflayer::{Bot, BotEvent};
 
@@ -72,13 +94,76 @@ deposit/withdraw). Run one against a local offline-mode server:
 cargo run --example echo -- localhost 25566
 ```
 
+## Writing a plugin
+
+mineflayer's `bot.loadPlugin(plugin)` takes a function that adds methods
+and listeners to the bot at run time. In Rust a plugin is a crate with
+two optional halves:
+
+- an ECS half, a Bevy plugin added at build time with
+  `BotBuilder::plugin`, whose systems run in the bot's engine schedule;
+- an async half, an extension trait on `Bot` built on `mineflayer::plugin`:
+  per-bot state in a component (`Bot::state`, `Bot::state_mut`), the game
+  ticks (`Bot::ticks`), operations that a newer call or a disconnect
+  cancels (`OpSlot`, `Bot::start_op`), and the plugin's own event type
+  (`Bot::emit_plugin_event`, `Bot::plugin_events`).
+
+```rust
+use mineflayer::{
+    Bot,
+    engine::ecs::{self as bevy_ecs, component::Component},
+    plugin::OpSlot,
+};
+
+/// Per-bot state, created on first use and dropped with the connection.
+#[derive(Component, Default)]
+struct Greeter {
+    greetings: u32,
+    op: OpSlot,
+}
+
+/// The plugin's event type; not a `BotEvent` variant.
+#[derive(Clone, Debug)]
+struct Greeted(u32);
+
+trait GreeterExt {
+    async fn greet_every_tick(&self, times: u32);
+}
+
+impl GreeterExt for Bot {
+    async fn greet_every_tick(&self, times: u32) {
+        // a second call cancels the first, and so does the disconnect
+        let Some(op) = self.state_mut(|g: &mut Greeter| self.start_op(&mut g.op)) else {
+            return;
+        };
+        let mut ticks = self.ticks_until(&op);
+        for _ in 0..times {
+            if !ticks.next().await {
+                return;
+            }
+            let n = self.state_mut(|g: &mut Greeter| {
+                g.greetings += 1;
+                g.greetings
+            });
+            self.emit_plugin_event(Greeted(n.unwrap_or_default()));
+        }
+        self.state_mut(|g: &mut Greeter| g.op.finish(&op));
+    }
+}
+```
+
+`tests/plugin.rs` runs a plugin like this one on `BotSim` (the
+`test-util` feature), with the real engine and no server. The crate
+`mineflayer-plugins` is the larger example: four upstream plugins on
+this API only.
+
 ## Parity status
 
 [`docs/api-parity.md`](docs/api-parity.md) is the source of truth: every
 public mineflayer API is a row marked `ported`, `diverges` (intentional
 semantic difference, with a note), `wontfix`, or `additive` (Rust surface
 beyond upstream). Current counts:
-**349 ported · 119 diverges · 47 wontfix · 11 additive — zero pending**.
+**347 ported · 124 diverges · 42 wontfix · 11 additive — zero pending**.
 
 ## Live testing
 

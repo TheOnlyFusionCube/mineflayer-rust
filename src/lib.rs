@@ -109,3 +109,8 @@ pub mod prelude {
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;
+
+/// The README's Rust blocks, compiled as doctests.
+#[doc = include_str!("../README.md")]
+#[cfg(doctest)]
+pub struct ReadmeDoctests;

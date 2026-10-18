@@ -55,12 +55,12 @@ Events become `BotEvent` variants or per-domain event enums; payloads use the en
 | `options.hideErrors` | lifecycle | `n/a` | diverges | nothing is ever printed — the crate only emits `tracing` events to whatever subscriber the app installs |
 | `options.keepAlive` | lifecycle | `n/a` | wontfix | n/a — the engine owns keepalive; `Event::KeepAlive` dropped by the bridge |
 | `options.checkTimeoutInterval` | lifecycle | `BotBuilder::check_timeout_interval(Duration)` | ported | keepalive watchdog in the bridge: armed/re-armed per `Event::KeepAlive` like upstream's per-keepalive `setTimeout`; on expiry emits `BotEvent::Error("client timed out after N milliseconds")` then disconnects → `End("keepAliveError")`; default 30s |
-| `options.loadInternalPlugins` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
+| `options.loadInternalPlugins` | lifecycle | `BotBuilder::respawn`/`accept_resource_packs` switch the internal plugins | diverges | a Bevy plugin added at build time (`BotBuilder::plugin`) and an extension trait on `Bot` over `mineflayer::plugin`; no loader at run time (README, Writing a plugin) |
 | `options.storageBuilder` | lifecycle | `n/a` | wontfix | n/a — anvil provider out of scope |
 | `options.client` | lifecycle | `Bot::new(client)` | ported | doc-hidden escape hatch; no event bridge on prebuilt clients |
 | `options.brand` | lifecycle | `BotBuilder::brand(impl Into<String>)` | ported | `minecraft:brand` custom payload sent on `Event::Login` — upstream's login-packet timing; the engine also sends `"vanilla"` during config phase, and the server keeps the last brand received, so ours wins |
 | `options.respawn` | lifecycle | `BotBuilder::respawn(bool)` | ported | `false` leaves the engine's `AutoRespawnPlugin` out of the app; `bot.respawn()` respawns by hand |
-| `options.plugins` | lifecycle | `n/a` | wontfix | no runtime plugin loader — compile-time plugin model (same as `loadInternalPlugins`/`loadPlugin*`/`hasPlugin`) |
+| `options.plugins` | lifecycle | `BotBuilder::plugin(impl Plugin)` | diverges | a Bevy plugin added at build time (`BotBuilder::plugin`) and an extension trait on `Bot` over `mineflayer::plugin`; no loader at run time (README, Writing a plugin) |
 | `options.physicsEnabled` | lifecycle | `n/a` | wontfix | the engine's PhysicsPlugin is baked into `Client::join`'s default plugins — no disable seam; `bot.physics_enabled()` reports always-true |
 | `options.chat (settings passthrough)` | lifecycle | `BotBuilder::chat(ChatVisibility)` | ported | `'enabled'`/`'commandsOnly'`/`'disabled'` → `ChatVisibility::Full`/`System`/`Hidden`; merged into the `ClientInformation` sent on Init |
 | `options.colorsEnabled` | lifecycle | `BotBuilder::colors_enabled(bool)` | ported | → `ClientInformation::chat_colors` on Init |
@@ -90,9 +90,9 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `bot.quit(reason?)` | lifecycle | `bot.quit(Option<&str>)` | ported | graceful disconnect, default 'disconnect.quitting' |
 | `bot.respawn()` | lifecycle | `bot.respawn()` | ported | no-op while alive; s_client_command PerformRespawn |
 | `bot.connect(options)` | lifecycle | `BotBuilder::connect() -> Result<Bot>` | ported | builder form (typed-only upstream anyway) |
-| `bot.loadPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
-| `bot.loadPlugins(plugins)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
-| `bot.hasPlugin(plugin)` | lifecycle | `n/a` | wontfix | n/a — compile-time plugin model |
+| `bot.loadPlugin(plugin)` | lifecycle | `BotBuilder::plugin(impl Plugin)` | diverges | a Bevy plugin added at build time (`BotBuilder::plugin`) and an extension trait on `Bot` over `mineflayer::plugin`; no loader at run time (README, Writing a plugin) |
+| `bot.loadPlugins(plugins)` | lifecycle | `BotBuilder::plugin(impl Plugin)` | diverges | a Bevy plugin added at build time (`BotBuilder::plugin`) and an extension trait on `Bot` over `mineflayer::plugin`; no loader at run time (README, Writing a plugin) |
+| `bot.hasPlugin(plugin)` | lifecycle | `Bot::state::<T>()` is `Some` when the plugin's state exists | diverges | a Bevy plugin added at build time (`BotBuilder::plugin`) and an extension trait on `Bot` over `mineflayer::plugin`; no loader at run time (README, Writing a plugin) |
 | `bot.supportFeature(name)` | lifecycle | `n/a` | wontfix | upstream feature-support lookup has no analog; not implemented |
 | `bot.username` | lifecycle | `bot.username() -> String` | ported | GameProfileComponent name; '' before login |
 | `bot.version` | lifecycle | `bot.version() -> &'static str` | diverges | returns the single supported MC version (The engine mc26.1) |

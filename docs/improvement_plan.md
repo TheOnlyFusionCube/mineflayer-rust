@@ -1334,8 +1334,8 @@ the commit that completes the item.
 | PL1 | done | (this commit) |
 | PL2 | done | (this commit) |
 | PL3 | done; DEC-3 decided: no re-export from the core (dependency cycle) | (this commit) |
-| PL4 | open | |
-| PL5 | open | |
+| PL4 | not done, by decision: the pathfinder translates engine path events and steps its goals inside the bridge, and a plugin crate has no hook into the engine event stream; a public hook only for this move would be surface with one user (DEC-3) | |
+| PL5 | done | (this commit) |
 | CL1 | done | (this commit) |
 | CL2 | done | (this commit) |
 | CL3 | done | (this commit) |
