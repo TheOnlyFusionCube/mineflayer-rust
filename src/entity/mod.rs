@@ -336,8 +336,6 @@ impl Bot {
         // Snapshot the tab list before resolving uuids: the component guard
         // holds an ECS read lock and `entity_by_uuid` re-locks it — with a
         // writer queued in between, parking_lot deadlocks the second read.
-        // (lock rule, bot/mod.rs: copy out of the ECS guard and drop it,
-        // then take the next lock.)
         let infos: Vec<PlayerInfo> = self
             .client
             .get_component::<mineflayer_engine::local_player::TabList>()

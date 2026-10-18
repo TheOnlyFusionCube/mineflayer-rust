@@ -95,6 +95,29 @@ load than the original run above; the idle rate is in the same range
 (1,299/s vs 1,411/s). No `Lagged` and no throughput regression from the
 lock change.
 
+## ST7 re-measurement (2026-10-18)
+
+Phase ST of the third plan moved the domain state from the `BotShared`
+locks into ECS components and added three pre-apply hooks (world block
+updates, windows, entities; the entity hook decodes each metadata packet
+on a scratch entity). The `event_rate` probe was run again on a reset
+fixture with the same method:
+
+| Measurement | Result |
+|---|---|
+| Idle: events | 161,215 in 120 s; mean 1,343.5/s; peak 8,206/s |
+| Busy (200 chickens): events | 427,091 in 180 s; mean 2,372.7/s; peak 5,661/s |
+| `Lagged` seen by the probe | 0 in both phases |
+| `BotEvent::Packet` share | 48% idle, 58% busy |
+| `Bot::entities()` | 12.3 µs median (230 entities) |
+| `find_blocks` (predicate, distance 64) | 6.9 ms median |
+
+The idle rate is in the range of the earlier runs (1,299/s to 1,411/s),
+and no receiver lagged. The busy load depends on how many chickens
+survive entity cramming, so its mean is not comparable from run to run.
+The bridge stays the one sender, so the event latency path is the same as
+before (one async hop per engine event).
+
 ## E5: engine crates at `opt-level = 1` (2026-10-17, not kept)
 
 `[profile.dev.package.<crate>] opt-level = 1` for the 20 engine crates

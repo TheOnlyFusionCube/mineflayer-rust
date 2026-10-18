@@ -46,12 +46,12 @@
 use std::{
     ops::Range,
     sync::{
-        Arc, Weak,
+        Arc,
         atomic::{AtomicBool, Ordering},
     },
 };
 
-use parking_lot::Mutex;
+use tokio::sync::broadcast;
 
 use mineflayer_engine::{
     FormattedText,
@@ -112,13 +112,11 @@ pub(crate) struct WindowShared {
     pub handle: ContainerHandleRef,
     /// Reads the window's slots from the engine `Inventory`.
     pub client: mineflayer_engine::Client,
+    /// The bot's event sender — `close` emits `WindowClose`.
+    pub events: broadcast::Sender<BotEvent>,
     /// Set once the window is closed — by [`Window::close`] or by the
     /// server (`container_close`) — or displaced by a new `open_screen`.
     pub closed: AtomicBool,
-    /// Back-reference to the bot's tracker: `close` clears
-    /// `current_window` and emits `WindowClose`.
-    /// Weak — the tracker holds a strong ref via `current`.
-    pub tracker: Weak<Mutex<WindowTracker>>,
 }
 
 impl std::fmt::Debug for Window {
@@ -138,7 +136,7 @@ impl Window {
         menu_kind: MenuKind,
         title: FormattedText,
         client: mineflayer_engine::Client,
-        tracker: &Arc<Mutex<WindowTracker>>,
+        events: broadcast::Sender<BotEvent>,
     ) -> Window {
         let menu = Menu::from_kind(menu_kind);
         let player_start = *menu.player_slots_range().start();
@@ -151,7 +149,7 @@ impl Window {
                 handle: ContainerHandleRef::new(id, client.clone()),
                 client,
                 closed: AtomicBool::new(false),
-                tracker: Arc::downgrade(tracker),
+                events,
             }),
         }
     }
@@ -161,7 +159,7 @@ impl Window {
     /// matter; upstream's `bot.inventory` is the same object forever.
     pub(crate) fn player_inventory(
         client: mineflayer_engine::Client,
-        tracker: &Arc<Mutex<WindowTracker>>,
+        events: broadcast::Sender<BotEvent>,
     ) -> Window {
         Window {
             shared: Arc::new(WindowShared {
@@ -172,7 +170,7 @@ impl Window {
                 handle: ContainerHandleRef::new(0, client.clone()),
                 client,
                 closed: AtomicBool::new(false),
-                tracker: Arc::downgrade(tracker),
+                events,
             }),
         }
     }
@@ -387,15 +385,15 @@ impl Window {
             return;
         }
         self.shared.handle.close();
-        if let Some(tracker) = self.shared.tracker.upgrade() {
-            let mut t = tracker.lock();
-            if let Some(current) = &t.current
-                && Arc::ptr_eq(current, &self.shared)
+        crate::bot::with_component_mut::<WindowTracker, _>(&self.shared.client, |t| {
+            if t.current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &self.shared))
             {
                 t.current = None;
             }
-            let _ = t.events.send(BotEvent::WindowClose(self.clone()));
-        }
+        });
+        let _ = self.shared.events.send(BotEvent::WindowClose(self.clone()));
     }
 
     /// Send a click operation on this window (`ContainerClickEvent` →

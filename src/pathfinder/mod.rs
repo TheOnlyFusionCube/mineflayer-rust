@@ -224,12 +224,10 @@ impl Default for PathfinderFacade {
 /// Publish the `Movements` constraints into `CustomPathfinderState` so
 /// [`movements_move`] sees them during the next search.
 ///
-/// lock rule: the state lock is taken with no ECS guard held — the value
-/// is copied out of the ECS first (the search thread takes this state
-/// lock while holding nothing, so the reverse order would cross it).
+/// The state's own lock is taken with no ECS guard held: the search
+/// thread takes it while it holds nothing, so taking it under the ECS
+/// lock could cross with a search that waits for the ECS.
 fn sync_constraints(client: &mineflayer_engine::Client, movements: &Movements) {
-    // lock rule (bot/mod.rs): the state lock is taken after the ECS guard
-    // is dropped — never the reverse
     let state = {
         let mut ecs = client.ecs.write();
         let Ok(mut entity) = ecs.get_entity_mut(client.entity) else {

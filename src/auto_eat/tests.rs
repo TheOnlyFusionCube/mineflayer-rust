@@ -175,7 +175,7 @@ async fn eat_emits_start_then_finish_on_consume_end() {
 
     // the bridge's real consume-finish (entity status 9 / held-stack
     // change) fires `eat_notify`; simulate the wake directly
-    bot.shared.windows.lock().eat_notify.notify_waiters();
+    bot.windows(|t| t.eat_notify.notify_waiters());
 
     eating.await.unwrap().unwrap();
     assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
@@ -516,7 +516,7 @@ async fn held_item_type_switch_fails_the_eat() {
         let mut inv = ecs.get_mut::<Inventory>(bot.client.entity).unwrap();
         *inv.inventory_menu.slot_mut(36).unwrap() = ItemStack::new(ItemKind::Stone, 1);
     }
-    bot.shared.windows.lock().eat_notify.notify_waiters();
+    bot.windows(|t| t.eat_notify.notify_waiters());
 
     let err = eating.await.unwrap().unwrap_err();
     assert_eq!(err.to_string(), "Item switched early to: stone!");
@@ -540,11 +540,7 @@ async fn superseding_consume_reports_distinctly() {
     });
     assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
 
-    {
-        let mut t = bot.shared.windows.lock();
-        t.eat_generation += 1;
-        t.eat_notify.notify_waiters();
-    }
+    bot.start_eat();
     let err = eating.await.unwrap().unwrap_err();
     assert_eq!(
         err.to_string(),

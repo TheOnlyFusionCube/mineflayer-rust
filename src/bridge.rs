@@ -257,7 +257,7 @@ const OBSERVERS: &[Observer] = &[
     |cx, e| crate::movement::bridge_events(cx.client, &mut cx.local.movement, e),
     |cx, e| crate::pathfinder::bridge_events(cx.client, &mut cx.local.pathfinder, e),
     |cx, e| entity::observe_event(cx.client, e),
-    |cx, e| crate::windows::observe_event(&cx.shared.windows, cx.client, e),
+    |cx, e| crate::windows::observe_event(cx.client, &cx.shared.events, e),
     |cx, e| {
         with_component_mut::<crate::window_types::WindowDataTracker, _>(cx.client, |t| {
             crate::window_types::observe_event(t, e)

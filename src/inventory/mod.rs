@@ -12,7 +12,7 @@
 //! `activate_item`, and `deactivate_item` are synchronous upstream and
 //! only write a packet or emit an event, so they are plain `fn`.
 
-use std::{ops::Range, time::Duration};
+use std::{ops::Range, sync::Arc, time::Duration};
 
 use mineflayer_engine::{
     BlockPos,
@@ -208,20 +208,45 @@ pub(crate) fn click_operation(slot: u16, mouse_button: u8, mode: u8) -> Result<C
 }
 
 impl Bot {
+    /// `f` on the bot's window state; `None` once the client entity is
+    /// gone.
+    pub(crate) fn windows<R>(
+        &self,
+        f: impl FnOnce(&mut crate::windows::WindowTracker) -> R,
+    ) -> Option<R> {
+        crate::bot::with_component_mut(&self.client, f)
+    }
+
+    /// Start an eat: bump the eat generation and wake the waiter of the
+    /// eat it supersedes. Returns the new generation and the notifier the
+    /// eat waits on.
+    pub(crate) fn start_eat(&self) -> (u64, Arc<tokio::sync::Notify>) {
+        self.windows(|t| {
+            t.eat_generation += 1;
+            t.eat_notify.notify_waiters();
+            (t.eat_generation, t.eat_notify.clone())
+        })
+        .unwrap_or_default()
+    }
+
+    /// The generation of the last started eat.
+    pub(crate) fn eat_generation(&self) -> u64 {
+        self.windows(|t| t.eat_generation).unwrap_or_default()
+    }
+
     /// `bot.inventory` — the player's own inventory as a [`Window`] (id
     /// 0). Always available; a fresh handle per call (upstream keeps one
     /// object — slot reads are equivalent since both read live state).
     pub fn inventory(&self) -> Window {
-        Window::player_inventory(self.client.clone(), &self.shared.windows)
+        Window::player_inventory(self.client.clone(), self.shared.events.clone())
     }
 
     /// `bot.currentWindow` — the open non-inventory window, `None` when
     /// only the player inventory is open.
     pub fn current_window(&self) -> Option<Window> {
-        let t = self.shared.windows.lock();
-        t.current.as_ref().map(|shared| Window {
-            shared: shared.clone(),
-        })
+        self.windows(|t| t.current.clone())
+            .flatten()
+            .map(|shared| Window { shared })
     }
 
     /// `bot.heldItem` — the stack in the selected hotbar slot.
@@ -231,7 +256,7 @@ impl Bot {
 
     /// `bot.quickBarSlot` — the selected hotbar index, `0..=8`.
     pub fn quick_bar_slot(&self) -> u8 {
-        if let Some(sel) = self.shared.windows.lock().selected_hotbar {
+        if let Some(sel) = self.windows(|t| t.selected_hotbar).flatten() {
             return sel;
         }
         self.client
@@ -254,14 +279,14 @@ impl Bot {
             return Ok(());
         }
         self.client.set_selected_hotbar_slot(slot);
-        self.shared.windows.lock().selected_hotbar = Some(slot);
+        self.windows(|t| t.selected_hotbar = Some(slot));
         self.update_held_item();
         Ok(())
     }
 
     /// `bot.usingHeldItem`.
     pub fn using_held_item(&self) -> bool {
-        self.shared.windows.lock().using_held_item
+        self.windows(|t| t.using_held_item).unwrap_or_default()
     }
 
     /// `bot.getEquipmentDestSlot(destination)` — the absolute
@@ -500,10 +525,14 @@ impl Bot {
             Some(i) => i as i32,
             None => {
                 // LRU cache for the quick bar items
-                let mut t = self.shared.windows.lock();
-                let slot = QUICK_BAR_START as i32 + i32::from(t.next_quick_bar_slot);
-                t.next_quick_bar_slot = (t.next_quick_bar_slot + 1) % 9;
-                slot
+                let next = self
+                    .windows(|t| {
+                        let next = t.next_quick_bar_slot;
+                        t.next_quick_bar_slot = (next + 1) % 9;
+                        next
+                    })
+                    .unwrap_or_default();
+                QUICK_BAR_START as i32 + i32::from(next)
             }
         };
         self.set_quick_bar_slot((dest_slot - QUICK_BAR_START as i32) as u8)
@@ -603,7 +632,7 @@ impl Bot {
         if !has_item {
             return;
         }
-        self.shared.windows.lock().using_held_item = true;
+        self.windows(|t| t.using_held_item = true);
         let seq = {
             let mut ecs = self.client.ecs.write();
             ecs.get_mut::<mineflayer_engine::interact::BlockStatePredictionHandler>(
@@ -632,7 +661,7 @@ impl Bot {
     /// `bot.deactivateItem()` — release the held item (`player_action`
     /// status 5 / `ReleaseUseItem`) and clear `using_held_item`.
     pub fn deactivate_item(&self) {
-        self.shared.windows.lock().using_held_item = false;
+        self.windows(|t| t.using_held_item = false);
         self.client.write_packet(ServerboundPlayerAction {
             action: s_player_action::Action::ReleaseUseItem,
             pos: BlockPos::new(0, 0, 0),
@@ -664,15 +693,10 @@ impl Bot {
             // and the eat task then hangs; erroring is strictly better
             return Err(Error::InvalidState("Nothing held to consume".into()));
         }
-        let (generation, notify) = {
-            let mut t = self.shared.windows.lock();
-            t.eat_generation += 1;
-            // resolve a superseded consume() immediately, like upstream's
-            // eatingTask.cancel — it wakes here and fails the generation
-            // check below
-            t.eat_notify.notify_waiters();
-            (t.eat_generation, t.eat_notify.clone())
-        };
+        // resolve a superseded consume() immediately, like upstream's
+        // eatingTask.cancel — it wakes here and fails the generation check
+        // below
+        let (generation, notify) = self.start_eat();
         // register the waiter before activate_item so a finish packet
         // that lands between the use_item write and the await can't be
         // missed (upstream creates the eat task before activating)
@@ -686,7 +710,7 @@ impl Bot {
         {
             return Err(Error::Timeout);
         }
-        if self.shared.windows.lock().eat_generation == generation {
+        if self.eat_generation() == generation {
             Ok(())
         } else {
             Err(Error::Cancelled(

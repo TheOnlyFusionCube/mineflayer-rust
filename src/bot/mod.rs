@@ -55,12 +55,9 @@ pub struct Bot {
     pub(crate) chat_length_limit: usize,
 }
 
-/// The per-domain state every [`Bot`] handle and the bridge task share.
-///
-/// One construction site: a new domain is added here and in
-/// [`BotShared::new`], instead of being threaded through `Bot`'s fields,
-/// `connect_engine`, `Bot::new`, and the bridge's dependency bag. Each
-/// domain keeps its own lock; nothing here is a single global lock.
+/// What every [`Bot`] handle and the bridge task share outside the ECS:
+/// the event sender and the two disconnect reasons. The game state is in
+/// the ECS, behind its one lock.
 ///
 /// Storage rule — where new per-bot state goes:
 ///
@@ -68,16 +65,17 @@ pub struct Bot {
 ///    or when it must be read in the same ECS access as the engine
 ///    components (`interact::InteractShared` with `Mining` and the start
 ///    message, `misc::MiscState` with `Pose`/`AirSupply`,
-///    `pathfinder::PathfinderFacade` with the engine's `Pathfinder`).
+///    `pathfinder::PathfinderFacade` with the engine's `Pathfinder`), and
+///    for the domain state the bridge writes from packets (`ChatState`,
+///    `WorldState`, `ScoreboardState`, `windows::WindowTracker`, …).
 /// 2. **ECS component, created on first use** for the plugin-analog state
 ///    (`tool`, `pvp`, `collect`, `auto_eat`): a plugin that is never used
 ///    allocates nothing, and the state goes away with the entity.
 /// 3. **ECS component on another entity** for state about that entity
 ///    (`entity::tracker`'s equipment, attributes, and vehicle links): it
 ///    goes away when the entity despawns.
-/// 4. **Here** only for what is not about the game: the event sender, the
-///    quit and end reasons, and the window tracker, which holds the open
-///    `Window` handles.
+/// 4. **Here** only for what is not game state: the event sender and the
+///    quit and end reasons.
 #[derive(Clone)]
 pub(crate) struct BotShared {
     /// The bot's event stream (see [`Bot::events`]).
@@ -90,9 +88,6 @@ pub(crate) struct BotShared {
     /// `endReason` (`_client.once('end', ...)`), read by `chat`/`whisper`
     /// to distinguish "never entered play" from "disconnected pre-play".
     pub end_reason: Arc<Mutex<Option<String>>>,
-    /// Inventory/window-domain state (current window, slot snapshots,
-    /// eat/use bookkeeping) — see `windows::WindowTracker`.
-    pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
 }
 
 /// The game ticks a driver task loops on, until `token` is cancelled.
@@ -128,8 +123,9 @@ impl TickStream {
 /// Storage rules 1 and 2: read a component on the client entity. `None`
 /// when the entity or the component does not exist.
 ///
-/// lock rule: `f` runs while the ECS lock is held, so it must not take a
-/// domain lock.
+/// `f` runs under the ECS lock, which is not reentrant: it must not lock
+/// the ECS again (`client.get_component`, `client.ecs`, a helper that
+/// does).
 pub(crate) fn with_component<T: Component, R>(
     client: &mineflayer_engine::Client,
     f: impl FnOnce(&T) -> R,
@@ -141,7 +137,7 @@ pub(crate) fn with_component<T: Component, R>(
 /// Storage rule 2: change a component on the client entity, created with
 /// its default on first use. `None` when the entity does not exist.
 ///
-/// lock rule: as for [`with_component`].
+/// `f` must not lock the ECS again, as for [`with_component`].
 pub(crate) fn with_component_mut<T: Component<Mutability = Mutable> + Default, R>(
     client: &mineflayer_engine::Client,
     f: impl FnOnce(&mut T) -> R,
@@ -162,27 +158,11 @@ pub(crate) fn with_entity_component_mut<T: Component<Mutability = Mutable> + Def
     Some(f(&mut component))
 }
 
-/// Lock rule (see docs/history/PORT-PLAN.md, B9). Two lock families meet here:
-/// the domain locks in [`BotShared`] and the engine's ECS lock
-/// (`client.ecs.read()/write()`, `get_component`, `entity_mut`,
-/// `client.world()`).
-///
-/// 1. A domain lock **may** be held while the ECS lock is taken. The
-///    window observer (ECS reads only) and the world-state observer do
-///    this, and it is safe because the ECS guard is only ever held for a
-///    moment under them.
-/// 2. Never take a domain lock while an ECS guard is alive — the
-///    reverse order would cross with (1) and deadlock a queued writer.
-///    If a value from the ECS is needed under a domain lock later, copy
-///    it out, drop the guard, then lock.
 impl BotShared {
     pub(crate) fn new(events: broadcast::Sender<BotEvent>) -> Self {
         Self {
             quit_reason: Arc::new(Mutex::new(None)),
             end_reason: Arc::new(Mutex::new(None)),
-            windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
-                events.clone(),
-            ))),
             events,
         }
     }

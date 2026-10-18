@@ -335,13 +335,9 @@ impl AutoEat<'_> {
         if !in_flight {
             return;
         }
-        {
-            // wake the eat's waiter the way a second consume() would —
-            // it sees the generation bump and reports the cancellation
-            let mut t = self.bot.shared.windows.lock();
-            t.eat_generation += 1;
-            t.eat_notify.notify_waiters();
-        }
+        // wake the eat's waiter the way a second consume() would — it sees
+        // the generation bump and reports the cancellation
+        self.bot.start_eat();
         // upstream deactivateItem() in cancelEat
         self.bot.deactivate_item();
     }
@@ -440,12 +436,7 @@ impl AutoEat<'_> {
         // register the finish waiter before activating, like
         // `Bot::consume` — a finish packet landing between the use_item
         // write and the await can't be missed
-        let (generation, notify) = {
-            let mut t = bot.shared.windows.lock();
-            t.eat_generation += 1;
-            t.eat_notify.notify_waiters();
-            (t.eat_generation, t.eat_notify.clone())
-        };
+        let (generation, notify) = bot.start_eat();
         // `eat_cancel` goes live with the wait — upstream's
         // `_rejectionBinding` only exists during `buildEatingListener`,
         // so a `cancel_eat` before this point is a silent no-op there too
@@ -472,7 +463,7 @@ impl AutoEat<'_> {
                 "Eating timed out with a time of {} milliseconds!",
                 timeout.as_millis()
             )))
-        } else if bot.shared.windows.lock().eat_generation != generation {
+        } else if bot.eat_generation() != generation {
             if cancel.load(atomic::Ordering::Relaxed) {
                 Err(Error::Cancelled("Eating manually canceled!".into()))
             } else {

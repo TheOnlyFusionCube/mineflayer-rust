@@ -3,8 +3,6 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use parking_lot::Mutex;
-
 use mineflayer_engine::{
     Event, FormattedText,
     core::entity_id::MinecraftEntityId,
@@ -37,12 +35,13 @@ pub(crate) struct PendingWindow {
     pub title: FormattedText,
 }
 
-/// Inventory/window state shared between `Bot` methods and the bridge —
+/// Inventory/window state of the bot, a component on the client entity —
 /// the analog of upstream's `bot.currentWindow` plus the click/eat
 /// bookkeeping in inventory.js. The window lifecycle the engine keeps
 /// (the open id, early content, the last closed container, the slots) is
 /// read from the engine `Inventory`, before each packet applies, through
 /// [`WindowPreApply`].
+#[derive(Component, Default)]
 pub(crate) struct WindowTracker {
     /// The currently open non-inventory window (id != 0).
     pub current: Option<Arc<WindowShared>>,
@@ -67,32 +66,14 @@ pub(crate) struct WindowTracker {
     /// LRU rotation for `equip`'s quickbar fallback slot (upstream
     /// `nextQuickBarSlot`).
     pub next_quick_bar_slot: u8,
-    /// Bot event sender — `Window::close` emits `WindowClose` itself.
-    pub events: broadcast::Sender<BotEvent>,
 }
 
 impl WindowTracker {
-    pub(crate) fn new(events: broadcast::Sender<BotEvent>) -> Self {
-        Self {
-            current: None,
-            pending: None,
-            last_held: None,
-            using_held_item: false,
-            eat_generation: 0,
-            eat_notify: Arc::new(Notify::new()),
-            selected_hotbar: None,
-            next_quick_bar_slot: 0,
-            events,
-        }
-    }
-
     /// Held-item signature change → finish any in-flight eat and clear
     /// `using_held_item` (the upstream `heldItemChanged` listener only
     /// reacts to type/count changes).
-    /// lock rule: called with the tracker lock held; the ECS read below
-    /// is brief (domain lock → ECS lock is the allowed direction).
-    fn held_sig_changed(&mut self, client: &mineflayer_engine::Client) {
-        let sig = held_signature(client, self.selected_hotbar);
+    fn held_sig_changed(&mut self, inv: &Inventory) {
+        let sig = held_signature(inv, self.selected_hotbar);
         if sig != self.last_held {
             self.last_held = sig;
             self.using_held_item = false;
@@ -100,22 +81,16 @@ impl WindowTracker {
         }
     }
 
-    /// The quickbar slot in hand: the tracked override, else the ECS
-    /// value, else 0.
-    fn selected(&self, client: &mineflayer_engine::Client) -> u8 {
-        self.selected_hotbar.unwrap_or_else(|| {
-            client
-                .get_component::<Inventory>()
-                .map(|i| i.selected_hotbar_slot)
-                .unwrap_or(0)
-        })
+    /// The quickbar slot in hand: the tracked override, else the engine's.
+    fn selected(&self, inv: &Inventory) -> u8 {
+        self.selected_hotbar.unwrap_or(inv.selected_hotbar_slot)
     }
 
     /// Run the held-item check (upstream `updateHeldItem`) and report the
     /// held stack.
-    fn held_changed(&mut self, client: &mineflayer_engine::Client) -> BotEvent {
-        self.held_sig_changed(client);
-        BotEvent::HeldItemChanged(held_item(client, self.selected(client)))
+    fn held_changed(&mut self, inv: &Inventory) -> BotEvent {
+        self.held_sig_changed(inv);
+        BotEvent::HeldItemChanged(held_item_in(inv, self.selected(inv)))
     }
 
     /// The open window or the announced one has this id.
@@ -123,6 +98,24 @@ impl WindowTracker {
         self.current.as_ref().is_some_and(|c| c.id == id)
             || self.pending.as_ref().is_some_and(|w| w.id == id)
     }
+}
+
+/// `f` on the bot's [`WindowTracker`] and the engine `Inventory`, in one
+/// ECS access. `None` when the client entity or its `Inventory` is gone.
+fn with_windows<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut WindowTracker, &Inventory) -> R,
+) -> Option<R> {
+    let mut ecs = client.ecs.write();
+    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
+    // the tracker leaves its component for the call, so that `f` can read
+    // the Inventory beside it
+    let mut tracker = std::mem::take(&mut *entity.entry::<WindowTracker>().or_default().into_mut());
+    let out = entity.get::<Inventory>().map(|inv| f(&mut tracker, inv));
+    if let Some(mut slot) = entity.get_mut::<WindowTracker>() {
+        *slot = tracker;
+    }
+    out
 }
 
 /// What one window packet is about to replace, read from the engine
@@ -262,14 +255,10 @@ fn slot_update(window_id: i32, slot: usize, old: &ItemStack, new: &ItemStack) ->
     }
 }
 
-/// `(kind, count)` of the currently held stack, `None` when empty or the
-/// component is missing (pre-login). `sel` overrides the ECS selection
-/// while `set_selected_hotbar_slot`'s component write is still pending.
-///
-/// lock rule: callers hold the tracker lock; the ECS read is brief
-/// (domain lock → ECS lock is the allowed direction).
-fn held_signature(client: &mineflayer_engine::Client, sel: Option<u8>) -> Option<(ItemKind, i32)> {
-    let inv = client.get_component::<Inventory>()?;
+/// `(kind, count)` of the held stack, `None` when the hand is empty.
+/// `sel` overrides the engine's selection while
+/// `set_selected_hotbar_slot`'s component write is still pending.
+fn held_signature(inv: &Inventory, sel: Option<u8>) -> Option<(ItemKind, i32)> {
     let sel = sel.unwrap_or(inv.selected_hotbar_slot);
     let stack = inv
         .inventory_menu
@@ -281,30 +270,54 @@ fn held_signature(client: &mineflayer_engine::Client, sel: Option<u8>) -> Option
     }
 }
 
-/// The held stack as an [`Item`] with its absolute window slot, `None`
-/// when the hand is empty or the component is gone.
-/// lock rule: callers hold the tracker lock; the ECS read is brief
-/// (domain lock → ECS lock is the allowed direction).
-pub(crate) fn held_item(client: &mineflayer_engine::Client, sel: u8) -> Option<Item> {
-    let inv = client.get_component::<Inventory>()?;
+/// The stack in hotbar slot `sel` as an [`Item`] with its absolute window
+/// slot, `None` when that slot is empty.
+fn held_item_in(inv: &Inventory, sel: u8) -> Option<Item> {
     let index = crate::inventory::QUICK_BAR_START + usize::from(sel);
     Item::of(inv.inventory_menu.slot(index)?.clone(), index as i16)
 }
 
+/// [`held_item_in`] of the client's `Inventory`, `None` when it is gone.
+pub(crate) fn held_item(client: &mineflayer_engine::Client, sel: u8) -> Option<Item> {
+    held_item_in(&*client.get_component::<Inventory>()?, sel)
+}
+
 /// Decode one engine [`Event`] into window-domain [`BotEvent`]s — the
-/// inventory-side analog of `entity::observe_event`.
+/// inventory-side analog of `entity::observe_event`. `events` is the bot's
+/// event sender, which a new [`Window`] keeps for its `close`.
 pub(crate) fn observe_event(
-    tracker: &Arc<Mutex<WindowTracker>>,
     client: &mineflayer_engine::Client,
+    events: &broadcast::Sender<BotEvent>,
     event: &Event,
 ) -> Vec<BotEvent> {
+    use ClientboundGamePacket as P;
     let Event::Packet(packet) = event else {
         return Vec::new();
     };
-    match &**packet {
-        ClientboundGamePacket::OpenScreen(p) => {
-            let pre = take_pre(client, packet);
-            let mut t = tracker.lock();
+    // the records exist only for these packets; taking one for another
+    // packet would drop the queue
+    let pre = match &**packet {
+        P::OpenScreen(_)
+        | P::ContainerSetContent(_)
+        | P::ContainerSetSlot(_)
+        | P::SetPlayerInventory(_) => take_pre(client, packet),
+        P::ContainerClose(_)
+        | P::SetHeldSlot(_)
+        | P::EntityEvent(_)
+        | P::Cooldown(_)
+        | P::Respawn(_)
+        | P::Login(_) => WindowPre::default(),
+        _ => return Vec::new(),
+    };
+    let self_id = match &**packet {
+        P::EntityEvent(_) => client.get_component::<MinecraftEntityId>().map(|id| *id),
+        _ => None,
+    };
+    let new_window = |id, kind, title: &FormattedText| {
+        Window::new(id, kind, title.clone(), client.clone(), events.clone())
+    };
+    with_windows(client, |t, inv| match &**packet {
+        P::OpenScreen(p) => {
             // a new screen displaces the previous open window without a
             // close packet — mark it closed like upstream replacing
             // `currentWindow`; an announced-but-unfilled window is
@@ -317,20 +330,14 @@ pub(crate) fn observe_event(
                 // slot data arrived before the open packet (upstream's
                 // prepareWindow sync branch); the engine applied it to the
                 // new, empty menu
-                let window = Window::new(
-                    p.container_id,
-                    p.menu_type,
-                    p.title.clone(),
-                    client.clone(),
-                    tracker,
-                );
+                let window = new_window(p.container_id, p.menu_type, &p.title);
                 t.current = Some(window.shared.clone());
                 let mut out: Vec<BotEvent> = items
                     .iter()
                     .enumerate()
                     .map(|(i, stack)| slot_update(p.container_id, i, &ItemStack::Empty, stack))
                     .collect();
-                out.push(t.held_changed(client));
+                out.push(t.held_changed(inv));
                 out.push(BotEvent::WindowOpen(window));
                 out
             } else {
@@ -342,16 +349,9 @@ pub(crate) fn observe_event(
                 Vec::new()
             }
         }
-        ClientboundGamePacket::ContainerSetContent(p) => {
-            let pre = take_pre(client, packet);
-            set_content_events(tracker, client, p, &pre)
-        }
-        ClientboundGamePacket::ContainerSetSlot(p) => {
-            let pre = take_pre(client, packet);
-            set_slot_events(tracker, client, p, &pre)
-        }
-        ClientboundGamePacket::ContainerClose(p) => {
-            let mut t = tracker.lock();
+        P::ContainerSetContent(p) => set_content_events(t, inv, p, &pre, new_window),
+        P::ContainerSetSlot(p) => set_slot_events(t, inv, p, &pre),
+        P::ContainerClose(p) => {
             // the server may close a pending window before content ever
             // arrived — drop it only if the close names the same id
             t.pending.take_if(|w| w.id == p.container_id);
@@ -365,76 +365,59 @@ pub(crate) fn observe_event(
             shared.closed.store(true, Ordering::SeqCst);
             vec![BotEvent::WindowClose(Window { shared })]
         }
-        ClientboundGamePacket::SetHeldSlot(p) => {
+        P::SetHeldSlot(p) => {
             if p.slot > 8 {
                 return Vec::new();
             }
             // upstream's held_item_slot handler only emits when the slot
             // actually changed
-            // lock rule: tracker lock held while `held_sig_changed` /
-            // `held_item` take brief ECS reads — allowed direction.
-            let mut t = tracker.lock();
-            let changed = u32::from(t.selected(client)) != p.slot;
+            let changed = u32::from(t.selected(inv)) != p.slot;
             t.selected_hotbar = Some(p.slot as u8);
-            t.held_sig_changed(client);
+            t.held_sig_changed(inv);
             if changed {
-                vec![BotEvent::HeldItemChanged(held_item(client, p.slot as u8))]
+                vec![BotEvent::HeldItemChanged(held_item_in(inv, p.slot as u8))]
             } else {
                 Vec::new()
             }
         }
-        ClientboundGamePacket::SetPlayerInventory(p) => {
-            let pre = take_pre(client, packet);
+        P::SetPlayerInventory(p) => {
             let win_slot = mineflayer_engine::inventory::Player::slot_for_inventory_index(p.slot);
-            let mut t = tracker.lock();
             vec![
                 slot_update(0, win_slot, pre.old(0), &p.contents),
-                t.held_changed(client),
+                t.held_changed(inv),
             ]
         }
-        ClientboundGamePacket::EntityEvent(p) => {
-            // lock rule: tracker lock held while `get_component` takes a
-            // brief ECS read — allowed direction.
-            let mut t = tracker.lock();
+        P::EntityEvent(p) => {
             // upstream clears usingHeldItem on every entity_status packet
             t.using_held_item = false;
             // entity status 9 on our own entity = "finish using item"
-            let is_self = client
-                .get_component::<MinecraftEntityId>()
-                .map(|id| *id == p.entity_id)
-                .unwrap_or(false);
-            if p.event_id == 9 && is_self {
+            if p.event_id == 9 && self_id == Some(p.entity_id) {
                 t.eat_notify.notify_waiters();
             }
             Vec::new()
         }
-        ClientboundGamePacket::Cooldown(p) => {
+        P::Cooldown(p) => {
             // upstream finishes eating when the cooldown is for the held
             // item — or whenever heldItem is null
-            // lock rule: tracker lock held across `held_signature`'s ECS
-            // read — allowed direction.
-            let mut t = tracker.lock();
-            let held = held_signature(client, t.selected_hotbar);
-            if held.is_some_and(|(kind, _)| kind != p.item) {
+            if held_signature(inv, t.selected_hotbar).is_some_and(|(kind, _)| kind != p.item) {
                 return Vec::new();
             }
             t.using_held_item = false;
             t.eat_notify.notify_waiters();
             Vec::new()
         }
-        ClientboundGamePacket::Respawn(_) | ClientboundGamePacket::Login(_) => {
+        P::Respawn(_) | P::Login(_) => {
             // a new server-side player entity restarts the window id
             // counter, so an announced window is stale (the engine drops
             // its early content and last closed container too)
-            let mut t = tracker.lock();
             t.pending = None;
             // the override only bridges set_selected_hotbar_slot's
             // tick-late component write — a fresh server-side player makes
             // any stale value wrong (upstream keeps `quickBarSlot`, and the
-            // ECS slot still reports it via the fallback path)
+            // engine slot still reports it via the fallback path)
             t.selected_hotbar = None;
             let mut out = Vec::new();
-            if matches!(&**packet, ClientboundGamePacket::Login(_))
+            if matches!(&**packet, P::Login(_))
                 && let Some(shared) = t.current.take()
             {
                 // switching subservers closes the open window (upstream
@@ -445,7 +428,8 @@ pub(crate) fn observe_event(
             out
         }
         _ => Vec::new(),
-    }
+    })
+    .unwrap_or_default()
 }
 
 /// `container_set_content` — full slot refresh for one window. Completes
@@ -458,14 +442,12 @@ pub(crate) fn observe_event(
 /// before upstream's emit, so it gives no `SetWindowItems`; content for
 /// any other id is buffered by the engine and gives no event.
 fn set_content_events(
-    tracker: &Arc<Mutex<WindowTracker>>,
-    client: &mineflayer_engine::Client,
+    t: &mut WindowTracker,
+    inv: &Inventory,
     p: &mineflayer_engine::protocol::packets::game::c_container_set_content::ClientboundContainerSetContent,
     pre: &WindowPre,
+    new_window: impl FnOnce(i32, MenuKind, &FormattedText) -> Window,
 ) -> Vec<BotEvent> {
-    // lock rule: tracker lock held while ECS reads (`get_component`,
-    // `held_sig_changed`, `held_item`) run — allowed direction.
-    let mut t = tracker.lock();
     let id = p.container_id;
     let updates = |window_id: i32| -> Vec<BotEvent> {
         p.items
@@ -479,22 +461,16 @@ fn set_content_events(
         // upstream runs updateHeldItem(), then emits
         // `setWindowItems:{id}` — resolved packets only
         let mut out = updates(id);
-        out.push(t.held_changed(client));
+        out.push(t.held_changed(inv));
         out.push(BotEvent::SetWindowItems { window_id: id });
         return out;
     }
 
     if let Some(pending) = t.pending.take_if(|w| w.id == id) {
-        let window = Window::new(
-            pending.id,
-            pending.menu_kind,
-            pending.title,
-            client.clone(),
-            tracker,
-        );
+        let window = new_window(pending.id, pending.menu_kind, &pending.title);
         t.current = Some(window.shared.clone());
         let mut out = updates(id);
-        out.push(t.held_changed(client));
+        out.push(t.held_changed(inv));
         // upstream emits `setWindowItems:{id}` here; the once-listener
         // it registered in prepareWindow then fires `windowOpen`
         out.push(BotEvent::SetWindowItems { window_id: id });
@@ -522,7 +498,7 @@ fn set_content_events(
             .collect();
         // each remapped write goes through upstream's `_setSlot`, which
         // runs updateHeldItem() — once per packet here
-        out.push(t.held_changed(client));
+        out.push(t.held_changed(inv));
         return out;
     }
     Vec::new()
@@ -535,19 +511,16 @@ fn set_content_events(
 /// `currentWindow` is set at `open_window`, before its first
 /// `window_items` arrives.
 fn set_slot_events(
-    tracker: &Arc<Mutex<WindowTracker>>,
-    client: &mineflayer_engine::Client,
+    t: &mut WindowTracker,
+    inv: &Inventory,
     p: &mineflayer_engine::protocol::packets::game::c_container_set_slot::ClientboundContainerSetSlot,
     pre: &WindowPre,
 ) -> Vec<BotEvent> {
-    // lock rule: the tracker lock is held while brief ECS reads are taken
-    // — allowed direction.
-    let mut t = tracker.lock();
     let slot = usize::from(p.slot);
     let window_slot = match p.container_id {
         -1 => {
             // cursor item — the engine applies it; upstream emits nothing.
-            t.held_sig_changed(client);
+            t.held_sig_changed(inv);
             return Vec::new();
         }
         -2 | 0 => Some((0, slot)),
@@ -567,7 +540,7 @@ fn set_slot_events(
     // remapped hotbar write can change the held stack too
     vec![
         slot_update(window_id, slot, pre.old(0), &p.item_stack),
-        t.held_changed(client),
+        t.held_changed(inv),
     ]
 }
 

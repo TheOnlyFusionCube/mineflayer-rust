@@ -1320,7 +1320,7 @@ the commit that completes the item.
 | ST4 | done; `pending` stays (the engine keeps no "windowOpen not sent yet" state); `eat_generation` and `eat_notify` wait for OP6 | `5b5537f`, (this commit) |
 | ST5 | done; `EntityGone.entity` stays `Option`: an id the engine never spawned has no entity (upstream invents a blank one) | (this commit) |
 | ST6 | done | (this commit) |
-| ST7 | open | |
+| ST7 | done; `OBSERVERS` stays as the emission order (D-port-plugins) | (this commit) |
 | OP1 | done | (this commit) |
 | OP2 | open | |
 | OP3 | open | |

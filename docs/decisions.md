@@ -189,11 +189,12 @@ locally and rerun the check to list the remaining errors.
 already `parking_lot`, and the type has no poisoning, so one panic under a
 lock cannot break a domain for the rest of the session.
 
-**D-lock-order (first plan B9). A domain lock may be held while the ECS lock is
-taken; never the reverse.** The rule and every two-lock site are documented
-next to `BotShared` (`src/bot/mod.rs`). Plan item A3 (2026-10-17)
-removed the window tracker's ECS writes, but it still reads the ECS under
-its lock, as does the world-state observer, so the rule stays as it is.
+**D-lock-order (first plan B9). Removed** (third plan ST7, 2026-10-18).
+The rule ordered the `BotShared` domain locks against the ECS lock. The
+domain state is now in ECS components, so the port has one lock for game
+state; `quit_reason` and `end_reason` are never held across it. What
+stays is the ECS lock's own rule: it is not reentrant, so code that runs
+under it (`with_component`, `with_component_mut`) must not lock it again.
 
 **D-log (first plan C1). `tracing` is the log facade.** The engine already logs through
 it. The crate emits and never installs a subscriber; it never logs chat
@@ -229,8 +230,9 @@ loop had before; `bridge_emission_order` pins it, and upstream
 `health.js` emits `health` before the re-arm `spawn` as it does. All
 observers run before the first event of an engine event goes out. Each
 entry is an adapter that passes one shared `Observe` context to the
-domain function with the inputs that domain needs, so the domain
-functions keep narrow arguments and their unit tests.
+domain function with the inputs that domain needs. The golden test of
+TS2 (`tests/golden/bridge_events.txt`) pins the order for a full packet
+script; `bridge_emission_order` pins the lifecycle and chat cases.
 
 **D-port-plugins. The bridge stays the one sender; per-bot state moves into
 the ECS** (third plan, ST1 and ST3, 2026-10-17). The third plan's ST1 put
@@ -269,7 +271,14 @@ new engine change:
   the engine.
 - Equipment, chat-session keys, attributes (`entity::tracker`): the
   engine does not store them, so the port must keep the state; an event
-  would only change where the packet arrives from.
+  would only change where the packet arrives from. Since third plan ST5
+  they are components on their entity, and the metadata events read the
+  engine's typed metadata decode instead of protocol indices.
+- Where the engine's apply destroys what an event needs (a removed
+  entity, an ended effect, a replaced slot, a replaced block), a port
+  plugin records it before the apply: the `PacketPreApply` hooks of
+  `entity::EntityStatePlugin` and `windows::WindowPlugin`, and the block
+  system of `world::WorldPlugin` (D-port-plugins).
 
 Cost if wrong: add the engine event, record it in the D-engine list, and
 replace the port decode with a match on it.
