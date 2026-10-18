@@ -646,11 +646,11 @@ impl Bot {
     ) -> Result<()> {
         let (window, w, h) = match crafting_table {
             Some(block) => {
-                if window_table.is_none() {
+                let window = match window_table {
+                    Some(window) => window.clone(),
                     // upstream activateBlock + once('windowOpen')
-                    *window_table = Some(self.open_block(block).await?);
-                }
-                let window = window_table.clone().unwrap();
+                    None => window_table.insert(self.open_block(block).await?).clone(),
+                };
                 if window.menu_kind() != Some(MenuKind::Crafting) {
                     return Err(Error::InvalidArgument(format!(
                         "crafting: non craftingTable used as craftingTable: {:?}",

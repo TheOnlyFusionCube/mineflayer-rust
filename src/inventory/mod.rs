@@ -30,7 +30,7 @@ use mineflayer_engine::{
         s_player_action::{self, ServerboundPlayerAction},
         s_use_item::ServerboundUseItem,
     },
-    registry::builtin::{ItemKind, MenuKind},
+    registry::builtin::{BlockKind, ItemKind, MenuKind},
 };
 use tokio::sync::broadcast;
 
@@ -97,9 +97,9 @@ pub(crate) fn dest_fixed_slot(dest: EquipDest) -> Option<u16> {
 /// shape.
 #[derive(Clone, Debug)]
 pub enum ContainerTarget {
-    /// A container block: position + name for upstream's allowed-list
+    /// A container block: position + kind for upstream's allowed-list
     /// pre-check (chest.js throws before opening other blocks).
-    Block { pos: BlockPos, name: String },
+    Block { pos: BlockPos, kind: BlockKind },
     /// An entity reference.
     Entity(mineflayer_engine::EntityRef),
 }
@@ -108,7 +108,7 @@ impl From<&Block> for ContainerTarget {
     fn from(block: &Block) -> Self {
         ContainerTarget::Block {
             pos: block.pos,
-            name: block.short_name().to_string(),
+            kind: block.kind(),
         }
     }
 }
@@ -131,22 +131,19 @@ impl From<&mineflayer_engine::EntityRef> for ContainerTarget {
     }
 }
 
-/// Upstream chest.js `allowedWindowTypes` as block names — the pre-open
-/// check for [`ContainerTarget::Block`].
-fn is_container_block_name(name: &str) -> bool {
+/// The blocks whose windows are upstream chest.js `allowedWindowTypes` —
+/// the pre-open check for [`ContainerTarget::Block`].
+fn is_container_block(kind: BlockKind) -> bool {
     matches!(
-        name,
-        "generic"
-            | "chest"
-            | "trapped_chest"
-            | "ender_chest"
-            | "dispenser"
-            | "dropper"
-            | "hopper"
-            | "barrel"
-            | "container"
-            | "shulker_box"
-    ) || name.ends_with("_shulker_box")
+        kind,
+        BlockKind::Chest
+            | BlockKind::TrappedChest
+            | BlockKind::EnderChest
+            | BlockKind::Dispenser
+            | BlockKind::Dropper
+            | BlockKind::Hopper
+            | BlockKind::Barrel
+    ) || mineflayer_engine::registry::tags::blocks::SHULKER_BOXES.contains(&kind)
 }
 
 /// Upstream `allowedWindowTypes` rendered as the resulting [`MenuKind`]
@@ -726,9 +723,14 @@ impl Bot {
     /// parameters have no engine equivalent (the engine fabricates the
     /// block-face hit from `force_block`).
     pub async fn open_block(&self, block: &Block) -> Result<Window> {
+        self.open_at(block.pos).await
+    }
+
+    /// Look at the block at `pos`, right-click it, and wait for the window.
+    async fn open_at(&self, pos: BlockPos) -> Result<Window> {
         let mut rx = self.subscribe();
-        self.look_at(block.pos.center(), false).await?;
-        self.client.block_interact(block.pos);
+        self.look_at(pos.center(), false).await?;
+        self.client.block_interact(pos);
         self.await_window_open(&mut rx).await
     }
 
@@ -776,16 +778,13 @@ impl Bot {
     /// ```
     pub async fn open_container(&self, target: impl Into<ContainerTarget>) -> Result<Window> {
         let window = match target.into() {
-            ContainerTarget::Block { pos, name } => {
-                if !is_container_block_name(&name) {
+            ContainerTarget::Block { pos, kind } => {
+                if !is_container_block(kind) {
                     return Err(Error::InvalidArgument(
                         "containerToOpen is neither a block nor an entity".into(),
                     ));
                 }
-                let mut rx = self.subscribe();
-                self.look_at(pos.center(), false).await?;
-                self.client.block_interact(pos);
-                self.await_window_open(&mut rx).await?
+                self.open_at(pos).await?
             }
             ContainerTarget::Entity(entity) => self.open_entity(&entity).await?,
         };

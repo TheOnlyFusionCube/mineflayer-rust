@@ -21,6 +21,8 @@
 - `mineflayer::engine` no longer has `swarm`, `ClientBuilder`, `JoinOpts`,
   `auto_reconnect`, `NoState`, `HandleFn`, or `BoxHandleFn`. The bot never
   used them; join with `Client::join` or `StartClientOpts`.
+- `ContainerTarget::Block` carries the block's `kind: BlockKind` (was
+  `name: String`); the container pre-check is a typed block set.
 - Typed event payloads: `BotEvent::Kicked { reason, logged_in }` (was
   `Kicked(String, bool)`), `PathReset { reason: PathResetReason }` (was a
   `&'static str`; `as_str()` gives upstream's string),

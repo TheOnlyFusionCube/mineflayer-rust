@@ -207,26 +207,17 @@ async fn tunables_round_trip_and_feed_the_follow_goal() {
 
 #[test]
 fn attack_rate_samples_in_range_and_clamps() {
-    let mut rng = 0x1234_5678_9abc_def1;
     for _ in 0..256 {
-        let t = AttackRate::RandomTicks { min: 10, max: 20 }.ticks(0, &mut rng);
+        let t = AttackRate::RandomTicks { min: 10, max: 20 }.ticks(0);
         assert!((10..20).contains(&t));
         // cooldown + offset, clamped ≥1 like upstream's getTicks
-        let t = AttackRate::CooldownOffset { min: -2, max: 2 }.ticks(13, &mut rng);
+        let t = AttackRate::CooldownOffset { min: -2, max: 2 }.ticks(13);
         assert!((11..15).contains(&t));
     }
     // a negative offset can pull the sum below 1 — upstream clamps
-    let mut rng = 0xdead_beef;
-    assert_eq!(
-        AttackRate::CooldownOffset { min: -10, max: -5 }.ticks(3, &mut rng),
-        1
-    );
+    assert_eq!(AttackRate::CooldownOffset { min: -10, max: -5 }.ticks(3), 1);
     // empty ranges collapse to min
-    let mut rng = 1;
-    assert_eq!(
-        AttackRate::RandomTicks { min: 7, max: 7 }.ticks(0, &mut rng),
-        7
-    );
+    assert_eq!(AttackRate::RandomTicks { min: 7, max: 7 }.ticks(0), 7);
 }
 
 /// A target beyond `view_distance` counts as defeated — the driver

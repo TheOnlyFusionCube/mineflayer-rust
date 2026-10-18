@@ -1854,6 +1854,7 @@ dependencies = [
  "futures",
  "mineflayer-engine",
  "parking_lot",
+ "rand 0.10.3",
  "regex",
  "serde",
  "serde_json",

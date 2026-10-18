@@ -65,34 +65,23 @@ impl Default for AttackRate {
 impl AttackRate {
     /// Sample `getTicks(bot)` — upstream clamps every solver to ≥1
     /// tick.
-    fn ticks(&self, cooldown_ticks: i64, rng: &mut u64) -> i64 {
+    fn ticks(&self, cooldown_ticks: i64) -> i64 {
         match *self {
-            Self::RandomTicks { min, max } => rand_i64(rng, min as i64, max as i64).max(1),
+            Self::RandomTicks { min, max } => random_in(min as i64, max as i64).max(1),
             Self::CooldownOffset { min, max } => {
-                (rand_i64(rng, i64::from(min), i64::from(max)) + cooldown_ticks).max(1)
+                (random_in(i64::from(min), i64::from(max)) + cooldown_ticks).max(1)
             }
         }
     }
 }
 
-/// xorshift64* — the driver's jitter source for [`AttackRate`]
-/// sampling (a full `rand` dependency would buy nothing here).
-fn rand_next(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    *state = x;
-    x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-}
-
-/// A uniformly-ish random integer in `[min, max)` — `min` when the
-/// range is empty, matching `Math.floor(rand * (max - min) + min)`.
-fn rand_i64(state: &mut u64, min: i64, max: i64) -> i64 {
+/// A random integer in `[min, max)` — `min` when the range is empty,
+/// matching `Math.floor(rand * (max - min) + min)`.
+fn random_in(min: i64, max: i64) -> i64 {
     if max <= min {
         return min;
     }
-    min + (rand_next(state) % (max - min) as u64) as i64
+    rand::random_range(min..max)
 }
 
 /// The tunable surface upstream `PVP` exposes as mutable fields —
@@ -342,7 +331,6 @@ async fn drive(bot: Bot, entity: EntityRef, op: Op) {
     // decrements, and `=== -1` attempts a swing
     let mut time_to_next_attack: i64 = 0;
     let mut was_in_range = false;
-    let mut rng = seed_rng(&entity);
     while ticks.next().await {
         // copy what we need out and drop the component guards before any
         // other ECS access — a read guard held across another lock
@@ -403,7 +391,7 @@ async fn drive(bot: Bot, entity: EntityRef, op: Op) {
         }
         if !in_range {
             // upstream resamples without swinging when out of range
-            time_to_next_attack = rate.ticks(cooldown_ticks(&bot), &mut rng);
+            time_to_next_attack = rate.ticks(cooldown_ticks(&bot));
             continue;
         }
         // aim at the entity's torso, like upstream's offset(0, height, 0)
@@ -412,7 +400,7 @@ async fn drive(bot: Bot, entity: EntityRef, op: Op) {
             .await;
         bot.attack(&entity, true);
         bot.emit_event(BotEvent::AttackedTarget);
-        time_to_next_attack = rate.ticks(cooldown_ticks(&bot), &mut rng);
+        time_to_next_attack = rate.ticks(cooldown_ticks(&bot));
     }
     report_end_if_ours(&bot, &op);
 }
@@ -426,17 +414,6 @@ fn cooldown_ticks(bot: &Bot) -> i64 {
         .get_component::<Attributes>()
         .map(|a| get_attack_strength_delay(&a).ceil() as i64)
         .unwrap_or(0)
-}
-
-/// Seed the jitter source from the target — different drivers mustn't
-/// share one stream, and a per-driver seed keeps `AttackRate` sampling
-/// independent of when `attack` ran.
-fn seed_rng(entity: &EntityRef) -> u64 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    (nanos ^ u64::from(entity.id().index_u32()).wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1
 }
 
 /// Report the loop's end only when the state is still ours: clear the

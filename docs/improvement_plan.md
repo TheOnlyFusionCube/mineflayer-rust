@@ -1342,7 +1342,7 @@ the commit that completes the item.
 | CL4 | open | |
 | CL5 | done | `3a39167`, (this commit) |
 | CL6 | done | `e67a4be` |
-| CL7 | open | |
+| CL7 | done | (this commit) |
 | CP1 | open | |
 | CP2 | open | |
 | CP3 | open | |
