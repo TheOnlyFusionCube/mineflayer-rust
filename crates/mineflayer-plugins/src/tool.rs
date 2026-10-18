@@ -14,29 +14,23 @@
 
 use std::time::Duration;
 
-// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer::engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // real crate name in scope.
-use mineflayer_engine::ecs as bevy_ecs;
-use mineflayer_engine::{
-    BlockPos,
-    block::BlockTrait,
-    core::attribute_modifier_operation::AttributeModifierOperation,
-    ecs::prelude::Component,
-    entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory},
-    inventory::{
-        ItemStack,
-        components::{AttributeModifiers, EquipmentSlotGroup, Tool as ToolComponent},
+use mineflayer::engine::ecs as bevy_ecs;
+use mineflayer::{
+    Block, Bot, EquipDest, Error, Goal, Item, QUICK_BAR_START, Result,
+    engine::{
+        BlockPos,
+        block::BlockTrait,
+        core::attribute_modifier_operation::AttributeModifierOperation,
+        ecs::prelude::Component,
+        entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory},
+        inventory::{
+            ItemStack,
+            components::{AttributeModifiers, EquipmentSlotGroup, Tool as ToolComponent},
+        },
+        registry::builtin::Attribute,
     },
-    registry::builtin::Attribute,
-};
-
-use crate::bot::{with_component, with_component_mut};
-use crate::{
-    Bot, Error, Result,
-    inventory::{EquipDest, QUICK_BAR_START},
-    pathfinder::Goal,
-    windows::Item,
-    world::Block,
 };
 
 /// Bound a chest trip like collect's per-candidate walk — upstream
@@ -78,7 +72,7 @@ struct ToolState {
 /// `has_correct_tool_for_drops` (the mc1.20.5+ tool-component rule
 /// check upstream reads from mcdata `harvestTools`): blocks that don't
 /// require a correct tool harvest with anything, bare hand included.
-pub(crate) fn can_harvest(state: mineflayer_engine::block::BlockState, stack: &ItemStack) -> bool {
+pub(crate) fn can_harvest(state: mineflayer::engine::block::BlockState, stack: &ItemStack) -> bool {
     let block = Box::<dyn BlockTrait>::from(state);
     if !block.behavior().requires_correct_tool_for_drops {
         return true;
@@ -130,7 +124,7 @@ fn attack_damage(stack: &ItemStack) -> f64 {
 /// The hotbar index (0–8) of the highest-damage item — first strictly-
 /// better slot wins, so ties keep the earlier slot and an all-empty
 /// hotbar returns 0.
-fn best_melee_slot(menu: &mineflayer_engine::inventory::Menu) -> usize {
+fn best_melee_slot(menu: &mineflayer::engine::inventory::Menu) -> usize {
     let slots = menu.slots();
     let mut best = 0;
     let mut best_damage = f64::NEG_INFINITY;
@@ -164,10 +158,15 @@ pub struct Tool<'a> {
     bot: &'a Bot,
 }
 
-impl Bot {
+/// Adds `tool` to [`Bot`].
+pub trait ToolExt {
     /// `bot.tool` — the mineflayer-tool namespace (`equipForBlock`,
     /// `equipForEntity`, `chestLocations`).
-    pub fn tool(&self) -> Tool<'_> {
+    fn tool(&self) -> Tool<'_>;
+}
+
+impl ToolExt for Bot {
+    fn tool(&self) -> Tool<'_> {
         Tool { bot: self }
     }
 }
@@ -176,19 +175,22 @@ impl Tool<'_> {
     /// `bot.tool.chestLocations` — the chest positions `getFromChest`
     /// may pull tools from (upstream's public array).
     pub fn chest_locations(&self) -> Vec<BlockPos> {
-        with_component::<ToolState, _>(&self.bot.client, |s| s.chest_locations.clone())
+        self.bot
+            .state::<ToolState, _>(|s| s.chest_locations.clone())
             .unwrap_or_default()
     }
 
     /// Replace `chestLocations`.
     pub fn set_chest_locations(&self, locations: Vec<BlockPos>) {
-        with_component_mut::<ToolState, _>(&self.bot.client, |s| s.chest_locations = locations);
+        self.bot
+            .state_mut::<ToolState, _>(|s| s.chest_locations = locations);
     }
 
     /// `chestLocations.push(pos)` — upstream mutates the array
     /// directly; same effect.
     pub fn add_chest_location(&self, pos: BlockPos) {
-        with_component_mut::<ToolState, _>(&self.bot.client, |s| s.chest_locations.push(pos));
+        self.bot
+            .state_mut::<ToolState, _>(|s| s.chest_locations.push(pos));
     }
 
     /// `bot.tool.equipForBlock(block)` — the default-options call.
@@ -251,7 +253,7 @@ impl Tool<'_> {
     /// `Err(NotConnected)` when the player entity is gone.
     fn pick(&self, block: &Block, require_harvest: bool) -> Result<ToolPick> {
         let state = block.state;
-        let picked = self.bot.client.try_query_self::<(
+        let picked = self.bot.client().try_query_self::<(
             &Inventory,
             &Physics,
             &FluidOnEyes,
@@ -263,7 +265,7 @@ impl Tool<'_> {
                 let slots = menu.slots();
                 let player = menu.player_slots_range();
                 let progress = |stack: &ItemStack| {
-                    crate::interact::mine_progress(
+                    mineflayer::interact::mine_progress(
                         state,
                         stack,
                         fluid_on_eyes,
@@ -400,10 +402,10 @@ impl Tool<'_> {
     /// consulted (the engine's best-tool is block-oriented, and no
     /// entity-aware weapon scoring exists), so this is a generic
     /// max-damage pick — see the `equipForEntity` row in api-parity.md.
-    pub async fn equip_for_entity(&self, _entity: &mineflayer_engine::EntityRef) -> Result<()> {
+    pub async fn equip_for_entity(&self, _entity: &mineflayer::engine::EntityRef) -> Result<()> {
         let index = self
             .bot
-            .client
+            .client()
             .get_component::<Inventory>()
             .map(|inv| best_melee_slot(&inv.inventory_menu))
             .unwrap_or(0);
@@ -423,23 +425,27 @@ fn standard_tool_filter(item: &Item) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use mineflayer_engine::{
-        BlockPos,
-        block::{BlockState, fluid_state::FluidKind},
-        entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory},
-        registry::builtin::{BlockKind, EntityKind, ItemKind},
-        registry::identifier::Identifier,
-        world::WorldName,
+    use mineflayer::{
+        engine::{
+            BlockPos,
+            block::{BlockState, fluid_state::FluidKind},
+            entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory},
+            registry::{
+                builtin::{BlockKind, EntityKind, ItemKind},
+                identifier::Identifier,
+            },
+            world::WorldName,
+        },
+        test_util::live_entity_client,
     };
 
     use super::*;
-    use crate::{test_util::live_entity_client, world::Block};
 
     /// The components `get_mine_progress` queries plus the inventory
     /// being scored, with the given (absolute player-window slot →
     /// stack) entries set — hotbar slots are 36–44, main inventory
     /// 9–35.
-    fn player_with_inventory(items: &[(usize, ItemStack)]) -> mineflayer_engine::Client {
+    fn player_with_inventory(items: &[(usize, ItemStack)]) -> mineflayer::engine::Client {
         let mut inventory = Inventory::default();
         for (slot, stack) in items {
             *inventory.inventory_menu.slot_mut(*slot).unwrap() = stack.clone();
@@ -454,8 +460,9 @@ mod tests {
         ))
     }
 
-    /// Hotbar-slot shorthand — `player_with_inventory(&[(QUICK_BAR_START + i, s)])`.
-    fn player_with_hotbar(items: &[(usize, ItemStack)]) -> mineflayer_engine::Client {
+    /// Hotbar-slot shorthand — `player_with_inventory(&[(QUICK_BAR_START + i,
+    /// s)])`.
+    fn player_with_hotbar(items: &[(usize, ItemStack)]) -> mineflayer::engine::Client {
         player_with_inventory(
             &items
                 .iter()
@@ -466,7 +473,7 @@ mod tests {
 
     fn stone(bot: &Bot) -> Block {
         Block::new(
-            &bot.client,
+            bot.client(),
             BlockPos::new(0, 64, 0),
             BlockState::from(BlockKind::Stone),
         )
@@ -522,7 +529,7 @@ mod tests {
     fn pick_scans_the_whole_inventory_like_upstream() {
         // the best tool sits in the main inventory, not the hotbar —
         // upstream's items() scan reaches it
-        let bot = crate::test_util::bot(player_with_inventory(&[
+        let bot = mineflayer::test_util::bot(player_with_inventory(&[
             (
                 QUICK_BAR_START + 1,
                 ItemStack::new(ItemKind::DiamondSword, 1),
@@ -541,7 +548,7 @@ mod tests {
     #[test]
     fn pick_require_harvest_filters_and_errors() {
         // no harvestable tool anywhere → Empty (the NoItem path)
-        let bare = crate::test_util::bot(player_with_hotbar(&[]));
+        let bare = mineflayer::test_util::bot(player_with_hotbar(&[]));
         assert!(matches!(
             bare.tool().pick(&stone(&bare), true).unwrap(),
             ToolPick::Empty
@@ -549,7 +556,7 @@ mod tests {
 
         // hand can't harvest stone; a dirt-block check leaves it a candidate
         let dirt = Block::new(
-            &bare.client,
+            bare.client(),
             BlockPos::new(0, 64, 0),
             BlockState::from(BlockKind::Dirt),
         );
@@ -560,7 +567,7 @@ mod tests {
 
         // a pickaxe survives the filter (main inventory, so it isn't
         // the already-held item — that case is `Skip`)
-        let bot = crate::test_util::bot(player_with_inventory(&[(
+        let bot = mineflayer::test_util::bot(player_with_inventory(&[(
             12,
             ItemStack::new(ItemKind::DiamondPickaxe, 1),
         )]));
@@ -572,7 +579,7 @@ mod tests {
 
     #[test]
     fn pick_skips_when_the_held_item_is_already_best() {
-        let bot = crate::test_util::bot(player_with_hotbar(&[(
+        let bot = mineflayer::test_util::bot(player_with_hotbar(&[(
             0,
             ItemStack::new(ItemKind::DiamondPickaxe, 1),
         )]));
@@ -585,7 +592,7 @@ mod tests {
 
     #[test]
     fn chest_locations_round_trip() {
-        let bot = crate::test_util::bot(player_with_hotbar(&[]));
+        let bot = mineflayer::test_util::bot(player_with_hotbar(&[]));
         assert!(bot.tool().chest_locations().is_empty());
         bot.tool().set_chest_locations(vec![BlockPos::new(1, 2, 3)]);
         bot.tool().add_chest_location(BlockPos::new(4, 5, 6));
@@ -611,7 +618,7 @@ mod tests {
 
     #[test]
     fn best_tool_for_returns_the_inventory_winner() {
-        let bot = crate::test_util::bot(player_with_inventory(&[
+        let bot = mineflayer::test_util::bot(player_with_inventory(&[
             (QUICK_BAR_START, ItemStack::new(ItemKind::DiamondSword, 1)),
             (20, ItemStack::new(ItemKind::DiamondPickaxe, 1)),
         ]));
@@ -620,13 +627,13 @@ mod tests {
         assert_eq!(best.slot, 20);
 
         // an empty hotbar+inventory has nothing better than the bare hand
-        let bare = crate::test_util::bot(player_with_hotbar(&[]));
+        let bare = mineflayer::test_util::bot(player_with_hotbar(&[]));
         assert!(bare.tool().best_tool_for(&stone(&bare)).is_none());
     }
 
     #[tokio::test]
     async fn equip_for_block_selects_the_best_slot() {
-        let bot = crate::test_util::bot(player_with_hotbar(&[
+        let bot = mineflayer::test_util::bot(player_with_hotbar(&[
             (0, ItemStack::new(ItemKind::DiamondSword, 1)),
             (3, ItemStack::new(ItemKind::DiamondPickaxe, 1)),
         ]));
@@ -640,7 +647,7 @@ mod tests {
             (0, ItemStack::new(ItemKind::Stick, 1)),
             (2, ItemStack::new(ItemKind::DiamondSword, 1)),
         ]);
-        let bot = crate::test_util::bot(client.clone());
+        let bot = mineflayer::test_util::bot(client.clone());
         let target = client.entity_ref_for(client.entity); // arg is unused
         bot.tool().equip_for_entity(&target).await.unwrap();
         assert_eq!(bot.quick_bar_slot(), 2);

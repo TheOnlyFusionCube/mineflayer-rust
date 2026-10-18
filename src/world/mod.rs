@@ -193,11 +193,9 @@ impl std::fmt::Debug for Block {
 }
 
 impl Block {
-    pub(crate) fn new(
-        client: &mineflayer_engine::Client,
-        pos: BlockPos,
-        state: BlockState,
-    ) -> Self {
+    /// The block at `pos` with state `state`, in `client`'s world. Its
+    /// world reads go through `client`.
+    pub fn new(client: &mineflayer_engine::Client, pos: BlockPos, state: BlockState) -> Self {
         Self {
             pos,
             state,

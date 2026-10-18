@@ -1,13 +1,15 @@
-use mineflayer_engine::{
-    entity::{inventory::Inventory, metadata::Health},
-    inventory::ItemStack,
-    local_player::Hunger,
-    registry::identifier::Identifier,
-    world::WorldName,
+use mineflayer::{
+    engine::{
+        entity::{inventory::Inventory, metadata::Health},
+        inventory::ItemStack,
+        local_player::Hunger,
+        registry::identifier::Identifier,
+        world::WorldName,
+    },
+    test_util::{bot_with_shutdown, live_entity_client, tick_client, tick_sender},
 };
 
 use super::*;
-use crate::test_util::{bot_with_shutdown, live_entity_client, tick_client, tick_sender};
 
 /// An inventory carrying `items` (`slot` = absolute player-window
 /// index — hotbar is 36..45, main inventory 9..36).
@@ -22,7 +24,7 @@ fn food_inventory(items: &[(usize, ItemKind)]) -> Inventory {
 /// A scaffold bot for direct `eat()` calls — live entity carrying the
 /// inventory, no tick broadcast (the driver isn't spawned).
 fn eating_bot(items: &[(usize, ItemKind)]) -> Bot {
-    crate::test_util::bot(live_entity_client((
+    mineflayer::test_util::bot(live_entity_client((
         WorldName(Identifier::from("minecraft:overworld")),
         food_inventory(items),
     )))
@@ -47,14 +49,13 @@ fn monitored_bot(
 }
 
 /// Drain pending events; collect the autoEat event names in order.
-fn auto_eat_events(rx: &mut tokio::sync::broadcast::Receiver<BotEvent>) -> Vec<&'static str> {
+fn auto_eat_events(rx: &mut tokio::sync::broadcast::Receiver<AutoEatEvent>) -> Vec<&'static str> {
     let mut seen = Vec::new();
     while let Ok(event) = rx.try_recv() {
         seen.push(match event {
-            BotEvent::EatStart { .. } => "eatStart",
-            BotEvent::EatFail(_) => "eatFail",
-            BotEvent::EatFinish { .. } => "eatFinish",
-            _ => continue,
+            AutoEatEvent::Start { .. } => "eatStart",
+            AutoEatEvent::Fail(_) => "eatFail",
+            AutoEatEvent::Finish { .. } => "eatFinish",
         });
     }
     seen
@@ -63,7 +64,7 @@ fn auto_eat_events(rx: &mut tokio::sync::broadcast::Receiver<BotEvent>) -> Vec<&
 /// Send one tick once a receiver exists — `enable_auto`/spawned
 /// drivers subscribe to the broadcast asynchronously, so a send
 /// fired immediately can hit `SendError` before any `recv` is armed.
-async fn send_tick(client: &mineflayer_engine::Client) {
+async fn send_tick(client: &mineflayer::engine::Client) {
     for _ in 0..200 {
         if tick_sender(client).send(()).is_ok() {
             return;
@@ -74,14 +75,14 @@ async fn send_tick(client: &mineflayer_engine::Client) {
 }
 
 /// Wait (bounded) for the next EatStart, returning its food kind.
-async fn next_eat_start(rx: &mut tokio::sync::broadcast::Receiver<BotEvent>) -> ItemKind {
+async fn next_eat_start(rx: &mut tokio::sync::broadcast::Receiver<AutoEatEvent>) -> ItemKind {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
         let event = tokio::time::timeout_at(deadline, rx.recv())
             .await
             .expect("no EatStart within 5s")
             .expect("event stream closed");
-        if let BotEvent::EatStart { food, .. } = event {
+        if let AutoEatEvent::Start { food, .. } = event {
             return food.kind();
         }
     }
@@ -155,7 +156,7 @@ fn best_food_picks_highest_score_and_skips_banned() {
 #[tokio::test]
 async fn eat_without_food_errors_before_any_event() {
     let bot = eating_bot(&[]);
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let err = bot.auto_eat().eat(EatOpts::default()).await.unwrap_err();
     assert!(err.to_string().contains("couldn't find a choice"));
     assert!(auto_eat_events(&mut rx).is_empty());
@@ -165,7 +166,7 @@ async fn eat_without_food_errors_before_any_event() {
 #[tokio::test]
 async fn eat_emits_start_then_finish_on_consume_end() {
     let bot = eating_bot(&[(36, ItemKind::Apple)]);
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let eating = tokio::spawn({
         let bot = bot.clone();
         async move { bot.auto_eat().eat(EatOpts::default()).await }
@@ -175,7 +176,7 @@ async fn eat_emits_start_then_finish_on_consume_end() {
 
     // the bridge's real consume-finish (entity status 9 / held-stack
     // change) ends the eat; end it directly
-    bot.windows(|t| t.eat.finish());
+    mineflayer::test_util::finish_consume(&bot);
 
     eating.await.unwrap().unwrap();
     assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
@@ -189,7 +190,7 @@ async fn eat_timeout_errors_and_finishes_without_fail_under_strict() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let err = bot.auto_eat().eat(EatOpts::default()).await.unwrap_err();
     // upstream's timeout Error message, verbatim
     assert_eq!(
@@ -209,7 +210,7 @@ async fn strict_errors_off_still_reports_but_resolves_ok() {
     opts.strict_errors = false;
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     bot.auto_eat().eat(EatOpts::default()).await.unwrap();
     assert_eq!(
         auto_eat_events(&mut rx),
@@ -220,7 +221,7 @@ async fn strict_errors_off_still_reports_but_resolves_ok() {
 #[tokio::test]
 async fn second_eat_errors_and_cancel_eat_fails_the_first() {
     let bot = eating_bot(&[(36, ItemKind::Apple)]);
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let eating = tokio::spawn({
         let bot = bot.clone();
         async move { bot.auto_eat().eat(EatOpts::default()).await }
@@ -250,7 +251,7 @@ async fn explicit_food_selection_bypasses_scoring_and_ban() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let _ = bot
         .auto_eat()
         .eat(EatOpts {
@@ -268,10 +269,10 @@ async fn monitor_eats_when_hungry_and_reports_each_attempt() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     bot.auto_eat().enable_auto();
     assert!(bot.auto_eat().enabled());
-    send_tick(&bot.client).await;
+    send_tick(bot.client()).await;
 
     assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
     // the attempt then fails on the scaffold (no finish packet) —
@@ -283,9 +284,9 @@ async fn monitor_eats_when_hungry_and_reports_each_attempt() {
 #[tokio::test]
 async fn monitor_idles_when_full_and_healthy() {
     let (bot, _shutdown) = monitored_bot(20, 20., &[(36, ItemKind::Apple)]);
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     bot.auto_eat().enable_auto();
-    send_tick(&bot.client).await;
+    send_tick(bot.client()).await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(auto_eat_events(&mut rx).is_empty());
 }
@@ -298,9 +299,9 @@ async fn monitor_eats_below_min_health_even_when_full() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     bot.auto_eat().enable_auto();
-    send_tick(&bot.client).await;
+    send_tick(bot.client()).await;
     assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
 }
 
@@ -311,11 +312,11 @@ async fn disable_stops_the_monitor() {
     bot.auto_eat().disable_auto();
     assert!(!bot.auto_eat().enabled());
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     // the receiver may already be gone once the driver sees the
     // cancel flag, so sends are allowed to fail here
-    let _ = tick_sender(&bot.client).send(());
-    let _ = tick_sender(&bot.client).send(());
+    let _ = tick_sender(bot.client()).send(());
+    let _ = tick_sender(bot.client()).send(());
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(auto_eat_events(&mut rx).is_empty());
 }
@@ -330,16 +331,16 @@ async fn driver_survives_lagged_ticks() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let op = OpSlot::default().start(&bot.root);
+    let op = bot.start_op(&mut OpSlot::default());
     let _driver = tokio::spawn(drive(bot.clone(), op));
-    let mut events = bot.events();
+    let mut events = bot.plugin_events::<AutoEatEvent>();
 
     // once the driver is parked on recv, overflow the capacity-1
     // ring — the sends land back-to-back while the current-thread
     // runtime keeps the driver parked, so its next recv is Lagged
-    send_tick(&bot.client).await;
-    tick_sender(&bot.client).send(()).unwrap();
-    tick_sender(&bot.client).send(()).unwrap();
+    send_tick(bot.client()).await;
+    tick_sender(bot.client()).send(()).unwrap();
+    tick_sender(bot.client()).send(()).unwrap();
 
     assert_eq!(next_eat_start(&mut events).await, ItemKind::Apple);
 }
@@ -349,7 +350,7 @@ async fn driver_survives_lagged_ticks() {
 #[tokio::test]
 async fn driver_exits_on_shutdown() {
     let (bot, shutdown_tx) = monitored_bot(10, 20., &[(36, ItemKind::Apple)]);
-    let op = OpSlot::default().start(&bot.root);
+    let op = bot.start_op(&mut OpSlot::default());
     let driver = tokio::spawn(drive(bot.clone(), op));
 
     // parked on ticks like a live connection
@@ -364,7 +365,7 @@ async fn driver_exits_on_shutdown() {
     // and a cancel retires it with no tick
     let (bot, _tx) = monitored_bot(20, 20., &[]);
     let mut slot = OpSlot::default();
-    let driver = tokio::spawn(drive(bot.clone(), slot.start(&bot.root)));
+    let driver = tokio::spawn(drive(bot.clone(), bot.start_op(&mut slot)));
     tokio::time::sleep(Duration::from_millis(20)).await;
     slot.cancel();
     tokio::time::timeout(Duration::from_secs(5), driver)
@@ -464,7 +465,7 @@ async fn eat_offhand_uses_the_offhand_stack() {
     opts.eating_timeout = Duration::from_millis(50);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let eating = tokio::spawn({
         let bot = bot.clone();
         async move {
@@ -478,7 +479,7 @@ async fn eat_offhand_uses_the_offhand_stack() {
     });
     let offhand = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let BotEvent::EatStart { offhand, .. } = rx.recv().await.unwrap() {
+            if let AutoEatEvent::Start { offhand, .. } = rx.recv().await.unwrap() {
                 break offhand;
             }
         }
@@ -500,7 +501,7 @@ async fn held_item_type_switch_fails_the_eat() {
     opts.eating_timeout = Duration::from_secs(5);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let eating = tokio::spawn({
         let bot = bot.clone();
         async move { bot.auto_eat().eat(EatOpts::default()).await }
@@ -509,11 +510,11 @@ async fn held_item_type_switch_fails_the_eat() {
 
     // swap the held stack for stone and fire the consume wake
     {
-        let mut ecs = bot.client.ecs.write();
-        let mut inv = ecs.get_mut::<Inventory>(bot.client.entity).unwrap();
+        let mut ecs = bot.client().ecs.write();
+        let mut inv = ecs.get_mut::<Inventory>(bot.client().entity).unwrap();
         *inv.inventory_menu.slot_mut(36).unwrap() = ItemStack::new(ItemKind::Stone, 1);
     }
-    bot.windows(|t| t.eat.finish());
+    mineflayer::test_util::finish_consume(&bot);
 
     let err = eating.await.unwrap().unwrap_err();
     assert_eq!(err.to_string(), "Item switched early to: stone!");
@@ -530,53 +531,18 @@ async fn superseding_consume_reports_distinctly() {
     opts.eating_timeout = Duration::from_secs(5);
     bot.auto_eat().set_opts(opts);
 
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<AutoEatEvent>();
     let eating = tokio::spawn({
         let bot = bot.clone();
         async move { bot.auto_eat().eat(EatOpts::default()).await }
     });
     assert_eq!(next_eat_start(&mut rx).await, ItemKind::Apple);
 
-    bot.start_eat();
+    bot.cancel_consume();
     let err = eating.await.unwrap().unwrap_err();
     assert_eq!(
         err.to_string(),
         "Eating cancelled due to calling bot.consume() again"
     );
     assert_eq!(auto_eat_events(&mut rx), ["eatFinish"]);
-}
-
-/// A second `consume` cancels the first; the finish signal resolves the
-/// second; the disconnect ends a pending one.
-#[tokio::test]
-async fn consume_is_superseded_finished_and_disconnected() {
-    let (bot, shutdown) = monitored_bot(10, 20., &[(36, ItemKind::Apple)]);
-    let first = tokio::spawn({
-        let bot = bot.clone();
-        async move { bot.consume().await }
-    });
-    tokio::task::yield_now().await;
-    let second = tokio::spawn({
-        let bot = bot.clone();
-        async move { bot.consume().await }
-    });
-    let err = first.await.unwrap().unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        Error::Cancelled("Consuming cancelled due to calling bot.consume() again".into())
-            .to_string()
-    );
-    bot.windows(|t| t.eat.finish());
-    second.await.unwrap().unwrap();
-
-    let third = tokio::spawn({
-        let bot = bot.clone();
-        async move { bot.consume().await }
-    });
-    tokio::task::yield_now().await;
-    drop(shutdown);
-    assert!(matches!(
-        third.await.unwrap().unwrap_err(),
-        Error::NotConnected
-    ));
 }

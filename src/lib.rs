@@ -25,9 +25,7 @@ mod error;
 mod op;
 mod plugins;
 
-pub mod auto_eat;
 pub mod chat;
-pub mod collect;
 pub mod craft;
 pub mod entity;
 pub mod interact;
@@ -37,10 +35,8 @@ pub mod misc;
 pub mod movement;
 pub mod pathfinder;
 pub mod plugin;
-pub mod pvp;
 pub mod scoreboard;
 pub mod state;
-pub mod tool;
 pub mod vec3;
 pub mod window_types;
 pub mod windows;
@@ -96,12 +92,6 @@ pub use world::{
 
 pub use interact::{DigAbortReason, DigFace, ForceLook};
 pub use vec3::Vec3Ext;
-
-// — ecosystem-plugin analogs: mineflayer-collectblock, -tool, -pvp, -auto-eat —
-pub use auto_eat::{AutoEat, AutoEatOpts, EatOpts, FoodData, FoodPriority, FoodSelection};
-pub use collect::{CollectBlock, CollectOpts, CollectTarget, Collected, ItemFilter};
-pub use pvp::{AttackRate, Pvp};
-pub use tool::{EquipOpts, Tool};
 
 /// The common imports for a bot: the handle, its events, the error type,
 /// and the engine value types that appear in signatures — so examples and

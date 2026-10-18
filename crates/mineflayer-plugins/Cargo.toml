@@ -1,0 +1,27 @@
+[package]
+name = "mineflayer-plugins"
+version = "0.2.0"
+edition = "2024"
+description = "The mineflayer plugin analogs (tool, auto-eat, collectblock, pvp), written on mineflayer's public plugin API"
+license = "MIT"
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = ["tool", "auto-eat", "collect", "pvp"]
+tool = []
+auto-eat = []
+collect = ["tool"]
+pvp = ["dep:rand"]
+
+[dependencies]
+mineflayer = { path = "../..", version = "0.2.0" }
+tokio = { version = "1", features = ["sync", "time", "macros"] }
+rand = { workspace = true, optional = true }
+
+[dev-dependencies]
+mineflayer = { path = "../..", version = "0.2.0", features = ["test-util"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tokio-util = { workspace = true }

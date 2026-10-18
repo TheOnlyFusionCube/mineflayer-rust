@@ -159,3 +159,54 @@ fn item_matching_and_finders() {
     let c = Item::of(stack(ItemKind::Dirt, 1), 2).unwrap();
     assert!(!a.same_item(&c));
 }
+
+/// A second `consume` cancels the first; the finish signal resolves the
+/// second; the disconnect ends a pending one.
+#[tokio::test]
+async fn consume_is_superseded_finished_and_disconnected() {
+    use mineflayer_engine::{
+        entity::{inventory::Inventory, metadata::Health},
+        local_player::Hunger,
+        registry::identifier::Identifier,
+        world::WorldName,
+    };
+    let mut inventory = Inventory::default();
+    *inventory.inventory_menu.slot_mut(36).unwrap() = ItemStack::new(ItemKind::Apple, 1);
+    let (bot, shutdown) = crate::test_util::bot_with_shutdown(crate::test_util::tick_client((
+        WorldName(Identifier::from("minecraft:overworld")),
+        inventory,
+        Hunger {
+            food: 10,
+            saturation: 0.,
+        },
+        Health(20.),
+    )));
+    let first = tokio::spawn({
+        let bot = bot.clone();
+        async move { bot.consume().await }
+    });
+    tokio::task::yield_now().await;
+    let second = tokio::spawn({
+        let bot = bot.clone();
+        async move { bot.consume().await }
+    });
+    let err = first.await.unwrap().unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        Error::Cancelled("Consuming cancelled due to calling bot.consume() again".into())
+            .to_string()
+    );
+    crate::test_util::finish_consume(&bot);
+    second.await.unwrap().unwrap();
+
+    let third = tokio::spawn({
+        let bot = bot.clone();
+        async move { bot.consume().await }
+    });
+    tokio::task::yield_now().await;
+    drop(shutdown);
+    assert!(matches!(
+        third.await.unwrap().unwrap_err(),
+        Error::NotConnected
+    ));
+}

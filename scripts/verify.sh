@@ -21,25 +21,28 @@ run_step() {
     fi
 }
 
-run_step "fmt"    cargo fmt --check
+run_step "fmt"    cargo fmt --check -p mineflayer -p mineflayer-plugins
 run_step "clippy" cargo clippy --all-targets -- -D warnings
 # the live tests and the plugin test compile only with their features;
 # lint them too (their warnings otherwise stay invisible to this gate)
 run_step "clippy (live, test-util)" cargo clippy --features live,test-util --all-targets -- -D warnings
-run_step "clippy (engine)" env CARGO_TARGET_DIR=target/engine-log cargo clippy --workspace --exclude mineflayer --all-targets --features mineflayer-client/log -- -D warnings
+run_step "clippy (plugins)" cargo clippy -p mineflayer-plugins --all-targets -- -D warnings
+run_step "clippy (engine)" env CARGO_TARGET_DIR=target/engine-log cargo clippy --workspace --exclude mineflayer --exclude mineflayer-plugins --all-targets --features mineflayer-client/log -- -D warnings
 run_step "test"   cargo test
 # the plugin written against the public API, on the exported harness
 run_step "test (plugin)" cargo test --features test-util --test plugin
+# the plugin analogs, written on the public plugin API
+run_step "test (plugins)" cargo test -p mineflayer-plugins
 # the engine crates, with the `log` feature their simulation tests capture
 # logs through (off for the port, which never installs a subscriber). The
 # two `log` steps build into target/engine-log, so either build directory
 # can be removed without rebuilding the other.
-run_step "test (engine)" env CARGO_TARGET_DIR=target/engine-log cargo test --workspace --exclude mineflayer --features mineflayer-client/log
+run_step "test (engine)" env CARGO_TARGET_DIR=target/engine-log cargo test --workspace --exclude mineflayer --exclude mineflayer-plugins --features mineflayer-client/log
 run_step "build"  cargo build
-run_step "doc"    env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+run_step "doc"    env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p mineflayer -p mineflayer-plugins
 # rustdoc takes RUSTDOCFLAGS, not the build rustflags, so it needs the
 # solver pin itself (rust-toolchain.toml, .cargo/config.toml)
-run_step "doc (engine)" env RUSTDOCFLAGS="-D warnings -Znext-solver=no" cargo doc --workspace --exclude mineflayer --no-deps
+run_step "doc (engine)" env RUSTDOCFLAGS="-D warnings -Znext-solver=no" cargo doc --workspace --exclude mineflayer --exclude mineflayer-plugins --no-deps
 
 echo "==="
 if [ "$failures" -eq 0 ]; then

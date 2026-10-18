@@ -1,12 +1,11 @@
-//! Test harnesses. [`sim::BotSim`] runs the real engine and bridge with
-//! no server; plugin crates get it through the `test-util` feature. The
-//! scaffolds (clients with no systems) are for this crate's unit tests.
+//! Test harnesses, for this crate and, through the `test-util` feature,
+//! for plugin crates. [`sim::BotSim`] runs the real engine and bridge
+//! with no server; the scaffolds are clients and bots with no engine
+//! systems.
 
 #[cfg(test)]
 mod golden;
-#[cfg(test)]
 mod scaffold;
 pub mod sim;
 
-#[cfg(test)]
-pub(crate) use scaffold::*;
+pub use scaffold::*;

@@ -1,11 +1,14 @@
-use mineflayer_engine::{
-    block::BlockState,
-    registry::builtin::BlockKind,
-    world::{Chunk, PartialChunkStorage},
+use mineflayer::{
+    BlockMatcher,
+    engine::{
+        block::BlockState,
+        registry::builtin::BlockKind,
+        world::{Chunk, PartialChunkStorage},
+    },
+    test_util::despawned_client,
 };
 
 use super::*;
-use crate::{test_util::despawned_client, world::BlockMatcher};
 
 #[test]
 fn kind_target_is_a_state_matcher_with_upstream_defaults() {
@@ -112,11 +115,11 @@ fn collect_opts_defaults_match_upstream() {
 #[test]
 fn default_item_filter_keeps_loot_and_holds_gear() {
     let filter = default_item_filter();
-    let item = |kind: mineflayer_engine::registry::builtin::ItemKind| Item {
-        stack: mineflayer_engine::inventory::ItemStack::new(kind, 1),
+    let item = |kind: mineflayer::engine::registry::builtin::ItemKind| Item {
+        stack: mineflayer::engine::inventory::ItemStack::new(kind, 1),
         slot: 0,
     };
-    use mineflayer_engine::registry::builtin::ItemKind;
+    use mineflayer::engine::registry::builtin::ItemKind;
     assert!(!filter(&item(ItemKind::DiamondPickaxe)));
     assert!(!filter(&item(ItemKind::DiamondSword)));
     assert!(!filter(&item(ItemKind::IronChestplate)));
@@ -127,15 +130,15 @@ fn default_item_filter_keeps_loot_and_holds_gear() {
 
 #[test]
 fn plugin_state_round_trip() {
-    let bot = crate::test_util::bot(despawned_client());
+    let bot = mineflayer::test_util::bot(despawned_client());
     // despawned clients can't hold state — accessors fall back to
     // defaults rather than panicking
     assert!(bot.collect_block().chest_locations().is_empty());
     assert!(bot.collect_block().movements().is_some());
     let filter = bot.collect_block().item_filter();
     let pick = Item {
-        stack: mineflayer_engine::inventory::ItemStack::new(
-            mineflayer_engine::registry::builtin::ItemKind::DiamondPickaxe,
+        stack: mineflayer::engine::inventory::ItemStack::new(
+            mineflayer::engine::registry::builtin::ItemKind::DiamondPickaxe,
             1,
         ),
         slot: 0,
@@ -144,13 +147,13 @@ fn plugin_state_round_trip() {
 }
 
 /// A 3×3-chunk `World` like world.rs's `test_world`.
-fn vein_world() -> (mineflayer_engine::world::World, PartialChunkStorage) {
-    let mut world = mineflayer_engine::world::World::default();
+fn vein_world() -> (mineflayer::engine::world::World, PartialChunkStorage) {
+    let mut world = mineflayer::engine::world::World::default();
     let mut partial = PartialChunkStorage::default();
     for x in -1..=1 {
         for z in -1..=1 {
             partial.set(
-                &mineflayer_engine::core::position::ChunkPos { x, z },
+                &mineflayer::engine::core::position::ChunkPos { x, z },
                 Some(Chunk::default()),
                 &mut world.chunks,
             );
@@ -224,7 +227,7 @@ fn find_from_vein_respects_caps() {
 /// upstream `targets.empty` early return.
 #[tokio::test]
 async fn cancel_task_without_a_run_is_a_noop() {
-    let bot = crate::test_util::bot(despawned_client());
+    let bot = mineflayer::test_util::bot(despawned_client());
     tokio::time::timeout(Duration::from_secs(2), bot.collect_block().cancel_task())
         .await
         .expect("idle cancel_task hung");
@@ -232,7 +235,7 @@ async fn cancel_task_without_a_run_is_a_noop() {
 
 #[tokio::test]
 async fn collect_before_spawn_is_not_connected() {
-    let bot = crate::test_util::bot(despawned_client());
+    let bot = mineflayer::test_util::bot(despawned_client());
     let err = bot
         .collect_block()
         .collect(BlockKind::Stone)

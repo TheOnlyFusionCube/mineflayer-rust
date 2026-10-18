@@ -8,22 +8,37 @@
 //! `melee_attack_rate` schedule whenever it's within `attack_range`.
 //! `stop()`, `force_stop()`, the target dying/despawning/leaving view,
 //! or disconnect ends the loop, clears the follow goal, and emits
-//! [`BotEvent::StoppedAttacking`] exactly once (whoever ends the loop
+//! [`PvpEvent::StoppedAttacking`] exactly once (whoever ends the loop
 //! owns the report).
 
-use mineflayer_engine::{
-    EntityRef,
-    attack::get_attack_strength_delay,
-    ecs::{self as bevy_ecs, prelude::Component},
-    entity::{Attributes, Position, dimensions::EntityDimensions, metadata::Health},
+use mineflayer::{
+    Bot, Error, Goal, Movements, Result,
+    engine::{
+        EntityRef,
+        attack::get_attack_strength_delay,
+        ecs::{self as bevy_ecs, prelude::Component},
+        entity::{Attributes, Position, dimensions::EntityDimensions, metadata::Health},
+    },
+    plugin::{Op, OpSlot},
 };
 
-use crate::bot::{TickStream, with_component, with_component_mut};
-use crate::{
-    Bot, BotEvent, Error, Result,
-    op::{Op, OpSlot},
-    pathfinder::{Goal, Movements},
-};
+/// The pvp plugin's events; subscribe with
+/// [`Bot::plugin_events::<PvpEvent>`](Bot::plugin_events).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PvpEvent {
+    /// mineflayer-pvp `startedAttacking` — `pvp().attack()` engaged a
+    /// target. Fires on every successful `attack` call including
+    /// retargets; upstream emits `stoppedAttacking` + `startedAttacking`
+    /// on a retarget — ours keeps the one run alive and fires only this.
+    StartedAttacking,
+    /// mineflayer-pvp `stoppedAttacking` — the attack loop ended
+    /// (explicit `stop`, target died/despawned). No payload, like
+    /// upstream.
+    StoppedAttacking,
+    /// mineflayer-pvp `attackedTarget` — the driver swung at the target
+    /// this tick. No payload, like upstream.
+    AttackedTarget,
+}
 
 /// mineflayer-pvp `meleeAttackRate` — the `TimingSolver` pick that
 /// paces swings.
@@ -148,10 +163,15 @@ pub struct Pvp<'a> {
     bot: &'a Bot,
 }
 
-impl Bot {
+/// Adds `pvp` to [`Bot`].
+pub trait PvpExt {
     /// `bot.pvp` — the mineflayer-pvp namespace (`attack`, `stop`,
     /// `target`).
-    pub fn pvp(&self) -> Pvp<'_> {
+    fn pvp(&self) -> Pvp<'_>;
+}
+
+impl PvpExt for Bot {
+    fn pvp(&self) -> Pvp<'_> {
         Pvp { bot: self }
     }
 }
@@ -164,8 +184,8 @@ impl Pvp<'_> {
     /// Attacking the already-active target is a silent no-op; a second
     /// `attack` on a different target retargets the loop. The loop ends
     /// on [`Pvp::stop`], the target's death/despawn/leaving view, or
-    /// disconnect — each ending emits [`BotEvent::StoppedAttacking`]
-    /// exactly once. Emits [`BotEvent::StartedAttacking`] on every
+    /// disconnect — each ending emits [`PvpEvent::StoppedAttacking`]
+    /// exactly once. Emits [`PvpEvent::StartedAttacking`] on every
     /// successful non-no-op call.
     ///
     /// # Errors
@@ -178,15 +198,17 @@ impl Pvp<'_> {
         }
         // upstream `if (target === this.target) return;` — no goal reset,
         // no new driver, no `startedAttacking`
-        let current =
-            with_component::<PvpState, _>(&bot.client, |s| s.target.as_ref().map(|t| t.id()))
-                .flatten();
+        let current = bot
+            .state::<PvpState, _>(|s| s.target.as_ref().map(|t| t.id()))
+            .flatten();
         if current == Some(entity.id()) {
             return Ok(());
         }
-        let opts =
-            with_component::<PvpState, _>(&bot.client, |s| s.opts.clone()).unwrap_or_default();
-        // upstream: `if (this.movements) pathfinder.setMovements(this.movements)`
+        let opts = bot
+            .state::<PvpState, _>(|s| s.opts.clone())
+            .unwrap_or_default();
+        // upstream: `if (this.movements)
+        // pathfinder.setMovements(this.movements)`
         if let Some(movements) = opts.movements {
             bot.pathfinder().set_movements(movements);
         }
@@ -199,9 +221,9 @@ impl Pvp<'_> {
             true,
         )?;
         // a retarget cancels the previous loop, which then exits silently
-        let started = with_component_mut::<PvpState, _>(&bot.client, |s| {
+        let started = bot.state_mut::<PvpState, _>(|s| {
             s.target = Some(entity.clone());
-            s.op.start(&bot.root)
+            bot.start_op(&mut s.op)
         });
         let Some(op) = started else {
             // the client entity vanished between logged_in and here —
@@ -209,13 +231,13 @@ impl Pvp<'_> {
             bot.pathfinder().stop();
             return Err(Error::NotConnected);
         };
-        tokio::spawn(drive(bot.driver_handle(), entity.clone(), op));
-        bot.emit_event(BotEvent::StartedAttacking);
+        tokio::spawn(drive(bot.driver(), entity.clone(), op));
+        bot.emit_plugin_event(PvpEvent::StartedAttacking);
         Ok(())
     }
 
     /// `bot.pvp.stop()` — end the attack loop. Emits
-    /// [`BotEvent::StoppedAttacking`] and clears the follow goal when an
+    /// [`PvpEvent::StoppedAttacking`] and clears the follow goal when an
     /// attack was running; a no-op otherwise.
     pub fn stop(&self) {
         let stopped = self.take_target();
@@ -223,27 +245,29 @@ impl Pvp<'_> {
             return;
         };
         stop_follow_if_ours(self.bot, &target);
-        self.bot.emit_event(BotEvent::StoppedAttacking);
+        self.bot.emit_plugin_event(PvpEvent::StoppedAttacking);
     }
 
     /// `bot.pvp.forceStop()` — end the attack loop and clear the
     /// pathfinder goal unconditionally (upstream's
     /// `pathfinder.setGoal(null)`): unlike [`Pvp::stop`], this also
     /// drops a goal someone else installed after `attack`. Emits
-    /// [`BotEvent::StoppedAttacking`] when an attack was running; a
+    /// [`PvpEvent::StoppedAttacking`] when an attack was running; a
     /// no-op otherwise.
     pub fn force_stop(&self) {
         if self.take_target().is_none() {
             return;
         }
         self.bot.pathfinder().stop();
-        self.bot.emit_event(BotEvent::StoppedAttacking);
+        self.bot.emit_plugin_event(PvpEvent::StoppedAttacking);
     }
 
     /// `bot.pvp.target` — the entity the loop is driving at, `None` when
     /// idle.
     pub fn target(&self) -> Option<EntityRef> {
-        with_component::<PvpState, _>(&self.bot.client, |s| s.target.clone()).flatten()
+        self.bot
+            .state::<PvpState, _>(|s| s.target.clone())
+            .flatten()
     }
 
     /// `bot.pvp.followRange` — how close the follow goal gets (default 2).
@@ -297,23 +321,26 @@ impl Pvp<'_> {
     /// Clear the target and cancel the loop; the target when an attack
     /// was running. Shared by `stop`/`force_stop`.
     fn take_target(&self) -> Option<EntityRef> {
-        with_component_mut::<PvpState, _>(&self.bot.client, |s| {
-            s.op.cancel();
-            s.target.take()
-        })
-        .flatten()
+        self.bot
+            .state_mut::<PvpState, _>(|s| {
+                s.op.cancel();
+                s.target.take()
+            })
+            .flatten()
     }
 
     /// Read an opts field through the component (defaults pre-spawn).
     fn opts<R>(&self, f: impl FnOnce(&PvpOpts) -> R) -> R {
-        let opts =
-            with_component::<PvpState, _>(&self.bot.client, |s| s.opts.clone()).unwrap_or_default();
+        let opts = self
+            .bot
+            .state::<PvpState, _>(|s| s.opts.clone())
+            .unwrap_or_default();
         f(&opts)
     }
     /// Mutate an opts field; a silent no-op pre-spawn (there's no state
     /// to attach it to yet).
     fn set_opts(&self, f: impl FnOnce(&mut PvpOpts)) {
-        with_component_mut::<PvpState, _>(&self.bot.client, |s| f(&mut s.opts));
+        self.bot.state_mut::<PvpState, _>(|s| f(&mut s.opts));
     }
 }
 
@@ -326,7 +353,7 @@ impl Pvp<'_> {
 /// `op` ends on a retarget, a `stop()`, or a disconnect; only the last
 /// leaves the outcome to the loop, which then reports the end.
 async fn drive(bot: Bot, entity: EntityRef, op: Op) {
-    let mut ticks = TickStream::new(&bot.client, op.token.clone());
+    let mut ticks = bot.ticks_until(&op);
     // upstream `timeToNextAttack` — attack() resets it to 0, each tick
     // decrements, and `=== -1` attempts a swing
     let mut time_to_next_attack: i64 = 0;
@@ -360,17 +387,18 @@ async fn drive(bot: Bot, entity: EntityRef, op: Op) {
         };
         // opts are read live each tick, like upstream's per-tick field
         // reads — mid-fight retunes take effect immediately
-        let (view_distance, attack_range, rate) = with_component::<PvpState, _>(&bot.client, |s| {
-            (
-                s.opts.view_distance,
-                s.opts.attack_range,
-                s.opts.rate.clone(),
-            )
-        })
-        .unwrap_or_else(|| {
-            let d = PvpOpts::default();
-            (d.view_distance, d.attack_range, d.rate)
-        });
+        let (view_distance, attack_range, rate) = bot
+            .state::<PvpState, _>(|s| {
+                (
+                    s.opts.view_distance,
+                    s.opts.attack_range,
+                    s.opts.rate.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                let d = PvpOpts::default();
+                (d.view_distance, d.attack_range, d.rate)
+            });
         // upstream `checkRange`: past `viewDistance` the target counts
         // as defeated — `stop()` ends the loop (and reports it)
         let dist = bot.position().distance_to(target_pos);
@@ -399,7 +427,7 @@ async fn drive(bot: Bot, entity: EntityRef, op: Op) {
             .look_at(target_pos.up(target.2.unwrap_or(0.9)), false)
             .await;
         bot.attack(&entity, true);
-        bot.emit_event(BotEvent::AttackedTarget);
+        bot.emit_plugin_event(PvpEvent::AttackedTarget);
         time_to_next_attack = rate.ticks(cooldown_ticks(&bot));
     }
     report_end_if_ours(&bot, &op);
@@ -410,7 +438,7 @@ async fn drive(bot: Bot, entity: EntityRef, op: Op) {
 /// has no `Attributes` (a despawned client — the driver exits on the
 /// next state check anyway).
 fn cooldown_ticks(bot: &Bot) -> i64 {
-    bot.client
+    bot.client()
         .get_component::<Attributes>()
         .map(|a| get_attack_strength_delay(&a).ceil() as i64)
         .unwrap_or(0)
@@ -421,7 +449,7 @@ fn cooldown_ticks(bot: &Bot) -> i64 {
 /// `stop()`/retarget that beat the driver here already owns the outcome,
 /// so a stale driver exits silently.
 fn report_end_if_ours(bot: &Bot, op: &Op) {
-    let ended = with_component_mut::<PvpState, _>(&bot.client, |s| {
+    let ended = bot.state_mut::<PvpState, _>(|s| {
         if s.op.finish(op) {
             s.target.take()
         } else {
@@ -430,7 +458,7 @@ fn report_end_if_ours(bot: &Bot, op: &Op) {
     });
     if let Some(target) = ended.flatten() {
         stop_follow_if_ours(bot, &target);
-        bot.emit_event(BotEvent::StoppedAttacking);
+        bot.emit_plugin_event(PvpEvent::StoppedAttacking);
     }
 }
 

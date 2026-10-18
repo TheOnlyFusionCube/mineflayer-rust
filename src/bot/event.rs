@@ -554,24 +554,6 @@ pub enum BotEvent {
         /// Protocol window id of the merchant window.
         window_id: i32,
     },
-    // — ecosystem plugins: collectBlock / pvp progress events.
-    // Emitted by the plugin methods themselves (no upstream packet
-    // source — mineflayer-collectblock emits nothing; ours surfaces the
-    // progress the single-await API can't otherwise report). —
-    /// `collect` targeted a matching block (before walking to it).
-    CollectBlockFound(Block),
-    /// `collect` broke a target block.
-    Collected(Block),
-    /// `collect` finished — `collected` is how many blocks were broken
-    /// (short of the requested count when the search exhausted early).
-    CollectDone {
-        /// Blocks broken by the completed `collect` call.
-        collected: usize,
-    },
-    /// mineflayer-pvp `stoppedAttacking` — the attack loop ended
-    /// (explicit `stop`, target died/despawned). No payload, like
-    /// upstream.
-    StoppedAttacking,
     /// `setWindowItems:{windowId}` — a `container_set_content` packet's
     /// full slot list was applied to a resolved window (0 = player
     /// inventory or the open container). Emits after that window's
@@ -587,36 +569,6 @@ pub enum BotEvent {
         /// Protocol window id (0 = the player inventory).
         window_id: i32,
     },
-    /// mineflayer-auto-eat `eatStart` — the bot started eating `food`
-    /// (in the offhand when `offhand`). Upstream emits the sanitized
-    /// opts; ours carries the resolved food and hand. Upstream fires it
-    /// on `bot.autoEat`; plugin events ride the shared stream here, same
-    /// as the collect/pvp variants above.
-    EatStart {
-        /// The stack being eaten.
-        food: crate::windows::Item,
-        /// Whether the offhand is doing the eating.
-        offhand: bool,
-        /// Whether the previously held item is re-equipped after the eat
-        /// (upstream's sanitized `equipOldItem` — resolved from
-        /// `EatOpts.equip_old_item` or `opts.returnToLastItem`).
-        equip_old_item: bool,
-    },
-    /// mineflayer-auto-eat `eatFail` — the eat failed; `0` is the
-    /// upstream `Error`'s message.
-    EatFail(String),
-    /// mineflayer-auto-eat `eatFinish` — the eat attempt concluded.
-    /// Upstream emits it in `finally`, so it follows `EatFail` too —
-    /// it is a "stopped eating" signal, not a success signal.
-    EatFinish {
-        /// The stack that was eaten (or attempted).
-        food: crate::windows::Item,
-        /// Whether the offhand was doing the eating.
-        offhand: bool,
-        /// Whether the previously held item was re-equipped (upstream's
-        /// sanitized `equipOldItem`).
-        equip_old_item: bool,
-    },
     /// `connect` — the connection is live. Upstream fires on raw socket
     /// connect (pre-login); the engine surfaces no socket-level event, so this
     /// is emitted right before the first [`BotEvent::Login`] (the
@@ -624,19 +576,4 @@ pub enum BotEvent {
     /// Once per connection — later `Login`s (world switches) don't refire
     /// it.
     Connected,
-    /// mineflayer-pvp `startedAttacking` — `pvp().attack()` engaged a
-    /// target. Fires on every successful `attack` call including
-    /// retargets; upstream emits `stoppedAttacking` + `startedAttacking`
-    /// on a retarget — ours keeps the one run alive and fires only this
-    /// (see the `StoppedAttacking` row in api-parity.md).
-    StartedAttacking,
-    /// mineflayer-pvp `attackedTarget` — the pvp driver swung at the
-    /// target this tick. No payload, like upstream.
-    AttackedTarget,
-    /// mineflayer-collectblock `collectBlock_finished` — a `collect`
-    /// call concluded, successfully or not (upstream emits it from a
-    /// `finally`). [`BotEvent::CollectDone`] stays the additive
-    /// per-run success report; a cancelled collect emits this without
-    /// it.
-    CollectBlockFinished,
 }

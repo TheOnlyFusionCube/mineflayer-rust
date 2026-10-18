@@ -741,15 +741,20 @@ impl Bot {
             // and the eat task then hangs; erroring is strictly better
             return Err(Error::InvalidState("Nothing held to consume".into()));
         }
+        self.consume_with(false, Duration::from_millis(2500)).await
+    }
+
+    /// The use and the wait of [`Bot::consume`], with no food check, for
+    /// an eat plugin: `offhand` uses the offhand item, and `timeout`
+    /// bounds the wait. A newer consume or [`Bot::cancel_consume`] ends it
+    /// with [`Error::Cancelled`].
+    pub async fn consume_with(&self, offhand: bool, timeout: Duration) -> Result<()> {
         // start the eat before activate_item so a finish packet that
         // lands between the use_item write and the wait can't be missed
         // (upstream creates the eat task before activating)
         let (op, on_finish) = self.start_eat().ok_or(Error::NotConnected)?;
-        self.activate_item(false);
-        match self
-            .wait_eat(&op, on_finish, Duration::from_millis(2500))
-            .await
-        {
+        self.activate_item(offhand);
+        match self.wait_eat(&op, on_finish, timeout).await {
             EatEnd::Finished => Ok(()),
             EatEnd::Superseded => Err(Error::Cancelled(
                 "Consuming cancelled due to calling bot.consume() again".into(),
@@ -757,6 +762,11 @@ impl Bot {
             EatEnd::Timeout => Err(Error::Timeout),
             EatEnd::Disconnected => Err(Error::NotConnected),
         }
+    }
+
+    /// End the running consume, as a newer consume would.
+    pub fn cancel_consume(&self) {
+        self.windows(|t| t.eat.cancel());
     }
 
     /// `bot.openBlock(block)` — look at the block (upstream

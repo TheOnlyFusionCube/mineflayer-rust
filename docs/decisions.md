@@ -323,8 +323,22 @@ new engine change:
 Cost if wrong: add the engine event, record it in the D-engine list, and
 replace the port decode with a match on it.
 
-**D-events. One `BotEvent` enum.** Events are one broadcast protocol;
-nested event types would cause match churn with no gain.
+**D-events. One `BotEvent` enum for the core.** The core events are one
+broadcast protocol; nested event types would cause match churn with no
+gain. A plugin's events are its own type on its own channel
+(`Bot::plugin_events`), so a plugin crate needs no core variant (third
+plan PL3).
+
+**DEC-3 (decided 2026-10-18). The plugin analogs are in one
+`mineflayer-plugins` crate, one cargo feature each, and the core does
+not re-export them.** The plan's recommendation had the core re-export
+the crate behind default features. That is a dependency cycle
+(`mineflayer-plugins` depends on `mineflayer`), which cargo refuses. A
+dependent adds the crate, as an upstream user adds
+`mineflayer-pathfinder` or `mineflayer-pvp`. The core keeps a
+dev-dependency on it for the live plugin test (cargo allows that
+cycle). `pathfinder` stays in the core: `collect`, `pvp`, and `tool`
+use it, and its follow and dynamic goals step inside the bridge.
 
 **D-errors (first plan B1). Typed error variants keep upstream messages.**
 `InvalidArgument`, `InvalidState`, `NotFound`, `Failed`, `Cancelled`,

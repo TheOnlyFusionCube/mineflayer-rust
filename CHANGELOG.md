@@ -4,6 +4,18 @@
 
 ### Breaking
 
+- The plugin analogs `tool`, `auto_eat`, `collect`, and `pvp` are in the
+  new `mineflayer-plugins` crate (one cargo feature each), written on the
+  public `mineflayer::plugin` API only. Add the crate and
+  `use mineflayer_plugins::prelude::*` for `bot.tool()`,
+  `bot.auto_eat()`, `bot.collect_block()`, and `bot.pvp()`; the types
+  are under `mineflayer_plugins::{tool, auto_eat, collect, pvp}`.
+- Their events left `BotEvent`: `CollectEvent::{Found, Collected, Done,
+  Finished}` (were `CollectBlockFound`, `Collected`, `CollectDone`,
+  `CollectBlockFinished`), `PvpEvent::{StartedAttacking,
+  StoppedAttacking, AttackedTarget}`, and `AutoEatEvent::{Start, Fail,
+  Finish}` (were `EatStart`, `EatFail`, `EatFinish`). Read them with
+  `bot.plugin_events::<E>()`.
 - `Bot::new` is removed. It was `#[doc(hidden)]` and only the unit tests
   used it; they construct their scaffold bots through the crate's test
   utilities now.
@@ -43,6 +55,11 @@
 
 ### Added
 
+- Public API for plugin crates: `Bot::subscribe`, `Bot::logged_in`,
+  `Bot::mine_progress`, `interact::mine_progress`, `Block::new`,
+  `Bot::consume_with`, `Bot::cancel_consume`, `Bot::disconnected`,
+  `Bot::is_disconnected`, `Bot::join_op`, `Bot::ticks_until`, and, with
+  the `test-util` feature, the `test_util` scaffolds.
 - `Goal` is `PartialEq` (a `Follow` compares its target entity).
   `engine::EntityRef` is `PartialEq` and `Eq` by entity.
 - `engine::pathfinder::goals::{GetToBlockGoal, NearXZGoal}`, and the

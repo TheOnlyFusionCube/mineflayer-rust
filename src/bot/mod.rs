@@ -395,13 +395,13 @@ impl Bot {
         })
     }
 
-    /// Crate-internal receiver for waits inside the crate.
+    /// A receiver for a wait inside a library or plugin.
     ///
-    /// Use this for every wait that the crate itself runs. It never takes
-    /// the bootstrap receiver, so the first public [`Bot::events`] call
-    /// still receives the pre-`connect` events (`Init`, `Login`, `Spawn`),
-    /// and the crate's waits never complete on events from that queue.
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<BotEvent> {
+    /// Unlike [`Bot::events`] it never takes the bootstrap receiver, so the
+    /// application's first [`Bot::events`] call still receives the
+    /// pre-`connect` events (`Init`, `Login`, `Spawn`), and the wait never
+    /// completes on events from that queue.
+    pub fn subscribe(&self) -> broadcast::Receiver<BotEvent> {
         self.shared.events.subscribe()
     }
 
@@ -537,7 +537,7 @@ impl Bot {
     /// Whether we've received the login packet and are in the game state.
     /// Unlike `mineflayer_engine::Client::logged_in` this never panics — it returns
     /// `false` once the entity is gone.
-    pub(crate) fn logged_in(&self) -> bool {
+    pub fn logged_in(&self) -> bool {
         self.client
             .try_query_self::<Option<&WorldName>, _>(|w| w.is_some())
             .unwrap_or(false)

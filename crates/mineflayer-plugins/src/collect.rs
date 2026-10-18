@@ -1,4 +1,5 @@
-//! The mineflayer-collectblock plugin surface: `bot.collect_block().collect(...)`.
+//! The mineflayer-collectblock plugin surface:
+//! `bot.collect_block().collect(...)`.
 //!
 //! Upstream's collect is a find → goto → dig loop that resolves once every
 //! requested block is broken; ours keeps that shape over the find, goto,
@@ -12,33 +13,50 @@
 //! reach leaves the drop on the ground otherwise.
 //!
 //! Upstream emits `collectBlock_finished` from `collect`'s `finally` —
-//! [`BotEvent::CollectBlockFinished`] mirrors it on every exit.
-//! [`BotEvent::CollectBlockFound`]/[`BotEvent::Collected`]/
-//! [`BotEvent::CollectDone`] stay additive progress reports the
+//! [`CollectEvent::Finished`] mirrors it on every exit.
+//! [`CollectEvent::Found`]/[`CollectEvent::Collected`]/
+//! [`CollectEvent::Done`] stay additive progress reports the
 //! single-await API can't otherwise give.
 
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
-// `mineflayer_engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
+// `mineflayer::engine::ecs` is the `bevy_ecs` crate re-exported; the derive needs the
 // real crate name in scope.
-use mineflayer_engine::ecs as bevy_ecs;
-use mineflayer_engine::{
-    BlockPos, Vec3,
-    ecs::prelude::Component,
-    entity::{EntityKindComponent, Position},
-    registry::builtin::{BlockKind, EntityKind},
+use mineflayer::engine::ecs as bevy_ecs;
+use mineflayer::{
+    Block, BlockMatcher, Bot, Error, FindBlocksOpts, Goal, Item, Movements, Result, WorldRef,
+    engine::{
+        BlockPos, Vec3,
+        ecs::prelude::Component,
+        entity::{EntityKindComponent, Position},
+        registry::builtin::{BlockKind, EntityKind},
+    },
+    plugin::{Op, OpSlot},
 };
 use tokio::sync::broadcast;
 
-use crate::bot::{with_component, with_component_mut};
-use crate::op::{Op, OpSlot};
-use crate::{
-    Bot, BotEvent, Error, Result,
-    pathfinder::{Goal, Movements},
-    tool::{EquipOpts, can_harvest},
-    windows::Item,
-    world::{Block, BlockMatcher, FindBlocksOpts, WorldRef},
-};
+use crate::tool::{EquipOpts, ToolExt, can_harvest};
+
+/// The collectblock plugin's events; subscribe with
+/// [`Bot::plugin_events::<CollectEvent>`](Bot::plugin_events).
+#[derive(Clone, Debug)]
+pub enum CollectEvent {
+    /// `collect` targeted a matching block (before walking to it).
+    Found(Block),
+    /// `collect` broke a target block.
+    Collected(Block),
+    /// `collect` finished — `collected` is how many blocks were broken
+    /// (short of the requested count when the search exhausted early).
+    Done {
+        /// Blocks broken by the completed `collect` call.
+        collected: usize,
+    },
+    /// mineflayer-collectblock `collectBlock_finished` — a `collect` call
+    /// concluded, successfully or not (upstream emits it from a
+    /// `finally`). [`CollectEvent::Done`] stays the per-run success
+    /// report; a cancelled collect emits this without it.
+    Finished,
+}
 
 /// Upstream collectBlock's search radius (`maxDistance: 64` in its
 /// examples and docs).
@@ -151,7 +169,7 @@ enum Attempt {
 /// `true` when `cancel_task` or a newer non-`append` collect ended this
 /// run. A disconnect is not a cancel: the run's next call reports it.
 fn stale(bot: &Bot, op: &Op) -> bool {
-    op.is_cancelled() && !bot.root.is_cancelled()
+    op.is_cancelled() && !bot.is_disconnected()
 }
 
 /// What [`CollectBlock::collect`] digs up — the `target` argument.
@@ -285,9 +303,14 @@ pub struct CollectBlock<'a> {
     bot: &'a Bot,
 }
 
-impl Bot {
+/// Adds `collect_block` to [`Bot`].
+pub trait CollectExt {
     /// `bot.collectBlock` — the mineflayer-collectblock namespace.
-    pub fn collect_block(&self) -> CollectBlock<'_> {
+    fn collect_block(&self) -> CollectBlock<'_>;
+}
+
+impl CollectExt for Bot {
+    fn collect_block(&self) -> CollectBlock<'_> {
         CollectBlock { bot: self }
     }
 }
@@ -296,43 +319,50 @@ impl CollectBlock<'_> {
     /// `bot.collectBlock.chestLocations` — chests a full inventory may
     /// be emptied into mid-collect (upstream's public array).
     pub fn chest_locations(&self) -> Vec<BlockPos> {
-        with_component::<CollectState, _>(&self.bot.client, |s| s.chest_locations.clone())
+        self.bot
+            .state::<CollectState, _>(|s| s.chest_locations.clone())
             .unwrap_or_default()
     }
 
     /// Replace `chestLocations`.
     pub fn set_chest_locations(&self, locations: Vec<BlockPos>) {
-        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.chest_locations = locations);
+        self.bot
+            .state_mut::<CollectState, _>(|s| s.chest_locations = locations);
     }
 
     /// `chestLocations.push(pos)`.
     pub fn add_chest_location(&self, pos: BlockPos) {
-        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.chest_locations.push(pos));
+        self.bot
+            .state_mut::<CollectState, _>(|s| s.chest_locations.push(pos));
     }
 
     /// `bot.collectBlock.itemFilter` — the chest-deposit filter
     /// (upstream's default keeps tools, weapons, and armor).
     pub fn item_filter(&self) -> ItemFilter {
-        with_component::<CollectState, _>(&self.bot.client, |s| s.item_filter.clone())
+        self.bot
+            .state::<CollectState, _>(|s| s.item_filter.clone())
             .unwrap_or_else(default_item_filter)
     }
 
     /// Replace `itemFilter`.
     pub fn set_item_filter(&self, filter: ItemFilter) {
-        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.item_filter = filter);
+        self.bot
+            .state_mut::<CollectState, _>(|s| s.item_filter = filter);
     }
 
     /// `bot.collectBlock.movements` — applied to the pathfinder on
     /// `collect` (default `Some(Movements::default())`; `None` leaves
     /// the pathfinder's config alone).
     pub fn movements(&self) -> Option<Movements> {
-        with_component::<CollectState, _>(&self.bot.client, |s| s.movements.clone())
+        self.bot
+            .state::<CollectState, _>(|s| s.movements.clone())
             .unwrap_or_else(|| Some(Movements::default()))
     }
 
     /// Set `movements`.
     pub fn set_movements(&self, movements: Option<Movements>) {
-        with_component_mut::<CollectState, _>(&self.bot.client, |s| s.movements = movements);
+        self.bot
+            .state_mut::<CollectState, _>(|s| s.movements = movements);
     }
 
     /// `bot.collectBlock.collect(target)` — the default-options call.
@@ -371,13 +401,13 @@ impl CollectBlock<'_> {
         // upstream's `await this.cancelTask()` does; append shares its
         // operation (and its fate under a later cancel)
         let Some((op, chest_locations, item_filter, movements)) =
-            with_component_mut::<CollectState, _>(&bot.client, |s| {
+            bot.state_mut::<CollectState, _>(|s| {
                 s.active += 1;
                 (
                     if opts.append {
-                        s.task.join(&bot.root)
+                        bot.join_op(&mut s.task)
                     } else {
-                        s.task.start(&bot.root)
+                        bot.start_op(&mut s.task)
                     },
                     opts.chest_locations
                         .unwrap_or_else(|| s.chest_locations.clone()),
@@ -404,12 +434,10 @@ impl CollectBlock<'_> {
                 opts.ignore_no_path,
             )
             .await;
-        with_component_mut::<CollectState, _>(&bot.client, |s| {
-            s.active = s.active.saturating_sub(1)
-        });
+        bot.state_mut::<CollectState, _>(|s| s.active = s.active.saturating_sub(1));
         // upstream emits collectBlock_finished from `finally` — on
         // success, error, and cancel alike
-        bot.emit_event(BotEvent::CollectBlockFinished);
+        bot.emit_plugin_event(CollectEvent::Finished);
         result
     }
 
@@ -467,14 +495,14 @@ impl CollectBlock<'_> {
                 tried.insert(pos);
                 continue;
             }
-            bot.emit_event(BotEvent::CollectBlockFound(block.clone()));
+            bot.emit_plugin_event(CollectEvent::Found(block.clone()));
             let attempt = self
                 .attempt(world, &target.opts, pos, op, ignore_no_path)
                 .await?;
             tried.insert(pos);
             match attempt {
                 Attempt::Collected(block) => {
-                    bot.emit_event(BotEvent::Collected(block.clone()));
+                    bot.emit_plugin_event(CollectEvent::Collected(block.clone()));
                     collected.push(block);
                     self.vacuum_drops(op).await;
                 }
@@ -493,7 +521,7 @@ impl CollectBlock<'_> {
                 last_err.unwrap_or_else(|| Error::NotFound("no matching blocks found".to_string()))
             );
         }
-        bot.emit_event(BotEvent::CollectDone {
+        bot.emit_plugin_event(CollectEvent::Done {
             collected: collected.len(),
         });
         Ok(Collected { blocks: collected })
@@ -587,30 +615,30 @@ impl CollectBlock<'_> {
         let bot = self.bot;
         // subscribe before the state check so a run finishing between
         // the two can't lose its `finished` event
-        let mut rx = bot.subscribe();
-        let active = with_component_mut::<CollectState, _>(&bot.client, |s| {
-            if s.active == 0 {
-                return false;
-            }
-            s.task.cancel();
-            true
-        })
-        .unwrap_or(false);
+        let mut rx = bot.plugin_events::<CollectEvent>();
+        let active = bot
+            .state_mut::<CollectState, _>(|s| {
+                if s.active == 0 {
+                    return false;
+                }
+                s.task.cancel();
+                true
+            })
+            .unwrap_or(false);
         if !active {
             return;
         }
         // upstream `bot.pathfinder.stop()` — wakes a parked goto so the
         // loop sees its cancel promptly
         bot.pathfinder().stop();
-        let root = bot.root.clone();
         loop {
             tokio::select! {
                 r = rx.recv() => match r {
-                    Ok(BotEvent::CollectBlockFinished) => return,
+                    Ok(CollectEvent::Finished) => return,
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
-                _ = root.cancelled() => return,
+                _ = bot.disconnected() => return,
             }
         }
     }
@@ -766,7 +794,7 @@ impl CollectBlock<'_> {
 /// considered "touching"; candidates farther than `max_distance`
 /// (manhattan) from `start` are skipped.
 fn vein_positions(
-    world: &mineflayer_engine::world::World,
+    world: &mineflayer::engine::world::World,
     start: BlockPos,
     kind: BlockKind,
     max_blocks: usize,

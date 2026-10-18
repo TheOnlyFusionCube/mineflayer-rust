@@ -132,12 +132,11 @@ fn cancel_engine_mining(ecs: &mut World, entity: Entity) {
     ecs.flush();
 }
 
-/// Per-tick mine progress → the `digTime` contract: `∞` for unbreakable
-/// (`progress <= 0`), otherwise `ceil(1/progress)` ticks in ms.
-/// Mine progress per tick of `stack` on `state`: the one scorer that dig
-/// time and both best-tool picks use. Dig time is its inverse, so the
-/// fastest tool has the most progress.
-pub(crate) fn mine_progress(
+/// Mine progress per tick of `stack` on `state` for a player with these
+/// components: the one scorer that dig time and the best-tool picks use.
+/// Dig time is its inverse, so the fastest tool has the most progress. It
+/// takes the components, not a `Bot`, so it runs inside an ECS query.
+pub fn mine_progress(
     state: BlockState,
     stack: &ItemStack,
     fluid_on_eyes: &FluidOnEyes,
@@ -155,6 +154,8 @@ pub(crate) fn mine_progress(
     )
 }
 
+/// Per-tick mine progress → the `digTime` contract: `∞` for unbreakable
+/// (`progress <= 0`), otherwise `ceil(1/progress)` ticks in ms.
 fn dig_time_ms(progress: f32) -> Option<Duration> {
     (progress > 0.).then(|| Duration::from_millis((progress.recip().ceil() * 50.) as u64))
 }
@@ -403,9 +404,12 @@ impl Bot {
         dig_time_ms(self.mine_progress(&held, block))
     }
 
-    /// [`mine_progress`] of `stack` on `block` for this bot; `0.` when the
-    /// player components are gone.
-    pub(crate) fn mine_progress(&self, stack: &ItemStack, block: &Block) -> f32 {
+    /// How much of `block` one game tick of mining with `stack` breaks
+    /// (`1.` breaks it in one tick), with this bot's effects, water, and
+    /// ground state; `0.` for an unbreakable block or when the player
+    /// components are gone. Dig time is its inverse, so the best tool has
+    /// the most progress.
+    pub fn mine_progress(&self, stack: &ItemStack, block: &Block) -> f32 {
         self.client
             .try_query_self::<(&FluidOnEyes, &Physics, &Attributes, &ActiveEffects), _>(
                 |(fluid_on_eyes, physics, attributes, effects)| {

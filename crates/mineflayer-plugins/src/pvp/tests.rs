@@ -1,7 +1,9 @@
-use mineflayer_engine::{Vec3, registry::identifier::Identifier, world::WorldName};
+use mineflayer::{
+    engine::{Vec3, registry::identifier::Identifier, world::WorldName},
+    test_util::{despawned_client, live_entity_client, tick_client},
+};
 
 use super::*;
-use crate::test_util::{despawned_client, live_entity_client, tick_client};
 
 /// A bot whose client entity is alive and carries a `WorldName` —
 /// enough for `Bot::logged_in` to pass. No systems run on this ECS,
@@ -9,7 +11,7 @@ use crate::test_util::{despawned_client, live_entity_client, tick_client};
 /// `TickBroadcast` resource) — the synchronous state transitions are
 /// what's under test here.
 fn spawned_bot() -> Bot {
-    crate::test_util::bot(live_entity_client((
+    mineflayer::test_util::bot(live_entity_client((
         WorldName(Identifier::from("minecraft:overworld")),
         Position::new(Vec3::new(0., 64., 0.)),
     )))
@@ -20,7 +22,7 @@ fn spawned_bot() -> Bot {
 /// run, so ticks only arrive when the test sends them), matching how
 /// it waits on a live connection.
 fn tick_bot() -> Bot {
-    crate::test_util::bot(tick_client((
+    mineflayer::test_util::bot(tick_client((
         WorldName(Identifier::from("minecraft:overworld")),
         Position::new(Vec3::new(0., 64., 0.)),
     )))
@@ -30,16 +32,16 @@ fn tick_bot() -> Bot {
 /// would gate on range) and get its ref.
 fn spawn_target(bot: &Bot, x: f64, z: f64) -> EntityRef {
     let entity = bot
-        .client
+        .client()
         .ecs
         .write()
         .spawn(Position::new(Vec3::new(x, 64., z)))
         .id();
-    bot.client.entity_ref_for(entity)
+    bot.client().entity_ref_for(entity)
 }
 
 /// Drain every pending event; report whether `pred` matched one.
-fn saw(rx: &mut tokio::sync::broadcast::Receiver<BotEvent>, pred: fn(&BotEvent) -> bool) -> bool {
+fn saw(rx: &mut tokio::sync::broadcast::Receiver<PvpEvent>, pred: fn(&PvpEvent) -> bool) -> bool {
     let mut saw = false;
     while let Ok(event) = rx.try_recv() {
         saw |= pred(&event);
@@ -49,20 +51,20 @@ fn saw(rx: &mut tokio::sync::broadcast::Receiver<BotEvent>, pred: fn(&BotEvent) 
 
 /// Drain every pending event; report whether a `StoppedAttacking`
 /// was among them.
-fn saw_stopped_attacking(rx: &mut tokio::sync::broadcast::Receiver<BotEvent>) -> bool {
-    saw(rx, |e| matches!(e, BotEvent::StoppedAttacking))
+fn saw_stopped_attacking(rx: &mut tokio::sync::broadcast::Receiver<PvpEvent>) -> bool {
+    saw(rx, |e| matches!(e, PvpEvent::StoppedAttacking))
 }
 
 #[tokio::test]
 async fn attack_then_stop_transitions_and_reports_once() {
     let bot = spawned_bot();
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     let target = spawn_target(&bot, 5., 0.);
 
     // start → engaged: the loop records its target and reports it
     bot.pvp().attack(&target).unwrap();
     assert_eq!(bot.pvp().target().map(|t| t.id()), Some(target.id()));
-    assert!(saw(&mut rx, |e| matches!(e, BotEvent::StartedAttacking)));
+    assert!(saw(&mut rx, |e| matches!(e, PvpEvent::StartedAttacking)));
 
     // stop → idle: target cleared, the follow goal ours to remove,
     // and the stopped event emitted
@@ -72,7 +74,7 @@ async fn attack_then_stop_transitions_and_reports_once() {
     assert!(saw_stopped_attacking(&mut rx));
 
     // stopping again is a silent no-op — no state, no event
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     bot.pvp().stop();
     assert!(rx.try_recv().is_err());
 }
@@ -80,7 +82,7 @@ async fn attack_then_stop_transitions_and_reports_once() {
 #[tokio::test]
 async fn retarget_swaps_without_reporting_a_stop() {
     let bot = spawned_bot();
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     let first = spawn_target(&bot, 5., 0.);
     let second = spawn_target(&bot, -5., 0.);
 
@@ -91,8 +93,8 @@ async fn retarget_swaps_without_reporting_a_stop() {
     // upstream's startedAttacking fires per attack() call
     let mut started = 0;
     while let Ok(event) = rx.try_recv() {
-        started += usize::from(matches!(event, BotEvent::StartedAttacking));
-        assert!(!matches!(event, BotEvent::StoppedAttacking));
+        started += usize::from(matches!(event, PvpEvent::StartedAttacking));
+        assert!(!matches!(event, PvpEvent::StoppedAttacking));
     }
     assert_eq!(started, 2);
 
@@ -105,7 +107,7 @@ async fn retarget_swaps_without_reporting_a_stop() {
 #[tokio::test]
 async fn attack_same_target_is_a_no_op() {
     let bot = spawned_bot();
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     let target = spawn_target(&bot, 5., 0.);
 
     bot.pvp().attack(&target).unwrap();
@@ -113,7 +115,7 @@ async fn attack_same_target_is_a_no_op() {
     assert_eq!(bot.pvp().target().map(|t| t.id()), Some(target.id()));
     let mut started = 0;
     while let Ok(event) = rx.try_recv() {
-        started += usize::from(matches!(event, BotEvent::StartedAttacking));
+        started += usize::from(matches!(event, PvpEvent::StartedAttacking));
     }
     assert_eq!(started, 1);
 
@@ -123,7 +125,7 @@ async fn attack_same_target_is_a_no_op() {
 #[tokio::test]
 async fn force_stop_clears_a_foreign_goal_unlike_stop() {
     let bot = spawned_bot();
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     let target = spawn_target(&bot, 5., 0.);
     let other = spawn_target(&bot, -5., 0.);
     bot.pvp().attack(&target).unwrap();
@@ -162,7 +164,7 @@ async fn force_stop_clears_a_foreign_goal_unlike_stop() {
     assert!(saw_stopped_attacking(&mut rx));
 
     // idle force_stop is a no-op
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     bot.pvp().force_stop();
     assert!(rx.try_recv().is_err());
 }
@@ -225,16 +227,17 @@ fn attack_rate_samples_in_range_and_clamps() {
 #[tokio::test]
 async fn target_past_view_distance_ends_the_loop_and_reports() {
     let bot = tick_bot();
-    let mut rx = bot.events();
+    let mut rx = bot.plugin_events::<PvpEvent>();
     // well past the default 128 — no components for the driver to
     // attack, but Position is enough for the distance check
     let target = spawn_target(&bot, 200., 0.);
-    let op = with_component_mut::<PvpState, _>(&bot.client, |s| {
-        s.target = Some(target.clone());
-        s.op.start(&bot.root)
-    })
-    .unwrap();
-    let sender = crate::test_util::tick_sender(&bot.client);
+    let op = bot
+        .state_mut::<PvpState, _>(|s| {
+            s.target = Some(target.clone());
+            bot.start_op(&mut s.op)
+        })
+        .unwrap();
+    let sender = mineflayer::test_util::tick_sender(bot.client());
     let driver = tokio::spawn(drive(bot.clone(), target.clone(), op));
 
     // a broadcast send lands only for receivers already subscribed —
@@ -258,12 +261,13 @@ async fn target_past_view_distance_ends_the_loop_and_reports() {
 async fn view_distance_retune_ends_a_running_loop() {
     let bot = tick_bot();
     let target = spawn_target(&bot, 50., 0.);
-    let op = with_component_mut::<PvpState, _>(&bot.client, |s| {
-        s.target = Some(target.clone());
-        s.op.start(&bot.root)
-    })
-    .unwrap();
-    let sender = crate::test_util::tick_sender(&bot.client);
+    let op = bot
+        .state_mut::<PvpState, _>(|s| {
+            s.target = Some(target.clone());
+            bot.start_op(&mut s.op)
+        })
+        .unwrap();
+    let sender = mineflayer::test_util::tick_sender(bot.client());
     let driver = tokio::spawn(drive(bot.clone(), target.clone(), op));
 
     // inside the default 128 the loop keeps running
@@ -285,7 +289,7 @@ async fn view_distance_retune_ends_a_running_loop() {
 #[tokio::test]
 async fn attack_before_spawn_is_not_connected() {
     let client = despawned_client();
-    let bot = crate::test_util::bot(client.clone());
+    let bot = mineflayer::test_util::bot(client.clone());
     let target = client.entity_ref_for(client.entity);
     assert!(matches!(
         bot.pvp().attack(&target),
@@ -300,20 +304,24 @@ async fn attack_before_spawn_is_not_connected() {
 /// signal.
 #[tokio::test]
 async fn disconnect_ends_the_loop_and_reports() {
-    let bot = tick_bot();
-    let mut rx = bot.events();
+    let (bot, shutdown) = mineflayer::test_util::bot_with_shutdown(tick_client((
+        WorldName(Identifier::from("minecraft:overworld")),
+        Position::new(Vec3::new(0., 64., 0.)),
+    )));
+    let mut rx = bot.plugin_events::<PvpEvent>();
     let target = spawn_target(&bot, 5., 0.);
-    let op = with_component_mut::<PvpState, _>(&bot.client, |s| {
-        s.target = Some(target.clone());
-        s.op.start(&bot.root)
-    })
-    .unwrap();
+    let op = bot
+        .state_mut::<PvpState, _>(|s| {
+            s.target = Some(target.clone());
+            bot.start_op(&mut s.op)
+        })
+        .unwrap();
     let driver = tokio::spawn(drive(bot.clone(), target.clone(), op));
     // parked on ticks like a live connection — target still recorded
     assert_eq!(bot.pvp().target().map(|t| t.id()), Some(target.id()));
 
     // the bridge's exit
-    bot.root.cancel();
+    drop(shutdown);
 
     tokio::time::timeout(std::time::Duration::from_secs(5), driver)
         .await

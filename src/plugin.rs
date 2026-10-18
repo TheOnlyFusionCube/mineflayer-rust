@@ -109,15 +109,37 @@ impl Bot {
         slot.start(&self.root)
     }
 
+    /// The operation that runs in `slot`, or a new one when none runs:
+    /// for a call that shares the fate of the running one (collectblock's
+    /// `append`).
+    pub fn join_op(&self, slot: &mut OpSlot) -> Op {
+        slot.join(&self.root)
+    }
+
     /// The game ticks, until the connection ends.
     pub fn ticks(&self) -> TickStream {
         TickStream::new(&self.client, self.root.clone())
+    }
+
+    /// The game ticks, until `op` ends (a disconnect ends it too).
+    pub fn ticks_until(&self, op: &Op) -> TickStream {
+        TickStream::new(&self.client, op.token.clone())
     }
 
     /// A handle for a background task. Unlike a clone, it does not keep
     /// the connection open when every other handle is dropped.
     pub fn driver(&self) -> Bot {
         self.driver_handle()
+    }
+
+    /// Resolves when the connection ends.
+    pub async fn disconnected(&self) {
+        self.root.cancelled().await
+    }
+
+    /// Whether the connection has ended.
+    pub fn is_disconnected(&self) -> bool {
+        self.root.is_cancelled()
     }
 
     /// Subscribe to the plugin events of type `E`. A plugin defines its

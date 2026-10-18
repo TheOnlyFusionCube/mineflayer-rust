@@ -1853,6 +1853,7 @@ version = "0.2.0"
 dependencies = [
  "futures",
  "mineflayer-engine",
+ "mineflayer-plugins",
  "parking_lot",
  "rand 0.10.3",
  "regex",
@@ -2137,6 +2138,16 @@ dependencies = [
  "parking_lot",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "mineflayer-plugins"
+version = "0.2.0"
+dependencies = [
+ "mineflayer",
+ "rand 0.10.3",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

@@ -50,6 +50,8 @@ mineflayer-engine = { path = "crates/mineflayer-engine", version = "0.16.0", fea
 # for the examples' RUST_LOG-driven subscriber (the crate itself only
 # emits; it never installs a subscriber)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# the plugin analogs, for the live plugin test and the plugin examples
+mineflayer-plugins = { path = "crates/mineflayer-plugins" }
 
 [[test]]
 name = "plugin"

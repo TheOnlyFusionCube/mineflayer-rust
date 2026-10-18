@@ -3,7 +3,7 @@
 //! exercises the U12 surfaces end to end on a real world:
 //!
 //! 1. `collect_block().collect(kind).count(2)` on the nearest tree:
-//!    `CollectBlockFound` → `Collected` → `CollectDone` fire in order,
+//!    `CollectEvent::Found` → `Collected` → `CollectEvent::Done` fire in order,
 //!    the dug cells turn to air, and one trunk hole is patched back
 //!    with the spare log where practical.
 //! 2. `tool()`: the other log is crafted (2x2, no table) into a wooden
@@ -24,13 +24,21 @@
 
 use std::time::Duration;
 
-use mineflayer::{Bot, BotEvent, CollectTarget, EquipDest, FindBlocksOpts};
+use mineflayer::{Bot, BotEvent, EquipDest, FindBlocksOpts};
 use mineflayer_engine::{
     BlockPos, Vec3,
     entity::EntityKindComponent,
     registry::builtin::{BlockKind, EntityKind, ItemKind},
 };
-use tokio::sync::{broadcast::error::RecvError, mpsc};
+use mineflayer_plugins::{
+    collect::{CollectEvent, CollectTarget},
+    prelude::*,
+    pvp::PvpEvent,
+};
+use tokio::sync::{
+    broadcast::{self, error::RecvError},
+    mpsc,
+};
 
 use crate::common::wait_for;
 
@@ -41,11 +49,10 @@ use crate::common::wait_for;
 /// receiver left unread across a phase loses everything mid-phase.
 /// A task that `recv()`s continuously drains in real time — subscribe
 /// per phase and read the tap instead of the raw receiver.
-fn tap(
-    bot: &Bot,
-    pred: impl Fn(&BotEvent) -> bool + Send + 'static,
-) -> mpsc::UnboundedReceiver<BotEvent> {
-    let mut rx = bot.events();
+fn tap<E: Clone + Send + 'static>(
+    mut rx: broadcast::Receiver<E>,
+    pred: impl Fn(&E) -> bool + Send + 'static,
+) -> mpsc::UnboundedReceiver<E> {
     let (tx, out) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
@@ -64,7 +71,7 @@ fn tap(
 }
 
 /// Next event off a [`tap`], or panic if it starves for 10s.
-async fn tapped(rx: &mut mpsc::UnboundedReceiver<BotEvent>, what: &str) -> BotEvent {
+async fn tapped<E>(rx: &mut mpsc::UnboundedReceiver<E>, what: &str) -> E {
     tokio::time::timeout(Duration::from_secs(10), rx.recv())
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
@@ -266,12 +273,12 @@ async fn collect_tool_pvp() {
                 // `Collected` a few blocks before giving up, and those
                 // events must not pollute the successful attempt's
                 // assertions
-                let attempt_tap = tap(&bot, |e| {
+                let attempt_tap = tap(bot.plugin_events::<CollectEvent>(), |e| {
                     matches!(
                         e,
-                        BotEvent::CollectBlockFound(_)
-                            | BotEvent::Collected(_)
-                            | BotEvent::CollectDone { .. }
+                        CollectEvent::Found(_)
+                            | CollectEvent::Collected(_)
+                            | CollectEvent::Done { .. }
                     )
                 });
                 match bot
@@ -293,18 +300,18 @@ async fn collect_tool_pvp() {
         collected.blocks.iter().map(|b| b.pos).collect::<Vec<_>>()
     );
 
-    // `CollectBlockFound` fires per *candidate attempt* — a found block
+    // `CollectEvent::Found` fires per *candidate attempt* — a found block
     // that turns out unreachable is skipped and the next candidate gets
     // its own Found — so Found events are a superset of the dug list.
-    // Drain the tap through `CollectDone`, then check the ordering
+    // Drain the tap through `CollectEvent::Done`, then check the ordering
     // contract: every dug block was found first, the Collected stream
     // matches `collected.blocks` in order, and Done reports the count.
     let (mut found, mut dug_events) = (vec![], vec![]);
     let done = loop {
         match tapped(&mut collect_tap, "CollectDone").await {
-            BotEvent::CollectBlockFound(b) => found.push(b.pos),
-            BotEvent::Collected(b) => dug_events.push(b.pos),
-            BotEvent::CollectDone { collected: n } => break n,
+            CollectEvent::Found(b) => found.push(b.pos),
+            CollectEvent::Collected(b) => dug_events.push(b.pos),
+            CollectEvent::Done { collected: n } => break n,
             other => panic!("unexpected event on the collect tap: {other:?}"),
         }
     };
@@ -425,7 +432,9 @@ async fn collect_tool_pvp() {
     });
     match target {
         Some(target) => {
-            let mut stop_tap = tap(&bot, |e| matches!(e, BotEvent::StoppedAttacking));
+            let mut stop_tap = tap(bot.plugin_events::<PvpEvent>(), |e| {
+                matches!(e, PvpEvent::StoppedAttacking)
+            });
             bot.pvp().attack(&target).expect("pvp.attack failed");
             assert_eq!(
                 bot.pvp().target().map(|t| t.id()),
@@ -437,7 +446,7 @@ async fn collect_tool_pvp() {
             bot.pvp().stop();
             assert!(bot.pvp().target().is_none(), "stop() left a target");
             match tapped(&mut stop_tap, "StoppedAttacking").await {
-                BotEvent::StoppedAttacking => {}
+                PvpEvent::StoppedAttacking => {}
                 _ => unreachable!(),
             }
             // exactly once — whoever ends the loop owns the report
@@ -452,7 +461,7 @@ async fn collect_tool_pvp() {
 
     // let queued packets drain before disconnecting — the bridge can hit a
     // teardown race if packets are still mid-translation
-    let mut end_tap = tap(&bot, |e| matches!(e, BotEvent::End(_)));
+    let mut end_tap = tap(bot.subscribe(), |e| matches!(e, BotEvent::End(_)));
     tokio::time::sleep(Duration::from_millis(1500)).await;
     bot.quit(None);
     match tapped(&mut end_tap, "end").await {

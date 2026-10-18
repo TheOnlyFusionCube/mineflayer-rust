@@ -1313,7 +1313,7 @@ the commit that completes the item.
 | TS2 | done | (this commit) |
 | TS3 | open | |
 | TS4 | done; the job's first push run is not observed yet (no remote) | (this commit) |
-| TS5 | done: `tests/plugin.rs` uses `BotSim` through the feature; `mineflayer-plugins` (PL3) does not exist yet | (this commit) |
+| TS5 | done: `tests/plugin.rs` uses `BotSim`, and `mineflayer-plugins` uses the exported scaffolds, through the feature | (this commit) |
 | ST1 | replaced by D-port-plugins: the bridge stays, `BotPlugins` added | (ST3 commit) |
 | ST2 | done | (this commit) |
 | ST3 | done | (this commit) |
@@ -1333,7 +1333,7 @@ the commit that completes the item.
 | EV4 | done | (this commit) |
 | PL1 | done | (this commit) |
 | PL2 | done | (this commit) |
-| PL3 | open | |
+| PL3 | done; DEC-3 decided: no re-export from the core (dependency cycle) | (this commit) |
 | PL4 | open | |
 | PL5 | open | |
 | CL1 | done | (this commit) |
