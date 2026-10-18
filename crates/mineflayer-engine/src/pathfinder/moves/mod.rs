@@ -75,6 +75,8 @@ pub struct ExecuteCtx<'s, 'w1, 'w2, 'w3, 'w4, 'w5, 'w6, 'a> {
     pub physics: &'a mineflayer_entity::Physics,
     pub is_currently_mining: bool,
     pub can_mine: bool,
+    /// With `false`, [`Self::sprint`] walks.
+    pub allow_sprint: bool,
     pub world: Arc<RwLock<World>>,
     pub menu: Menu,
 
@@ -111,6 +113,10 @@ impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
     }
 
     pub fn sprint(&mut self, direction: SprintDirection) {
+        if !self.allow_sprint {
+            self.walk(direction.into());
+            return;
+        }
         self.sprint_events.write(StartSprintEvent {
             entity: self.entity,
             direction,

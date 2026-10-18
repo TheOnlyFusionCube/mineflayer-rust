@@ -421,7 +421,6 @@ impl CollectBlock<'_> {
         // upstream mutates and pushes the plugin movements per collect
         if let Some(mut movements) = movements {
             movements.dont_mine_under_falling_block = false;
-            movements.dont_create_flow = false;
             bot.pathfinder().set_movements(movements);
         }
         let result = self

@@ -78,6 +78,7 @@ pub fn tick_execute_path(
         Option<&Mining>,
         &WorldHolder,
         &Inventory,
+        Option<&Pathfinder>,
     )>,
     mut look_at_events: MessageWriter<LookAtEvent>,
     mut sprint_events: MessageWriter<StartSprintEvent>,
@@ -85,7 +86,7 @@ pub fn tick_execute_path(
     mut jump_events: MessageWriter<JumpEvent>,
     mut start_mining_events: MessageWriter<StartMiningBlockEvent>,
 ) {
-    for (entity, mut executing_path, position, physics, mining, world_holder, inventory) in
+    for (entity, mut executing_path, position, physics, mining, world_holder, inventory, pathfinder) in
         &mut query
     {
         executing_path.ticks_since_last_node_reached += 1;
@@ -99,6 +100,9 @@ pub fn tick_execute_path(
                 physics,
                 is_currently_mining: mining.is_some(),
                 can_mine: true,
+                allow_sprint: pathfinder
+                    .and_then(|p| p.opts.as_ref())
+                    .is_none_or(|o| o.allow_sprint),
                 world: world_holder.shared.clone(),
                 menu: inventory.inventory_menu.clone(),
 

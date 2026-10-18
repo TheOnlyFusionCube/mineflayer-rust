@@ -13,7 +13,10 @@ use super::*;
 /// Called by the bridge for every engine [`Event`].
 pub(crate) fn bridge_events(client: &mineflayer_engine::Client, event: &Event) -> Vec<BotEvent> {
     match event {
-        Event::Tick => step(client),
+        Event::Tick => {
+            open_door_ahead(client);
+            step(client)
+        }
         Event::Pathfinder(event) => path_event(client, event),
         _ => Vec::new(),
     }
@@ -127,6 +130,48 @@ fn path_event(client: &mineflayer_engine::Client, event: &PathEvent) -> Vec<BotE
             .map(|goal| vec![BotEvent::PathStop { goal: Some(goal) }])
             .unwrap_or_default()
         }
+    }
+}
+
+/// Ticks between two uses of one door: long enough for the server's
+/// block update of the first use to arrive.
+const DOOR_USE_TICKS: u8 = 10;
+
+/// Open the closed door that the next move of the path walks into, once
+/// the bot is within reach of it (`Movements::can_open_doors`).
+fn open_door_ahead(client: &mineflayer_engine::Client) {
+    if !with_component::<PathfinderFacade, _>(client, |f| f.movements.can_open_doors)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let Some(target) = client
+        .get_component::<mineflayer_engine::pathfinder::ExecutingPath>()
+        .and_then(|p| p.path.front().map(|edge| edge.movement.target))
+    else {
+        return;
+    };
+    let closed = client
+        .world()
+        .read()
+        .get_block_state(target)
+        .is_some_and(movements::is_closed_door);
+    if !closed || client.position().distance_to(target.center()) > 3. {
+        return;
+    }
+    let use_now = with_component_mut::<PathfinderFacade, _>(client, |f| match &mut f.door_use {
+        Some((pos, wait)) if *pos == target && *wait > 0 => {
+            *wait -= 1;
+            false
+        }
+        _ => {
+            f.door_use = Some((target, DOOR_USE_TICKS));
+            true
+        }
+    })
+    .unwrap_or(false);
+    if use_now {
+        client.block_interact(target);
     }
 }
 

@@ -83,6 +83,7 @@ pub struct PathfinderOpts {
     pub(crate) min_timeout: PathfinderTimeout,
     pub(crate) max_timeout: PathfinderTimeout,
     pub(crate) total_timeout: Option<Duration>,
+    pub(crate) allow_sprint: bool,
 }
 
 impl PathfinderOpts {
@@ -94,6 +95,7 @@ impl PathfinderOpts {
             min_timeout: PathfinderTimeout::Time(Duration::from_secs(1)),
             max_timeout: PathfinderTimeout::Time(Duration::from_secs(5)),
             total_timeout: None,
+            allow_sprint: true,
         }
     }
     /// Set the function that's used for checking what moves are possible.
@@ -150,6 +152,14 @@ impl PathfinderOpts {
     /// Defaults to `None` (no total limit).
     pub fn total_timeout(mut self, total_timeout: Duration) -> Self {
         self.total_timeout = Some(total_timeout);
+        self
+    }
+    /// Whether the moves may sprint. With `false` they walk where they
+    /// would sprint.
+    ///
+    /// Defaults to `true`.
+    pub fn allow_sprint(mut self, allow_sprint: bool) -> Self {
+        self.allow_sprint = allow_sprint;
         self
     }
 }

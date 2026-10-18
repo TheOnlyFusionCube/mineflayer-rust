@@ -168,6 +168,10 @@ merge; plan item E2 keeps this list current):
     `OrGoals`, `AndGoals`, and `InverseGoal`. `EntityRef` is `PartialEq`
     and `Eq` by entity. Tests: `port_goal_tests` in
     `mineflayer-engine/src/pathfinder/goals.rs`.
+31. (CP2) `PathfinderOpts::allow_sprint` and `ExecuteCtx::allow_sprint`:
+    with `false`, `ExecuteCtx::sprint` walks. Test:
+    `a_goto_without_sprint_walks` in
+    `mineflayer-engine/src/pathfinder/tests.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

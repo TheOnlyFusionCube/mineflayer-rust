@@ -177,6 +177,9 @@ pub(crate) struct PathfinderFacade {
     follow_block: Option<BlockPos>,
     /// The `goto` calls waiting for `goal`'s outcome.
     waiters: Vec<Waiter>,
+    /// The door the bot last used, and the ticks before it may use that
+    /// door again (a second use in the round trip would close it).
+    door_use: Option<(BlockPos, u8)>,
 }
 
 impl Default for PathfinderFacade {
@@ -189,6 +192,7 @@ impl Default for PathfinderFacade {
             goto: None,
             follow_block: None,
             waiters: Vec::new(),
+            door_use: None,
         }
     }
 }

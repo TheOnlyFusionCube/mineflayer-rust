@@ -44,6 +44,7 @@ fn setup_blockposgoal_simulation(
             successors_fn: moves::default_move,
             allow_mining: false,
             retry_on_no_path: true,
+            allow_sprint: true,
             min_timeout: PathfinderTimeout::Nodes(1_000_000),
             max_timeout: PathfinderTimeout::Nodes(5_000_000),
             total_timeout: None,
@@ -390,6 +391,7 @@ fn pathfinder_reports_no_path_as_an_event() {
             successors_fn: moves::default_move,
             allow_mining: false,
             retry_on_no_path: true,
+            allow_sprint: true,
             min_timeout: PathfinderTimeout::Nodes(1_000_000),
             max_timeout: PathfinderTimeout::Nodes(5_000_000),
             total_timeout: None,
@@ -617,4 +619,41 @@ fn a_partial_search_returns_without_a_pause() {
         "took {:?}",
         started.elapsed()
     );
+}
+
+/// How many sprint starts the executor sends on a straight 8-block walk.
+fn sprint_starts(allow_sprint: bool) -> usize {
+    use bevy_ecs::message::{MessageCursor, Messages};
+    use mineflayer_client::StartSprintEvent;
+
+    let mut partial_chunks = PartialChunkStorage::default();
+    let floor: Vec<BlockPos> = (0..10).map(|z| BlockPos::new(0, 70, z)).collect();
+    let mut simulation =
+        setup_simulation_world(&mut partial_chunks, BlockPos::new(0, 71, 0), &floor, &[]);
+    simulation.app.world_mut().write_message(GotoEvent {
+        entity: simulation.entity,
+        goal: Arc::new(BlockPosGoal(BlockPos::new(0, 71, 8))),
+        opts: PathfinderOpts::new()
+            .allow_mining(false)
+            .allow_sprint(allow_sprint)
+            .min_timeout(PathfinderTimeout::Nodes(100_000))
+            .max_timeout(PathfinderTimeout::Nodes(100_000)),
+        id: GotoId(11),
+    });
+    let mut cursor = MessageCursor::<StartSprintEvent>::default();
+    let mut starts = 0;
+    wait_until_bot_starts_moving(&mut simulation);
+    for _ in 0..60 {
+        simulation.tick();
+        let messages = simulation.app.world().resource::<Messages<StartSprintEvent>>();
+        starts += cursor.read(messages).count();
+    }
+    assert_eq!(BlockPos::from(simulation.position()), BlockPos::new(0, 71, 8));
+    starts
+}
+
+#[test]
+fn a_goto_without_sprint_walks() {
+    assert!(sprint_starts(true) > 0, "the default sprints");
+    assert_eq!(sprint_starts(false), 0);
 }

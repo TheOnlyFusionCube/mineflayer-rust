@@ -190,6 +190,7 @@ pub fn tick_execute_path(
                         physics,
                         is_currently_mining: mining.is_some(),
                         can_mine: true,
+                        allow_sprint: true,
                         world: world_holder.shared.clone(),
                         menu: inventory.inventory_menu.clone(),
 
@@ -481,6 +482,7 @@ fn run_one_simulation(
                     is_currently_mining: mining.is_some(),
                     // don't modify the world from the simulation
                     can_mine: false,
+                    allow_sprint: true,
                     world: sim.world.clone(),
                     menu: inventory.inventory_menu.clone(),
 

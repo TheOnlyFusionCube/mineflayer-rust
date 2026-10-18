@@ -4,6 +4,9 @@
 
 ### Breaking
 
+- `Movements` has no `allow_free_motion` and no `dont_create_flow`
+  field. Neither had an effect: the engine has no straight-line flight,
+  and it never breaks a block next to a liquid.
 - The plugin analogs `tool`, `auto_eat`, `collect`, and `pvp` are in the
   new `mineflayer-plugins` crate (one cargo feature each), written on the
   public `mineflayer::plugin` API only. Add the crate and
@@ -114,6 +117,12 @@
 
 ### Changed
 
+- Every `Movements` field takes effect: `max_drop_down` bounds drops,
+  `dont_mine_under_falling_block` keeps the bot from mining under sand
+  and gravel, `allow_sprinting` makes the moves walk, and
+  `can_open_doors` paths through closed doors and gates and opens them.
+- `engine::pathfinder::PathfinderOpts::allow_sprint`: with `false`, the
+  path executor walks where it would sprint.
 - `pathfinder().goto` waits for the outcome of its own goal and no longer
   polls each tick. Events of a replaced or stopped goal can no longer
   settle a newer `goto`. The `thinkTimeout` budget is the engine's
