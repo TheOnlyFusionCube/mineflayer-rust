@@ -347,6 +347,54 @@ impl Bot {
         async move { wait::await_map(&mut rx, timeout, f).await }
     }
 
+    /// `await once(bot, 'spawn')`: resolves on the next
+    /// [`BotEvent::Spawn`], with no time limit. Like [`Bot::wait_for`], the
+    /// first wait after `connect` also sees a spawn from before `connect`
+    /// returned. Fails when the connection ends first.
+    pub fn spawned(&self) -> impl Future<Output = std::result::Result<(), WaitEnd>> + use<> {
+        let mut rx = self.events();
+        async move {
+            loop {
+                match rx.recv().await {
+                    Ok(BotEvent::Spawn) => return Ok(()),
+                    Ok(BotEvent::End(_)) => return Err(WaitEnd::Ended),
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => return Err(WaitEnd::Closed),
+                }
+            }
+        }
+    }
+
+    /// Upstream's `chat` event, `bot.on('chat', (username, message) => …)`:
+    /// the `(sender, message)` of each player chat line, without the
+    /// system messages that upstream does not emit on `chat`. The stream
+    /// ends with the connection.
+    ///
+    /// ```no_run
+    /// # async fn demo(bot: mineflayer::Bot) {
+    /// use futures::StreamExt;
+    ///
+    /// let mut chat = bot.chat_messages();
+    /// while let Some((sender, message)) = chat.next().await {
+    ///     println!("{sender}: {message}");
+    /// }
+    /// # }
+    /// ```
+    pub fn chat_messages(
+        &self,
+    ) -> impl futures::Stream<Item = (String, String)> + Send + Unpin + 'static {
+        use futures::StreamExt;
+        self.event_stream().filter_map(|event| {
+            futures::future::ready(match event {
+                BotEvent::Chat(packet) => match packet.split_sender_and_content() {
+                    (Some(sender), message) => Some((sender, message)),
+                    (None, _) => None,
+                },
+                _ => None,
+            })
+        })
+    }
+
     /// Crate-internal receiver for waits inside the crate.
     ///
     /// Use this for every wait that the crate itself runs. It never takes

@@ -60,14 +60,20 @@ impl BotSim {
     /// [`Self::new`] for a bot built from `builder`.
     pub fn spawned(builder: BotBuilder) -> Self {
         let mut sim = Self::connected(builder);
-        // in separate passes, as a server's packets arrive
-        sim.receive(default_login_packet());
-        sim.tick();
-        sim.receive(make_basic_empty_chunk(ChunkPos::new(0, 0), 384 / 16));
-        sim.tick();
-        // the engine marks the bot as in a loaded chunk one pass later
-        sim.tick();
+        sim.spawn();
         sim
+    }
+
+    /// Log in and spawn in an empty chunk at the origin: the packets and
+    /// passes of [`Self::new`].
+    pub fn spawn(&mut self) {
+        // in separate passes, as a server's packets arrive
+        self.receive(default_login_packet());
+        self.tick();
+        self.receive(make_basic_empty_chunk(ChunkPos::new(0, 0), 384 / 16));
+        self.tick();
+        // the engine marks the bot as in a loaded chunk one pass later
+        self.tick();
     }
 
     /// A bot in the game state that has received no game packet yet.
@@ -227,6 +233,37 @@ mod tests {
                 .any(|e| matches!(e, BotEvent::MessageStr { message, .. } if message == "hello")),
             "{events:?}"
         );
+    }
+
+    /// `spawned` resolves on the spawn;
+    /// `chat_messages` gives player lines and skips system lines.
+    #[test]
+    fn spawned_and_chat_messages() {
+        use futures::StreamExt;
+
+        let mut sim = BotSim::connected(BotBuilder::default());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let spawned = sim.bot.spawned();
+        sim.spawn();
+        let second = std::time::Duration::from_secs(1);
+        let wait = rt.block_on(async { tokio::time::timeout(second, spawned).await });
+        assert_eq!(wait.ok(), Some(Ok(())), "the spawn arrived");
+        let mut chat = sim.bot.chat_messages();
+        for line in ["the server restarts soon", "<faye> hello"] {
+            sim.receive(ClientboundSystemChat {
+                content: line.into(),
+                overlay: false,
+            });
+            sim.tick();
+        }
+        let first = rt
+            .block_on(async { tokio::time::timeout(second, chat.next()).await })
+            .ok()
+            .flatten();
+        assert_eq!(first, Some(("faye".to_owned(), "hello".to_owned())));
     }
 
     #[test]

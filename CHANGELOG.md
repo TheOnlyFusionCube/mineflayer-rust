@@ -78,6 +78,8 @@
   cancels the running action), and `Bot::plugin_events` with
   `Bot::emit_plugin_event` (a typed event channel per plugin event type).
   `tests/plugin.rs` is a plugin written against this API only.
+- `Bot::spawned()` (`await once(bot, 'spawn')`) and `Bot::chat_messages()`,
+  a stream of upstream's `chat` `(username, message)` pairs.
 - The `test-util` feature exports `test_util::sim::BotSim`, which runs a
   bot on the real engine and bridge with no server, for plugin tests.
 

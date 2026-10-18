@@ -45,36 +45,22 @@ async fn main() {
         .await
         .expect("connect failed");
 
-    let mut events = bot.event_stream();
-    while let Some(event) = events.next().await {
-        match event {
-            // `username()` resolves once the profile lands — pre-spawn
-            // it's empty.
-            BotEvent::Spawn => println!("spawned as {}", bot.username()),
-            // Upstream's `chat` event carries (username, message); the raw
-            // ChatPacket's split_sender_and_content is the same pair.
-            // `None` sender = system message, which upstream never emits
-            // on `chat`.
-            BotEvent::Chat(packet) => {
-                let (Some(sender), content) = packet.split_sender_and_content() else {
-                    continue;
-                };
-                if sender == bot.username() {
-                    continue;
-                }
-                println!("{sender}: {content}");
-                if let Err(err) = bot.chat(&content) {
-                    eprintln!("echo failed: {err}");
-                }
-            }
-            BotEvent::Kicked { reason, .. } => {
-                println!("I was kicked from the server: {reason}")
-            }
-            BotEvent::End(reason) => {
-                println!("disconnected: {reason}");
-                break;
-            }
-            _ => {}
+    if let Err(end) = bot.spawned().await {
+        eprintln!("no spawn: {end}");
+        return;
+    }
+    // `username()` resolves once the profile lands — pre-spawn it's empty.
+    println!("spawned as {}", bot.username());
+    // upstream's `chat` event: (username, message) of player chat lines
+    let mut chat = bot.chat_messages();
+    while let Some((sender, message)) = chat.next().await {
+        if sender == bot.username() {
+            continue;
+        }
+        println!("{sender}: {message}");
+        if let Err(err) = bot.chat(&message) {
+            eprintln!("echo failed: {err}");
         }
     }
+    println!("disconnected");
 }

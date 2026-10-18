@@ -1330,7 +1330,7 @@ the commit that completes the item.
 | EV1 | done | `a8f77a5` |
 | EV2 | done | (this commit) |
 | EV3 | done | (this commit) |
-| EV4 | open | |
+| EV4 | done | (this commit) |
 | PL1 | done | (this commit) |
 | PL2 | done | (this commit) |
 | PL3 | open | |
