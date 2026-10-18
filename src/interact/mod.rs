@@ -23,7 +23,7 @@ pub(crate) mod dig;
 mod place;
 
 pub use dig::{DigAbortReason, DigFace};
-pub(crate) use dig::{InteractShared, mine_progress};
+pub(crate) use dig::{DigPlugin, InteractShared, mine_progress};
 pub use place::{PlaceHalf, PlaceOpts};
 
 /// Look-direction policy for `dig`/`place_entity`/`look_at` callers.

@@ -31,6 +31,7 @@ fn test_mine_block_rollback() {
         entity: simulation.entity,
         position: pos,
         force: true,
+        id: mineflayer_client::mining::MiningId::next(),
     });
     simulation.tick();
     assert_eq!(simulation.get_block_state(pos), Some(BlockKind::Air.into()));

@@ -1325,7 +1325,7 @@ the commit that completes the item.
 | OP2 | done | (this commit) |
 | OP3 | done | (this commit) |
 | OP4 | done; follow and dynamic goals step in the bridge on each `Tick`, not in an ECS system (D-port-plugins: the bridge is the one sender, and a goal step must read the facade between passes) | (this commit) |
-| OP5 | open | |
+| OP5 | done; a non-`Broken` outcome counts as a break when the block is air | (this commit) |
 | OP6 | open | |
 | EV1 | done | `a8f77a5` |
 | EV2 | done | (this commit) |

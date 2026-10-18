@@ -66,6 +66,7 @@ fn test_packet_order_set_carried_item() {
         entity: simulation.entity,
         position: pos,
         force: false,
+        id: mineflayer_client::mining::MiningId::next(),
     });
 
     sent_packets.clear();

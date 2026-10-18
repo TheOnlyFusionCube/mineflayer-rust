@@ -31,6 +31,7 @@ fn start(simulation: &mut Simulation) {
         entity,
         position: POS,
         force: true,
+        id: mineflayer_client::mining::MiningId::next(),
     });
 }
 

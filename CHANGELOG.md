@@ -96,6 +96,12 @@
 - Follow goals and `dynamic` goals step on each game tick inside the
   event bridge; the two background tasks per goal are gone.
 - `engine::PathEvent::Timeout` has a `path` field (the partial path).
+- `dig` ends on the engine's report for its own mining start, with no
+  per-tick poll and no grace windows. A newer `dig` and `stop_digging`
+  cancel it through the dig's operation.
+- `engine::mining::StartMiningBlockEvent`, `MiningQueued`, `Mining`, and
+  `FinishMiningBlockEvent` have an `id: MiningId` field. Each start ends in
+  one `engine::mining::MiningFinished` message.
 - `BotEvent::BlockUpdate.old` is the state the update replaced, also for
   the first update of a position (it reported `old == new` there) and for
   repeated updates of one position in one pass.

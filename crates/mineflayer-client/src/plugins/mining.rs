@@ -33,6 +33,7 @@ impl Plugin for MiningPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<StartMiningBlockEvent>()
             .add_message::<StopMiningBlockEvent>()
+            .add_message::<MiningFinished>()
             .add_message::<MineBlockProgressEvent>()
             .add_message::<AttackBlockEvent>()
             .add_systems(
@@ -123,6 +124,7 @@ fn handle_auto_mine(
                 entity,
                 position: block_pos,
                 force: true,
+                id: MiningId::next(),
             });
         } else if mining.is_some() && hit_result_component.miss() {
             stop_mining_block_event.write(StopMiningBlockEvent { entity });
@@ -139,6 +141,42 @@ pub struct Mining {
     pub dir: Direction,
     /// See [`MiningQueued::force`].
     pub force: bool,
+    /// The start this mining came from.
+    pub id: MiningId,
+}
+
+/// The identifier of one [`StartMiningBlockEvent`], unique in the process.
+/// [`MiningFinished`] names it.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct MiningId(pub u64);
+
+impl MiningId {
+    /// A new identifier. `MiningId(0)` is never returned.
+    pub fn next() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// How a mining start ended.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MiningOutcome {
+    /// The client finished the block and predicted it as broken.
+    Broken,
+    /// A stop, a cancel, or a newer start ended it.
+    Cancelled,
+    /// It ended without a break for another reason: the interaction was
+    /// not allowed, the bot stopped looking at the block, or the block
+    /// was gone.
+    Interrupted,
+}
+
+/// Sent once for each [`StartMiningBlockEvent`] when its mining ends.
+#[derive(Clone, Copy, Debug, Message)]
+pub struct MiningFinished {
+    pub entity: Entity,
+    pub id: MiningId,
+    pub outcome: MiningOutcome,
 }
 
 /// Start mining the block at the given position.
@@ -157,18 +195,39 @@ pub struct StartMiningBlockEvent {
     /// it might mine blocks other than the one at `position` (which may be
     /// preferable if you're trying to act like vanilla).
     pub force: bool,
+    /// Names this start in its [`MiningFinished`].
+    pub id: MiningId,
 }
 fn handle_start_mining_block_event(
     mut commands: Commands,
     mut events: MessageReader<StartMiningBlockEvent>,
-    mut query: Query<(&HitResultComponent, Option<&MiningCancelledBefore>)>,
+    mut finished: MessageWriter<MiningFinished>,
+    mut query: Query<(
+        &HitResultComponent,
+        Option<&MiningCancelledBefore>,
+        Option<&MiningQueued>,
+    )>,
 ) {
-    for (event, id) in events.read_with_id() {
+    // a start queued in this run replaces the one queued before it
+    let mut queued_now = std::collections::HashMap::new();
+    for (event, message_id) in events.read_with_id() {
         trace!("{event:?}");
-        let (hit_result, cancelled_before) = query.get_mut(event.entity).unwrap();
-        if cancelled_before.is_some_and(|c| id.id < c.0) {
+        let (hit_result, cancelled_before, queued) = query.get_mut(event.entity).unwrap();
+        let mut end = |id, outcome| {
+            finished.write(MiningFinished {
+                entity: event.entity,
+                id,
+                outcome,
+            });
+        };
+        if cancelled_before.is_some_and(|c| message_id.id < c.0) {
+            end(event.id, MiningOutcome::Cancelled);
             continue;
         }
+        let replaced = queued_now
+            .get(&event.entity)
+            .copied()
+            .or(queued.map(|q| q.id));
         if event.force {
             let direction = if let Some(block_hit_result) =
                 hit_result.as_block_hit_result_if_not_miss()
@@ -184,10 +243,15 @@ fn handle_start_mining_block_event(
                 // we're not looking at the block, arbitrary direction
                 Direction::Down
             };
+            if let Some(replaced) = replaced {
+                end(replaced, MiningOutcome::Cancelled);
+            }
+            queued_now.insert(event.entity, event.id);
             commands.entity(event.entity).insert(MiningQueued {
                 position: event.position,
                 direction,
                 force: true,
+                id: event.id,
             });
         } else {
             // let block_hit_result =
@@ -197,12 +261,18 @@ fn handle_start_mining_block_event(
             if let Some(block_hit_result) = hit_result.as_block_hit_result_if_not_miss()
                 && block_hit_result.block_pos == event.position
             {
+                if let Some(replaced) = replaced {
+                    end(replaced, MiningOutcome::Cancelled);
+                }
+                queued_now.insert(event.entity, event.id);
                 commands.entity(event.entity).insert(MiningQueued {
                     position: event.position,
                     direction: block_hit_result.direction,
                     force: false,
+                    id: event.id,
                 });
             } else {
+                end(event.id, MiningOutcome::Interrupted);
                 warn!(
                     "Got StartMiningBlockEvent with force=false but we're not looking at the block ({hit_result:?}.block_pos != {:?}). You should've looked at the block before trying to mine with force=false.",
                     event.position
@@ -219,12 +289,15 @@ pub struct MiningQueued {
     pub direction: Direction,
     /// Whether we should mine the block regardless of whether it's reachable.
     pub force: bool,
+    /// The start this came from.
+    pub id: MiningId,
 }
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn handle_mining_queued(
     mut commands: Commands,
     mut attack_block_events: MessageWriter<AttackBlockEvent>,
     mut mine_block_progress_events: MessageWriter<MineBlockProgressEvent>,
+    mut finished: MessageWriter<MiningFinished>,
     query: Query<(
         Entity,
         &MiningQueued,
@@ -277,6 +350,11 @@ pub fn handle_mining_queued(
             &game_mode.current,
             inventory,
         ) {
+            finished.write(MiningFinished {
+                entity,
+                id: mining_queued.id,
+                outcome: MiningOutcome::Interrupted,
+            });
             continue;
         }
         // TODO (when world border is implemented): vanilla ignores if the block
@@ -286,6 +364,22 @@ pub fn handle_mining_queued(
             // this matters if we were previously mining a block without force
             if mining_queued.force {
                 mining.force = true;
+            }
+            // a start for the block being mined takes the mining over
+            if mining.id != mining_queued.id
+                && is_same_mining_target(
+                    mining_queued.position,
+                    inventory,
+                    &current_mining_pos,
+                    &current_mining_item,
+                )
+            {
+                finished.write(MiningFinished {
+                    entity,
+                    id: mining.id,
+                    outcome: MiningOutcome::Cancelled,
+                });
+                mining.id = mining_queued.id;
             }
         }
 
@@ -304,6 +398,7 @@ pub fn handle_mining_queued(
             commands.trigger(FinishMiningBlockEvent {
                 entity,
                 position: mining_queued.position,
+                id: mining_queued.id,
             });
             **mine_delay = 5;
             commands.trigger(SwingArmEvent { entity });
@@ -315,7 +410,12 @@ pub fn handle_mining_queued(
                 &current_mining_item,
             )
         {
-            if mining.is_some() {
+            if let Some(mining) = &mining {
+                finished.write(MiningFinished {
+                    entity,
+                    id: mining.id,
+                    outcome: MiningOutcome::Cancelled,
+                });
                 // send a packet to stop mining since we just changed target
                 commands.trigger(SendGamePacketEvent::new(
                     entity,
@@ -362,12 +462,14 @@ pub fn handle_mining_queued(
                 commands.trigger(FinishMiningBlockEvent {
                     entity,
                     position: mining_queued.position,
+                    id: mining_queued.id,
                 });
             } else {
                 let mining = Mining {
                     pos: mining_queued.position,
                     dir: mining_queued.direction,
                     force: mining_queued.force,
+                    id: mining_queued.id,
                 };
                 trace!("inserting mining component {mining:?} for entity {entity:?}");
                 commands.entity(entity).insert(mining);
@@ -476,10 +578,13 @@ pub struct MineItem(pub ItemStack);
 pub struct FinishMiningBlockEvent {
     pub entity: Entity,
     pub position: BlockPos,
+    /// The start the mining came from.
+    pub id: MiningId,
 }
 
 pub fn handle_finish_mining_block_observer(
     finish_mining_block: On<FinishMiningBlockEvent>,
+    mut finished: MessageWriter<MiningFinished>,
     mut query: Query<(
         &WorldName,
         &LocalGameMode,
@@ -492,7 +597,34 @@ pub fn handle_finish_mining_block_observer(
     worlds: Res<Worlds>,
 ) {
     let event = finish_mining_block.event();
+    let broke = predict_broken_block(event, &mut query, &worlds);
+    finished.write(MiningFinished {
+        entity: event.entity,
+        id: event.id,
+        outcome: if broke {
+            MiningOutcome::Broken
+        } else {
+            MiningOutcome::Interrupted
+        },
+    });
+}
 
+/// Predict the block of a finished mining as broken; `false` when the
+/// break is not allowed or there is nothing to break.
+#[allow(clippy::type_complexity)]
+fn predict_broken_block(
+    event: &FinishMiningBlockEvent,
+    query: &mut Query<(
+        &WorldName,
+        &LocalGameMode,
+        &Inventory,
+        &PlayerAbilities,
+        &PermissionLevel,
+        &Position,
+        &mut BlockStatePredictionHandler,
+    )>,
+    worlds: &Worlds,
+) -> bool {
     let (
         world_name,
         game_mode,
@@ -501,11 +633,11 @@ pub fn handle_finish_mining_block_observer(
         permission_level,
         player_pos,
         mut prediction_handler,
-    ) = query.get_mut(finish_mining_block.entity).unwrap();
+    ) = query.get_mut(event.entity).unwrap();
     let world_lock = worlds.get(world_name).unwrap();
     let world = world_lock.read();
     if check_is_interaction_restricted(&world, event.position, &game_mode.current, inventory) {
-        return;
+        return false;
     }
 
     if game_mode.current == GameMode::Creative {
@@ -513,12 +645,12 @@ pub fn handle_finish_mining_block_observer(
         if matches!(held_item, ItemKind::Trident | ItemKind::DebugStick)
             || mineflayer_registry::tags::items::SWORDS.contains(&held_item)
         {
-            return;
+            return false;
         }
     }
 
     let Some(block_state) = world.get_block_state(event.position) else {
-        return;
+        return false;
     };
 
     let registry_block = block_state.as_block_kind();
@@ -528,10 +660,10 @@ pub fn handle_finish_mining_block_observer(
             BlockKind::CommandBlock | BlockKind::StructureBlock
         )
     {
-        return;
+        return false;
     }
     if block_state == BlockState::AIR {
-        return;
+        return false;
     }
 
     // when we break a waterlogged block we want to keep the water there
@@ -541,6 +673,7 @@ pub fn handle_finish_mining_block_observer(
         .set_block_state(event.position, block_state_for_fluid)
         .unwrap_or_default();
     prediction_handler.retain_known_server_state(event.position, old_state, **player_pos);
+    true
 }
 
 /// Abort mining a block.
@@ -552,13 +685,21 @@ pub fn handle_stop_mining_block_event(
     mut events: MessageReader<StopMiningBlockEvent>,
     mut commands: Commands,
     mut mine_block_progress_events: MessageWriter<MineBlockProgressEvent>,
-    mut query: Query<(&MineBlockPos, &mut MineProgress)>,
+    mut finished: MessageWriter<MiningFinished>,
+    mut query: Query<(&MineBlockPos, &mut MineProgress, Option<&Mining>)>,
 ) {
     for event in events.read() {
-        let (mine_block_pos, mut mine_progress) = query.get_mut(event.entity).unwrap();
+        let (mine_block_pos, mut mine_progress, mining) = query.get_mut(event.entity).unwrap();
 
         let mine_block_pos =
             mine_block_pos.expect("IsMining is true so MineBlockPos must be present");
+        if let Some(mining) = mining {
+            finished.write(MiningFinished {
+                entity: event.entity,
+                id: mining.id,
+                outcome: MiningOutcome::Cancelled,
+            });
+        }
         abort_mining(
             &mut commands,
             &mut mine_block_progress_events,
@@ -592,16 +733,34 @@ fn handle_cancel_mining_event(
     mut commands: Commands,
     starts: Res<Messages<StartMiningBlockEvent>>,
     mut mine_block_progress_events: MessageWriter<MineBlockProgressEvent>,
-    mut query: Query<(Option<&Mining>, &MineBlockPos, &mut MineProgress)>,
+    mut finished: MessageWriter<MiningFinished>,
+    mut query: Query<(
+        Option<&Mining>,
+        Option<&MiningQueued>,
+        &MineBlockPos,
+        &mut MineProgress,
+    )>,
 ) {
     let entity = event.entity;
+    if let Ok((mining, queued, ..)) = query.get(entity) {
+        for id in [mining.map(|m| m.id), queued.map(|q| q.id)]
+            .into_iter()
+            .flatten()
+        {
+            finished.write(MiningFinished {
+                entity,
+                id,
+                outcome: MiningOutcome::Cancelled,
+            });
+        }
+    }
     commands
         .entity(entity)
         .remove::<MiningQueued>()
         .insert(MiningCancelledBefore(
             starts.oldest_message_count() + starts.len(),
         ));
-    let Ok((mining, mine_block_pos, mut mine_progress)) = query.get_mut(entity) else {
+    let Ok((mining, _, mine_block_pos, mut mine_progress)) = query.get_mut(entity) else {
         return;
     };
     if mining.is_some()
@@ -664,6 +823,7 @@ pub fn continue_mining_block(
     )>,
     mut commands: Commands,
     mut mine_block_progress_events: MessageWriter<MineBlockProgressEvent>,
+    mut finished: MessageWriter<MiningFinished>,
     worlds: Res<Worlds>,
 ) {
     for (
@@ -699,6 +859,7 @@ pub fn continue_mining_block(
             commands.trigger(FinishMiningBlockEvent {
                 entity,
                 position: mining.pos,
+                id: mining.id,
             });
             commands.trigger(SwingArmEvent { entity });
         } else if mining.force
@@ -718,6 +879,11 @@ pub fn continue_mining_block(
 
             if target_block_state.is_air() {
                 commands.entity(entity).remove::<Mining>();
+                finished.write(MiningFinished {
+                    entity,
+                    id: mining.id,
+                    outcome: MiningOutcome::Interrupted,
+                });
                 continue;
             }
             let block = Box::<dyn BlockTrait>::from(target_block_state);
@@ -743,6 +909,7 @@ pub fn continue_mining_block(
                 commands.trigger(FinishMiningBlockEvent {
                     entity,
                     position: mining.pos,
+                    id: mining.id,
                 });
                 commands.trigger(SendGamePacketEvent::new(
                     entity,
@@ -770,6 +937,7 @@ pub fn continue_mining_block(
                 position: mining.pos,
                 direction: mining.dir,
                 force: false,
+                id: mining.id,
             });
         }
     }
@@ -777,6 +945,7 @@ pub fn continue_mining_block(
 
 pub fn update_mining_component(
     mut commands: Commands,
+    mut finished: MessageWriter<MiningFinished>,
     mut query: Query<(Entity, &mut Mining, &HitResultComponent)>,
 ) {
     for (entity, mut mining, hit_result_component) in &mut query.iter_mut() {
@@ -800,6 +969,11 @@ pub fn update_mining_component(
 
             debug!("Removing mining component because we're no longer looking at the block");
             commands.entity(entity).remove::<Mining>();
+            finished.write(MiningFinished {
+                entity,
+                id: mining.id,
+                outcome: MiningOutcome::Interrupted,
+            });
         }
     }
 }

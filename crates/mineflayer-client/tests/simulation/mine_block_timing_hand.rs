@@ -66,6 +66,7 @@ fn test_mine_block_timing_hand() {
         entity: simulation.entity,
         position: pos,
         force: false,
+        id: mineflayer_client::mining::MiningId::next(),
     });
     sent_packets.clear();
     simulation.tick();
@@ -138,6 +139,7 @@ fn test_mine_block_timing_hand() {
         entity: simulation.entity,
         position: pos2,
         force: false,
+        id: mineflayer_client::mining::MiningId::next(),
     });
     for _ in 0..150 {
         simulation.tick();

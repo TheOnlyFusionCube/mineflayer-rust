@@ -16,6 +16,7 @@ mod login_to_dimension_with_same_name;
 mod mine_block_rollback;
 mod mine_block_timing_hand;
 mod mine_block_without_rollback;
+mod mining_finished;
 mod move_and_despawn_entity;
 mod move_despawned_entity;
 mod packet_order;

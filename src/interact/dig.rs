@@ -1,6 +1,6 @@
-//! Dig machinery: the `dig` promise and its generation bookkeeping. Split
-//! out of `interact` — the promise wait/settle/abort rules are
-//! self-contained.
+//! Dig machinery: the `dig` promise. A dig is an operation in the
+//! [`OpSlot`] of [`InteractShared`]: a newer dig or `stop_digging` cancels
+//! it, and the engine's [`MiningFinished`] for its mining start ends it.
 
 use std::time::{Duration, Instant};
 
@@ -19,18 +19,20 @@ use mineflayer_engine::{
     interact::pick::HitResultComponent,
     inventory::ItemStack,
     local_player::WorldHolder,
-    mining::{CancelMiningEvent, Mining, MiningQueued},
+    mining::{
+        CancelMiningEvent, Mining, MiningFinished, MiningId, MiningOutcome, MiningQueued,
+        StartMiningBlockEvent,
+    },
     physics::collision::BlockWithShape,
 };
-use tokio::sync::broadcast;
+use tokio::sync::oneshot;
 
 use super::ForceLook;
-use crate::{Bot, BotEvent, Error, Result, world::Block};
-
-/// Ticks allowed for a queued dig to reach `Mining` (~1s — the engine converts
-/// `MiningQueued`→`Mining` on the next `GameTick`; anything longer means the
-/// engine refused the dig).
-const DIG_START_GRACE_TICKS: u32 = 20;
+use crate::{
+    Bot, BotEvent, Error, Result,
+    op::{Op, OpSlot},
+    world::Block,
+};
 
 /// How long past `dig_time` to wait for the break to land client-side.
 /// Upstream waits on the block update forever; surfacing a bounded wait as
@@ -80,34 +82,45 @@ enum DigExit {
 ///
 /// upstream's `targetDigBlock`/`targetDigFace`/`lastDigTime` live in
 /// `digging.js` and settle in the same synchronous step as the dig's
-/// promise; the engine's `Mining`/`MiningQueued` components lag that by up to
-/// a tick (an instant-break dig resolves while `MiningQueued` is still
-/// queued), so the promise-visible target is owned here. `dig_seq`/
-/// `aborted_seq` drive `stop_digging`'s generation check.
+/// promise; the engine's `Mining`/`MiningQueued` components lag that by up
+/// to a tick, so the promise-visible target is owned here.
 #[derive(Component, Default)]
 pub(crate) struct InteractShared {
-    /// Bumped every time `dig` starts — the current dig generation.
-    dig_seq: u64,
-    /// `dig_seq` value at the last `stop_digging`; digs with `seq <=` this
-    /// have been aborted.
-    aborted_seq: u64,
-    /// `bot.targetDigBlock`/`targetDigFace` — the in-flight dig's target
-    /// and the face sent on the wire, tagged with its `dig_seq` so a
-    /// superseding dig's settle can't clear it.
-    dig_target: Option<(BlockPos, Direction, u64)>,
+    /// The running dig.
+    dig: OpSlot,
+    /// `bot.targetDigBlock`/`targetDigFace` — the running dig's target and
+    /// the face sent on the wire.
+    dig_target: Option<(BlockPos, Direction)>,
+    /// The running dig's mining start, and where its outcome goes.
+    dig_mining: Option<(MiningId, oneshot::Sender<MiningOutcome>)>,
     /// `bot.lastDigTime` — set when a dig finishes for any reason.
     last_dig_time: Option<Instant>,
 }
 
-impl InteractShared {
-    /// Mark the in-flight dig generation aborted — called for every
-    /// `stop_digging`, including the `start_mining`→`MiningQueued` window
-    /// where no mining component exists yet (upstream sets `targetDigBlock`
-    /// synchronously inside `dig()`, so a stop can never be swallowed).
-    fn abort_current(&mut self) {
-        if self.dig_seq > self.aborted_seq {
-            self.aborted_seq = self.dig_seq;
-            self.last_dig_time = Some(Instant::now());
+/// Gives each running dig the outcome of its own mining start.
+pub(crate) struct DigPlugin;
+
+impl mineflayer_engine::app::Plugin for DigPlugin {
+    fn build(&self, app: &mut mineflayer_engine::app::App) {
+        app.add_systems(mineflayer_engine::app::Update, settle_digs);
+    }
+}
+
+fn settle_digs(
+    mut finished: mineflayer_engine::ecs::message::MessageReader<MiningFinished>,
+    mut digs: mineflayer_engine::ecs::system::Query<&mut InteractShared>,
+) {
+    for finished in finished.read() {
+        let Ok(mut shared) = digs.get_mut(finished.entity) else {
+            continue;
+        };
+        if shared
+            .dig_mining
+            .as_ref()
+            .is_some_and(|(id, _)| *id == finished.id)
+            && let Some((_, waiter)) = shared.dig_mining.take()
+        {
+            let _ = waiter.send(finished.outcome);
         }
     }
 }
@@ -235,43 +248,40 @@ impl Bot {
             .filter(|b| b.block_pos == pos)
             .map(|b| b.direction)
             .unwrap_or(Direction::Down);
-        // bump the generation, publish the target, and enqueue the start
-        // under one lock: a `stop_digging` can then never land between the
-        // target becoming visible and the wire call existing (it either
-        // sees the whole start — and its cancel drops the queued message —
-        // or sees none of it)
-        let my_seq = {
+        // start the operation, publish the target, and enqueue the start
+        // under one lock: a `stop_digging` either sees the whole start (and
+        // its cancel drops the queued message) or none of it
+        let (op, mining) = {
             let mut ecs = self.client.ecs.write();
-            let seq = {
+            let (op, id, mining) = {
                 let Some(mut shared) = ecs.get_mut::<InteractShared>(self.client.entity) else {
                     return Err(Error::NotConnected);
                 };
-                shared.dig_seq += 1;
-                let seq = shared.dig_seq;
-                shared.dig_target = Some((pos, target_face, seq));
-                seq
+                let op = shared.dig.start(&self.root);
+                let id = MiningId::next();
+                let (waiter, mining) = oneshot::channel();
+                shared.dig_target = Some((pos, target_face));
+                shared.dig_mining = Some((id, waiter));
+                (op, id, mining)
             };
-            ecs.write_message(mineflayer_engine::mining::StartMiningBlockEvent {
+            ecs.write_message(StartMiningBlockEvent {
                 entity: self.client.entity,
                 position: pos,
                 force: true,
+                id,
             });
-            seq
+            (op, mining)
         };
 
         let outcome = self
             .dig_wait(
+                &op,
+                mining,
                 pos,
-                my_seq,
                 tokio::time::Instant::now() + wait + DIG_FINISH_GRACE,
             )
             .await;
-
-        // an aborted dig must not leave the engine mining
-        if matches!(outcome, DigExit::Aborted(_)) {
-            self.cancel_engine_dig(my_seq);
-        }
-        self.settle_dig(pos, my_seq);
+        self.settle_dig(&op, matches!(outcome, DigExit::Aborted(_)));
         match outcome {
             DigExit::Done => {
                 let new_block = self.block_at(pos).unwrap_or_else(|| block.clone());
@@ -296,27 +306,12 @@ impl Bot {
         }
     }
 
-    /// Cancel the engine's queued or live mining for generation `seq`,
-    /// unless a newer dig owns the engine state now. The check and the
-    /// cancel share one lock with `dig`'s start, so a newer start is
-    /// either seen here or written after the cancel, which leaves it alone.
-    fn cancel_engine_dig(&self, seq: u64) {
-        let mut ecs = self.client.ecs.write();
-        if ecs
-            .get::<InteractShared>(self.client.entity)
-            .is_some_and(|s| s.dig_seq == seq)
-        {
-            cancel_engine_mining(&mut ecs, self.client.entity);
-        }
-    }
-
-    /// Settle the promise-visible dig state when a `dig` future exits:
-    /// clear the port-owned `targetDigBlock` (only while it is still this
-    /// dig's — a superseding `dig` owns it otherwise), stamp
-    /// `lastDigTime` (upstream's resolve-or-abort stamp), and drop a
-    /// queued-but-never-started mine for this block so the engine cannot begin
-    /// mining the (now broken) cell on the next tick.
-    fn settle_dig(&self, pos: BlockPos, my_seq: u64) {
+    /// Settle the promise-visible dig state when `op` ends: stamp
+    /// `lastDigTime` (upstream's resolve-or-abort stamp), and, while `op`
+    /// is still the running dig, clear `targetDigBlock` and stop the
+    /// engine mining of an aborted dig. A newer dig or `stop_digging`
+    /// owns that state otherwise.
+    fn settle_dig(&self, op: &Op, aborted: bool) {
         let entity = self.client.entity;
         let mut ecs = self.client.ecs.write();
         let owned = {
@@ -324,100 +319,39 @@ impl Bot {
                 return;
             };
             shared.last_dig_time = Some(Instant::now());
-            let owned = shared.dig_target.is_some_and(|(_, _, seq)| seq == my_seq);
+            let owned = shared.dig.finish(op);
             if owned {
                 shared.dig_target = None;
+                shared.dig_mining = None;
             }
             owned
         };
-        if owned
-            && ecs.get::<Mining>(entity).is_none()
-            && ecs.get::<MiningQueued>(entity).map(|q| q.position) == Some(pos)
-        {
+        if owned && aborted {
             cancel_engine_mining(&mut ecs, entity);
         }
     }
 
-    /// The dig wait after `start_mining` is on the wire: poll each tick
-    /// until the block turns air, the dig aborts, the deadline hits, or
-    /// the connection ends. Split from `dig_opts` so tests can drive it —
-    /// the `HitResultComponent` it gates on can't be constructed outside
-    /// The engine.
-    ///
-    /// The `shutdown` and `sleep_until` arms carry the exits ticks can't:
-    /// `TickBroadcast`'s sender lives in the ECS `World` kept alive by
-    /// `self.client`, so `recv` never sees `Closed` on disconnect, and a
-    /// stalled tick stream would park the deadline check forever — the
-    /// deadline must resolve without a tick arriving.
+    /// The dig wait after the start is queued: until the engine ends the
+    /// mining start, the operation is cancelled, the deadline passes, or
+    /// the connection ends. A mining that ends without a break still
+    /// counts when the block is air (someone else broke it).
     async fn dig_wait(
         &self,
+        op: &Op,
+        mining: oneshot::Receiver<MiningOutcome>,
         pos: BlockPos,
-        my_seq: u64,
         deadline: tokio::time::Instant,
     ) -> DigExit {
-        let mut ticks = self.client.get_tick_broadcaster();
-        let root = self.root.clone();
-        let mut started = false;
-        let mut start_grace = DIG_START_GRACE_TICKS;
-        // once `Mining` disappears the finish (or an engine abort) has been
-        // sent; the air update still needs ~1 RTT — give it a short grace
-        // before declaring the dig interrupted
-        let mut finish_grace = DIG_START_GRACE_TICKS;
-        loop {
-            let (target, aborted) = {
-                let ecs = self.client.ecs.read();
-                let entity = self.client.entity;
-                let target = ecs
-                    .get::<Mining>(entity)
-                    .map(|m| (m.pos, m.dir))
-                    .or_else(|| {
-                        ecs.get::<MiningQueued>(entity)
-                            .map(|q| (q.position, q.direction))
-                    });
-                let aborted = ecs
-                    .get::<InteractShared>(entity)
-                    .is_some_and(|s| s.aborted_seq >= my_seq);
-                (target, aborted)
-            };
-            if aborted {
-                break DigExit::Aborted(DigAbortReason::Stopped);
-            }
-            match target {
-                Some((p, _)) if p != pos => break DigExit::Aborted(DigAbortReason::Stopped),
-                Some(_) => started = true,
-                None => {
-                    if started {
-                        finish_grace = finish_grace.saturating_sub(1);
-                        if finish_grace == 0 {
-                            break DigExit::Aborted(DigAbortReason::Interrupted);
-                        }
-                    } else {
-                        start_grace = start_grace.saturating_sub(1);
-                        if start_grace == 0 {
-                            break DigExit::Aborted(DigAbortReason::Interrupted);
-                        }
-                    }
-                }
-            }
-            if self.block_is_air(pos) {
-                break DigExit::Done;
-            }
-            tokio::select! {
-                r = ticks.recv() => {
-                    match r {
-                        // capacity-1 broadcast — a scheduling stall loses
-                        // ticks, not the dig; only a dead channel interrupts
-                        Ok(()) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(broadcast::error::RecvError::Closed) => {
-                            break DigExit::Aborted(DigAbortReason::Interrupted);
-                        }
-                    }
-                }
-                _ = root.cancelled() => break DigExit::Disconnected,
-                _ = tokio::time::sleep_until(deadline) => {
-                    break DigExit::Aborted(DigAbortReason::Timeout);
-                }
-            }
+        tokio::select! {
+            biased;
+            _ = self.root.cancelled() => DigExit::Disconnected,
+            _ = op.cancelled() => DigExit::Aborted(DigAbortReason::Stopped),
+            outcome = mining => match outcome {
+                Ok(MiningOutcome::Broken) => DigExit::Done,
+                _ if self.block_is_air(pos) => DigExit::Done,
+                _ => DigExit::Aborted(DigAbortReason::Interrupted),
+            },
+            _ = tokio::time::sleep_until(deadline) => DigExit::Aborted(DigAbortReason::Timeout),
         }
     }
 
@@ -427,8 +361,8 @@ impl Bot {
     /// A stop with no dig in flight is a no-op (upstream
     /// `if (!targetDigBlock) return`); the target is set before the wire
     /// call, so a stop landing in the `start_mining`→`MiningQueued` window
-    /// still aborts the pending `dig`. Otherwise it stamps the abort
-    /// generation, clears the port-owned target, and sends the engine's
+    /// still aborts the pending `dig`. Otherwise it cancels the dig,
+    /// clears the port-owned target, and sends the engine's
     /// `CancelMiningEvent` (drops a queued start, aborts live mining with
     /// an `AbortDestroyBlock` packet).
     pub fn stop_digging(&self) {
@@ -446,8 +380,11 @@ impl Bot {
             if shared.dig_target.is_none() && !engine_busy {
                 return;
             }
-            shared.abort_current();
-            shared.dig_target = None;
+            if shared.dig_target.take().is_some() {
+                shared.last_dig_time = Some(Instant::now());
+            }
+            shared.dig.cancel();
+            shared.dig_mining = None;
         }
         cancel_engine_mining(&mut ecs, entity);
     }
@@ -495,7 +432,7 @@ impl Bot {
     /// any. Set when `dig` starts and cleared in the same step the dig's
     /// future settles, like upstream's `digging.js`.
     pub fn target_dig_block(&self) -> Option<Block> {
-        let (pos, _, _) = self.port_dig_target()?;
+        let (pos, _) = self.port_dig_target()?;
         self.block_at(pos)
     }
 
@@ -513,7 +450,7 @@ impl Bot {
     }
 
     /// The port-owned dig target — see [`InteractShared::dig_target`].
-    fn port_dig_target(&self) -> Option<(BlockPos, Direction, u64)> {
+    fn port_dig_target(&self) -> Option<(BlockPos, Direction)> {
         let ecs = self.client.ecs.read();
         ecs.get::<InteractShared>(self.client.entity)?.dig_target
     }
@@ -607,7 +544,6 @@ mod tests {
         bot.stop_digging();
         let ecs = bot.client().ecs.read();
         let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
-        assert_eq!(shared.aborted_seq, 0);
         assert!(shared.last_dig_time.is_none());
     }
 
@@ -629,6 +565,7 @@ mod tests {
                 position: BlockPos::new(1, 64, 2),
                 direction: Direction::Down,
                 force: true,
+                id: MiningId::next(),
             },
         ));
         let cancels = Arc::new(AtomicUsize::new(0));
@@ -644,22 +581,29 @@ mod tests {
         assert_eq!(cancels.load(Ordering::SeqCst), 1);
     }
 
-    /// The in-flight dig's target is owned by the port; `stopDigging`
-    /// clears it and stamps the abort generation in the same step
-    /// (upstream clears `targetDigBlock` as it emits `diggingAborted`).
+    /// `stopDigging` cancels the running dig, clears the port-owned target,
+    /// and stamps `lastDigTime` in the same step (upstream clears
+    /// `targetDigBlock` as it emits `diggingAborted`).
     #[tokio::test]
-    async fn stop_digging_clears_the_port_owned_target() {
+    async fn stop_digging_cancels_the_dig_and_clears_its_target() {
         let client = crate::test_util::live_entity_client(InteractShared {
-            dig_seq: 2,
-            dig_target: Some((BlockPos::new(1, 64, 2), Direction::Up, 2)),
+            dig_target: Some((BlockPos::new(1, 64, 2), Direction::Up)),
             ..InteractShared::default()
         });
         let bot = crate::test_util::bot(client);
+        let op = bot
+            .client()
+            .ecs
+            .write()
+            .get_mut::<InteractShared>(bot.client().entity)
+            .unwrap()
+            .dig
+            .start(&bot.root);
         bot.stop_digging();
+        assert!(op.is_cancelled());
         let ecs = bot.client().ecs.read();
         let shared = ecs.get::<InteractShared>(bot.client().entity).unwrap();
         assert!(shared.dig_target.is_none());
-        assert_eq!(shared.aborted_seq, 2);
         assert!(shared.last_dig_time.is_some());
     }
 
@@ -667,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn target_dig_face_reads_the_stored_face() {
         let client = crate::test_util::live_entity_client(InteractShared {
-            dig_target: Some((BlockPos::new(0, 64, 0), Direction::East, 1)),
+            dig_target: Some((BlockPos::new(0, 64, 0), Direction::East)),
             ..InteractShared::default()
         });
         let bot = crate::test_util::bot(client);
@@ -697,73 +641,101 @@ mod tests {
         assert!(!within_dig_reach(below_eye(5.2), feet));
     }
 
-    #[test]
-    fn abort_stamps_generation_without_mining_components() {
-        // the start_mining→MiningQueued window: dig_seq is bumped but no
-        // mining component exists yet — an abort must still land so the
-        // pending `dig` sees it
-        let mut shared = InteractShared {
-            dig_seq: 3,
-            ..Default::default()
-        };
-        shared.abort_current();
-        assert_eq!(shared.aborted_seq, 3);
-        assert!(shared.last_dig_time.is_some());
-        // no un-aborted generation → idempotent no-op
-        let stamped = shared.last_dig_time;
-        shared.abort_current();
-        assert_eq!(shared.aborted_seq, 3);
-        assert_eq!(shared.last_dig_time, stamped);
-    }
-
-    /// The dig wait must not park on disconnect: `TickBroadcast`'s sender
-    /// is kept alive by `self.client`, so `Closed` never arrives — the
-    /// bridge's shutdown drop is the only exit, the same shape the pvp
-    /// driver uses.
-    #[tokio::test]
-    async fn dig_wait_exits_on_shutdown() {
-        let client = crate::test_util::tick_client(());
-        let (bot, shutdown_tx) = crate::test_util::bot_with_shutdown(client);
-        let pos = BlockPos::new(1, 64, 1);
-        // parked mid-wait: no ticks arrive, no mining components — the
-        // state the dig loop sits in after `start_mining`
-        let wait = tokio::spawn({
-            let bot = bot.clone();
-            async move {
-                bot.dig_wait(
-                    pos,
-                    1,
-                    tokio::time::Instant::now() + Duration::from_secs(60),
-                )
-                .await
-            }
-        });
-        tokio::task::yield_now().await;
-        drop(shutdown_tx);
-        let exit = tokio::time::timeout(Duration::from_secs(5), wait)
-            .await
-            .expect("dig_wait outlived the connection")
-            .unwrap();
-        assert!(matches!(exit, DigExit::Disconnected));
-    }
-
-    /// A stalled tick stream can't stall the deadline: `sleep_until`
-    /// resolves without a tick arriving.
-    #[tokio::test]
-    async fn dig_wait_deadline_fires_without_ticks() {
-        let client = crate::test_util::tick_client(());
-        let (bot, _shutdown_tx) = crate::test_util::bot_with_shutdown(client);
-        let pos = BlockPos::new(1, 64, 1);
-        let exit = tokio::time::timeout(
+    /// Run `dig_wait` for a fresh operation, with `outcome` (if any) as
+    /// the engine's answer.
+    async fn wait_with(
+        bot: &Bot,
+        outcome: Option<MiningOutcome>,
+        deadline: Duration,
+        before: impl FnOnce(&Op),
+    ) -> DigExit {
+        let mut slot = OpSlot::default();
+        let op = slot.start(&bot.root);
+        let (waiter, mining) = oneshot::channel();
+        if let Some(outcome) = outcome {
+            waiter.send(outcome).unwrap();
+        } else {
+            std::mem::forget(waiter);
+        }
+        before(&op);
+        let deadline = tokio::time::Instant::now() + deadline;
+        tokio::time::timeout(
             Duration::from_secs(5),
-            bot.dig_wait(
-                pos,
-                1,
-                tokio::time::Instant::now() + Duration::from_millis(50),
-            ),
+            bot.dig_wait(&op, mining, BlockPos::new(1, 64, 1), deadline),
         )
         .await
-        .expect("deadline never fired");
-        assert!(matches!(exit, DigExit::Aborted(DigAbortReason::Timeout)));
+        .expect("dig_wait hung")
+    }
+
+    #[tokio::test]
+    async fn dig_wait_maps_each_exit() {
+        let (bot, shutdown) =
+            crate::test_util::bot_with_shutdown(crate::test_util::tick_client(()));
+        let long = Duration::from_secs(60);
+        assert!(matches!(
+            wait_with(&bot, Some(MiningOutcome::Broken), long, |_| {}).await,
+            DigExit::Done
+        ));
+        // the block is not air (there is no world): not a break
+        assert!(matches!(
+            wait_with(&bot, Some(MiningOutcome::Cancelled), long, |_| {}).await,
+            DigExit::Aborted(DigAbortReason::Interrupted)
+        ));
+        assert!(matches!(
+            wait_with(&bot, None, long, |op| op.token.cancel()).await,
+            DigExit::Aborted(DigAbortReason::Stopped)
+        ));
+        assert!(matches!(
+            wait_with(&bot, None, Duration::from_millis(20), |_| {}).await,
+            DigExit::Aborted(DigAbortReason::Timeout)
+        ));
+        drop(shutdown);
+        assert!(matches!(
+            wait_with(&bot, None, long, |_| {}).await,
+            DigExit::Disconnected
+        ));
+    }
+
+    /// A dig through the real engine resolves on its own mining's
+    /// `MiningFinished` and leaves no target behind.
+    #[test]
+    fn a_dig_in_the_engine_resolves_when_the_block_breaks() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+
+        use mineflayer_engine::{
+            block::BlockState, protocol::packets::game::ClientboundBlockUpdate,
+            registry::builtin::BlockKind,
+        };
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let _rt = rt.enter();
+        let mut sim = crate::test_util::sim::BotSim::new();
+        let pos = sim.bot.position().to_block_pos_floor().down(1);
+        sim.receive(ClientboundBlockUpdate {
+            pos,
+            block_state: BlockState::from(BlockKind::Dirt),
+        });
+        sim.tick();
+        let block = sim.bot.block_at(pos).unwrap();
+        let bot = sim.bot.clone();
+        let mut dig = std::pin::pin!(bot.dig_opts(&block, ForceLook::Ignore, DigFace::Auto));
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut result = None;
+        for _ in 0..400 {
+            if let Poll::Ready(r) = dig.as_mut().poll(&mut cx) {
+                result = Some(r);
+                break;
+            }
+            sim.tick();
+        }
+        assert!(matches!(result, Some(Ok(()))), "{result:?}");
+        assert!(sim.bot.target_dig_block().is_none());
+        assert!(sim.bot.last_dig_time().is_some());
     }
 }

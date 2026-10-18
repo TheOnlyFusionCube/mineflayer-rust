@@ -61,7 +61,8 @@ impl PluginGroup for BotPlugins {
             .add_group(ClientPlugins)
             .add(crate::world::WorldPlugin)
             .add(crate::windows::WindowPlugin)
-            .add(crate::entity::EntityStatePlugin);
+            .add(crate::entity::EntityStatePlugin)
+            .add(crate::interact::DigPlugin);
         if !self.respawn {
             group = group.disable::<AutoRespawnPlugin>();
         }

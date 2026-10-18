@@ -185,6 +185,7 @@ impl ExecuteCtx<'_, '_, '_, '_, '_, '_, '_, '_> {
             entity: self.entity,
             position: block,
             force: true,
+            id: mineflayer_client::mining::MiningId::next(),
         });
 
         true

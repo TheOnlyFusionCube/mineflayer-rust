@@ -11,6 +11,7 @@ impl Client {
             entity: self.entity,
             position,
             force: true,
+            id: mineflayer_client::mining::MiningId::next(),
         });
     }
 

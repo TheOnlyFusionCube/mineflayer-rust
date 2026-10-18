@@ -154,6 +154,14 @@ merge; plan item E2 keeps this list current):
     that used the last of the time, so the port's `path_update` with
     status `timeout` has upstream's `results.path`. Test:
     `a_goto_over_its_total_time_times_out_once_and_keeps_its_goal`.
+29. (OP5) Mining identifiers. `mining::MiningId` is on
+    `StartMiningBlockEvent`, `MiningQueued`, `Mining`, and
+    `FinishMiningBlockEvent`. Each start ends in one
+    `MiningFinished { entity, id, outcome }` message: `Broken` when the
+    client predicts the break, `Cancelled` for a stop, a cancel, or a
+    newer start, and `Interrupted` for the other exits (a restricted
+    interaction, a lost look, a block that was already gone). Tests:
+    `mineflayer-client/tests/simulation/mining_finished.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
