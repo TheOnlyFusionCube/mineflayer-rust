@@ -15,7 +15,7 @@ use mineflayer_engine::{
     ecs::component::{Component, Mutable},
     world::WorldName,
 };
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use tokio::sync::{broadcast, watch};
 
 use crate::{Error, Result};
@@ -72,10 +72,12 @@ pub struct Bot {
 /// 2. **ECS component, created on first use** for the plugin-analog state
 ///    (`tool`, `pvp`, `collect`, `auto_eat`): a plugin that is never used
 ///    allocates nothing, and the state goes away with the entity.
-/// 3. **Here** for everything else: state that the bridge writes from
-///    packets and `Bot` handles read, with no engine component involved
-///    (chat, world, entities, windows, typed windows, recipes,
-///    scoreboard). A domain lock here never needs the ECS lock to read.
+/// 3. **ECS component on another entity** for state about that entity
+///    (`entity::tracker`'s equipment, attributes, and vehicle links): it
+///    goes away when the entity despawns.
+/// 4. **Here** only for what is not about the game: the event sender, the
+///    quit and end reasons, and the window tracker, which holds the open
+///    `Window` handles.
 #[derive(Clone)]
 pub(crate) struct BotShared {
     /// The bot's event stream (see [`Bot::events`]).
@@ -88,9 +90,6 @@ pub(crate) struct BotShared {
     /// `endReason` (`_client.once('end', ...)`), read by `chat`/`whisper`
     /// to distinguish "never entered play" from "disconnected pre-play".
     pub end_reason: Arc<Mutex<Option<String>>>,
-    /// Entity-domain state the ECS doesn't keep (equipment, raw attributes,
-    /// vehicle links) — see `entity::EntityTracker`.
-    pub entities: Arc<RwLock<crate::entity::EntityTracker>>,
     /// Inventory/window-domain state (current window, slot snapshots,
     /// eat/use bookkeeping) — see `windows::WindowTracker`.
     pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
@@ -147,8 +146,18 @@ pub(crate) fn with_component_mut<T: Component<Mutability = Mutable> + Default, R
     client: &mineflayer_engine::Client,
     f: impl FnOnce(&mut T) -> R,
 ) -> Option<R> {
+    with_entity_component_mut(client, client.entity, f)
+}
+
+/// [`with_component_mut`] for any entity, such as the per-entity state of
+/// the entity domain. The component goes away when the entity despawns.
+pub(crate) fn with_entity_component_mut<T: Component<Mutability = Mutable> + Default, R>(
+    client: &mineflayer_engine::Client,
+    entity: mineflayer_engine::ecs::entity::Entity,
+    f: impl FnOnce(&mut T) -> R,
+) -> Option<R> {
     let mut ecs = client.ecs.write();
-    let mut entity = ecs.get_entity_mut(client.entity).ok()?;
+    let mut entity = ecs.get_entity_mut(entity).ok()?;
     let mut component = entity.entry::<T>().or_default().into_mut();
     Some(f(&mut component))
 }
@@ -171,7 +180,6 @@ impl BotShared {
         Self {
             quit_reason: Arc::new(Mutex::new(None)),
             end_reason: Arc::new(Mutex::new(None)),
-            entities: Arc::new(RwLock::new(crate::entity::EntityTracker::default())),
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
                 events.clone(),
             ))),

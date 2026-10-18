@@ -1,8 +1,103 @@
-use std::sync::Arc;
+//! The entity packets through the real engine and the real bridge.
 
-use mineflayer_engine::protocol::packets::game::c_animate::ClientboundAnimate;
+use mineflayer_engine::{
+    BlockPos,
+    entity::EntityMetadataItems,
+    protocol::packets::{
+        Packet,
+        game::{
+            ClientboundAddEntity, ClientboundRemoveEntities, ClientboundRemoveMobEffect,
+            ClientboundSetEntityData, ClientboundSetEquipment, ClientboundSetPassengers,
+            ClientboundTakeItemEntity, ClientboundUpdateMobEffect,
+            c_player_info_remove::ClientboundPlayerInfoRemove,
+            c_player_info_update::{ActionEnumSet, ClientboundPlayerInfoUpdate, PlayerInfoEntry},
+            c_set_equipment::EquipmentSlots,
+            s_chat_session_update::{ProfilePublicKeyData, RemoteChatSessionData},
+        },
+    },
+    test_utils::simulation::make_basic_add_entity,
+};
 
 use super::*;
+use crate::test_util::sim::{BotSim, names};
+
+/// The bot's own entity id in `default_login_packet`.
+const ME: MinecraftEntityId = MinecraftEntityId(0);
+
+fn sim() -> BotSim {
+    let mut sim = BotSim::new();
+    sim.events();
+    sim
+}
+
+/// The entity events of one pass that reads `packets`.
+fn step(sim: &mut BotSim, packets: Vec<ClientboundGamePacket>) -> Vec<BotEvent> {
+    for packet in packets {
+        sim.receive(packet);
+    }
+    sim.tick();
+    sim.events()
+        .into_iter()
+        .filter(|e| {
+            names(std::slice::from_ref(e))[0].starts_with("Entity")
+                || matches!(
+                    e,
+                    BotEvent::Mounted { .. }
+                        | BotEvent::Dismounted { .. }
+                        | BotEvent::PlayerCollect { .. }
+                        | BotEvent::ItemDrop(_)
+                )
+        })
+        .collect()
+}
+
+fn add(kind: EntityKind, id: i32) -> ClientboundGamePacket {
+    ClientboundAddEntity {
+        uuid: uuid::Uuid::from_u128(1000 + id as u128),
+        ..make_basic_add_entity(kind, id, (0.5, 64., 0.5))
+    }
+    .into_variant()
+}
+
+fn remove(id: i32) -> ClientboundGamePacket {
+    ClientboundRemoveEntities {
+        entity_ids: vec![MinecraftEntityId(id)],
+    }
+    .into_variant()
+}
+
+fn metadata(id: i32, items: Vec<EntityDataItem>) -> ClientboundGamePacket {
+    ClientboundSetEntityData {
+        id: MinecraftEntityId(id),
+        packed_items: EntityMetadataItems(items),
+    }
+    .into_variant()
+}
+
+fn flags(b: u8) -> EntityDataItem {
+    EntityDataItem {
+        index: 0,
+        value: EntityDataValue::Byte(b),
+    }
+}
+
+fn air() -> EntityDataItem {
+    EntityDataItem {
+        index: 1,
+        value: EntityDataValue::Int(300),
+    }
+}
+
+fn spawned(kind: EntityKind, id: i32) -> BotSim {
+    let mut sim = sim();
+    step(&mut sim, vec![add(kind, id)]);
+    sim
+}
+
+#[track_caller]
+fn assert_names(events: &[BotEvent], want: &[&str]) {
+    assert_eq!(names(events), want, "{events:?}");
+}
 
 #[test]
 fn entity_status_table_matches_upstream() {
@@ -20,169 +115,58 @@ fn entity_status_table_matches_upstream() {
 }
 
 #[test]
-fn forget_cleans_vehicle_and_passenger_maps() {
-    let id = |i: i32| MinecraftEntityId(i);
-    // mount: self appears in a vehicle's passenger list
-    let mut tracker = EntityTracker::default();
-    assert!(tracker.passengers_of.is_empty());
-    // can't call set_passengers (needs a Client); exercise the diff logic
-    // through the maps directly
-    tracker.passengers_of.insert(id(1), vec![id(5)]);
-    tracker.vehicle_of.insert(id(5), id(1));
-    assert_eq!(tracker.vehicle_of.get(&id(5)), Some(&id(1)));
-    // removal cleans the maps
-    tracker.forget(Some(id(5)), id(1));
-    assert!(!tracker.vehicle_of.contains_key(&id(5)));
-    // removing a passenger cleans its vehicle link
-    tracker.passengers_of.insert(id(2), vec![id(6)]);
-    tracker.vehicle_of.insert(id(6), id(2));
-    tracker.forget(None, id(6));
-    assert!(tracker.passengers_of.get(&id(2)).unwrap().is_empty());
-}
-
-/// A dimension change keeps only the bot's own entries.
-#[test]
-fn respawn_forgets_other_dimension_entities() {
-    use mineflayer_engine::{
-        core::game_type::{GameMode, OptionalGameType},
-        protocol::packets::{common::CommonPlayerSpawnInfo, game::c_respawn::ClientboundRespawn},
-        registry::{DataRegistry as _, data::DimensionKind},
-    };
-    let me = MinecraftEntityId(7);
-    let other = MinecraftEntityId(8);
-    let client = crate::test_util::live_entity_client(me);
-    let mut tracker = EntityTracker::default();
-    for id in [me, other] {
-        tracker.equipment.insert(id, HashMap::new());
-        tracker.attributes.insert(id, HashMap::new());
-        tracker.effects.insert(id, HashMap::new());
-        tracker.meta.insert(id, EntityMeta::default());
-    }
-    tracker.vehicle_of.insert(other, me);
-    tracker.passengers_of.insert(me, vec![other]);
-    tracker.seen_fireworks.insert(other);
-    tracker.difficulty = Some(Difficulty::Hard);
-
-    let respawn = ClientboundGamePacket::Respawn(ClientboundRespawn {
-        common: CommonPlayerSpawnInfo {
-            dimension_type: DimensionKind::new_raw(0),
-            dimension: mineflayer_engine::Identifier::new("minecraft:the_nether"),
-            seed: 0,
-            game_type: GameMode::Survival,
-            previous_game_type: OptionalGameType(None),
-            is_debug: false,
-            is_flat: false,
-            last_death_location: None,
-            portal_cooldown: 0,
-            sea_level: 32,
-        },
-        data_to_keep: 0,
-    });
-    assert!(tracker.handle_packet(&client, &respawn).is_empty());
-
-    for map_len in [
-        tracker.equipment.len(),
-        tracker.attributes.len(),
-        tracker.effects.len(),
-        tracker.meta.len(),
-    ] {
-        assert_eq!(map_len, 1, "only the bot's own entry stays");
-    }
-    assert!(tracker.equipment.contains_key(&me));
-    assert!(tracker.vehicle_of.is_empty() && tracker.passengers_of.is_empty());
-    assert!(tracker.seen_fireworks.is_empty());
-    assert_eq!(tracker.difficulty, Some(Difficulty::Hard));
-}
-
-#[test]
 fn packet_after_self_despawn_emits_nothing() {
     let client = crate::test_util::despawned_client();
-    let tracker = RwLock::new(EntityTracker::default());
     // teardown packets race the despawn of our own entity; the id
     // lookup must miss quietly instead of panicking.
-    let packet = ClientboundGamePacket::Animate(ClientboundAnimate {
-        id: MinecraftEntityId(1),
-        action: AnimationAction::SwingMainHand,
-    });
-    assert!(observe_event(&tracker, &client, &Event::Packet(Arc::new(packet))).is_empty());
+    let packet = ClientboundGamePacket::Animate(
+        mineflayer_engine::protocol::packets::game::ClientboundAnimate {
+            id: MinecraftEntityId(1),
+            action: AnimationAction::SwingMainHand,
+        },
+    );
+    assert!(observe_event(&client, &Event::Packet(std::sync::Arc::new(packet))).is_empty());
 }
 
 #[test]
 fn crouch_and_sleep_require_the_metadata_item() {
-    use mineflayer_engine::{
-        BlockPos,
-        entity::{EntityMetadataItems, metadata::AbstractEntityShiftKeyDown},
-        protocol::packets::game::c_set_entity_data::ClientboundSetEntityData,
-    };
-
-    fn packet(items: Vec<EntityDataItem>) -> ClientboundGamePacket {
-        ClientboundGamePacket::SetEntityData(ClientboundSetEntityData {
-            id: MinecraftEntityId(7),
-            packed_items: EntityMetadataItems(items),
-        })
-    }
-    let flags = |b: u8| EntityDataItem {
-        index: 0,
-        value: EntityDataValue::Byte(b),
-    };
-    let air = EntityDataItem {
-        index: 1,
-        value: EntityDataValue::Int(300),
-    };
-
-    let client = crate::test_util::live_entity_client(());
-    // the entity IS crouched component-side — the regression this test
-    // pins is that packets without shared_flags still emit nothing
-    let e = client
-        .ecs
-        .write()
-        .spawn((MinecraftEntityId(7), AbstractEntityShiftKeyDown(true)))
-        .id();
-    let mut tracker = EntityTracker::default();
-    tracker.known.insert(MinecraftEntityId(7), e);
-
-    // unrelated metadata while crouched: EntityUpdate only, no Crouch
-    let out = tracker.handle_packet(&client, &packet(vec![air.clone()]));
-    assert!(
-        matches!(&out[..], [BotEvent::EntityUpdate(_)]),
-        "expected EntityUpdate only, got {out:?}"
-    );
-    // shared_flags 0x02: crouch fires, and refires per flag packet
-    // (upstream emits unconditionally while the bit is set)
+    let mut sim = spawned(EntityKind::Zombie, 7);
+    // shared_flags 0x02: crouch fires, and fires again per flag packet
+    // (upstream emits while the bit is set)
     for _ in 0..2 {
-        let out = tracker.handle_packet(&client, &packet(vec![flags(0x02)]));
-        assert!(
-            matches!(
-                &out[..],
-                [BotEvent::EntityUpdate(_), BotEvent::EntityCrouch(_)]
-            ),
-            "expected Update+Crouch, got {out:?}"
-        );
+        let out = step(&mut sim, vec![metadata(7, vec![flags(0x02)])]);
+        assert_names(&out, &["EntityUpdate", "EntityCrouch"]);
     }
-    // still crouched component-side, but this packet carries no flags:
-    // nothing crouch-related may emit
-    let out = tracker.handle_packet(&client, &packet(vec![air]));
-    assert!(
-        matches!(&out[..], [BotEvent::EntityUpdate(_)]),
-        "expected EntityUpdate only, got {out:?}"
-    );
+    // still crouched, but this packet carries no flags: nothing
+    // crouch-related goes out
+    let out = step(&mut sim, vec![metadata(7, vec![air()])]);
+    assert_names(&out, &["EntityUpdate"]);
     // flags with the bit clear: the release edge fires once
-    let out = tracker.handle_packet(&client, &packet(vec![flags(0x00)]));
-    assert!(
-        matches!(
-            &out[..],
-            [BotEvent::EntityUpdate(_), BotEvent::EntityUncrouch(_)]
-        ),
-        "expected Update+Uncrouch, got {out:?}"
+    let out = step(&mut sim, vec![metadata(7, vec![flags(0x00)])]);
+    assert_names(&out, &["EntityUpdate", "EntityUncrouch"]);
+    let out = step(&mut sim, vec![metadata(7, vec![flags(0x00)])]);
+    assert_names(&out, &["EntityUpdate"]);
+
+    // two flag packets in one pass give both edges, in order
+    let out = step(
+        &mut sim,
+        vec![
+            metadata(7, vec![flags(0x02)]),
+            metadata(7, vec![flags(0x00)]),
+        ],
     );
-    let out = tracker.handle_packet(&client, &packet(vec![flags(0x00)]));
-    assert!(
-        matches!(&out[..], [BotEvent::EntityUpdate(_)]),
-        "expected EntityUpdate only, got {out:?}"
+    assert_names(
+        &out,
+        &[
+            "EntityUpdate",
+            "EntityCrouch",
+            "EntityUpdate",
+            "EntityUncrouch",
+        ],
     );
 
-    // sleep fires per packet carrying pose=Sleeping or a Some
-    // sleeping_pos — never on unrelated metadata
+    // sleep fires per packet that carries pose=Sleeping or a Some
+    // sleeping_pos, never on other metadata
     let sleeping_pose = EntityDataItem {
         index: 6,
         value: EntityDataValue::Pose(Pose::Sleeping),
@@ -195,163 +179,229 @@ fn crouch_and_sleep_require_the_metadata_item() {
         index: 14,
         value: EntityDataValue::OptionalBlockPos(None),
     };
-    let out = tracker.handle_packet(&client, &packet(vec![sleeping_pose]));
-    assert!(
-        matches!(
-            &out[..],
-            [BotEvent::EntityUpdate(_), BotEvent::EntitySleep(_)]
-        ),
-        "expected Update+Sleep, got {out:?}"
-    );
-    let out = tracker.handle_packet(&client, &packet(vec![bed_pos]));
-    assert!(
-        matches!(
-            &out[..],
-            [BotEvent::EntityUpdate(_), BotEvent::EntitySleep(_)]
-        ),
-        "expected Update+Sleep, got {out:?}"
-    );
-    // an absent sleeping_pos (waking) carries no sleep signal
-    let out = tracker.handle_packet(&client, &packet(vec![no_bed]));
-    assert!(
-        matches!(&out[..], [BotEvent::EntityUpdate(_)]),
-        "expected EntityUpdate only, got {out:?}"
-    );
+    let out = step(&mut sim, vec![metadata(7, vec![sleeping_pose])]);
+    assert_names(&out, &["EntityUpdate", "EntitySleep"]);
+    let out = step(&mut sim, vec![metadata(7, vec![bed_pos])]);
+    assert_names(&out, &["EntityUpdate", "EntitySleep"]);
+    let out = step(&mut sim, vec![metadata(7, vec![no_bed])]);
+    assert_names(&out, &["EntityUpdate"]);
 }
 
 #[test]
 fn elytra_flew_is_flag_packet_gated_and_edged() {
-    use mineflayer_engine::{
-        entity::EntityMetadataItems,
-        protocol::packets::game::c_set_entity_data::ClientboundSetEntityData,
-    };
+    let mut sim = spawned(EntityKind::Zombie, 7);
+    let out = step(&mut sim, vec![metadata(7, vec![flags(0x80)])]);
+    assert_names(&out, &["EntityUpdate", "EntityElytraFlew"]);
+    let out = step(&mut sim, vec![metadata(7, vec![flags(0x80)])]);
+    assert_names(&out, &["EntityUpdate"]);
+    // the bit clears, then sets again: a new edge fires again
+    step(&mut sim, vec![metadata(7, vec![flags(0x00)])]);
+    let out = step(&mut sim, vec![metadata(7, vec![flags(0x80)])]);
+    assert_names(&out, &["EntityUpdate", "EntityElytraFlew"]);
+}
 
-    fn packet(items: Vec<EntityDataItem>) -> ClientboundGamePacket {
-        ClientboundGamePacket::SetEntityData(ClientboundSetEntityData {
-            id: MinecraftEntityId(7),
-            packed_items: EntityMetadataItems(items),
-        })
-    }
-    let flags = |b: u8| EntityDataItem {
-        index: 0,
-        value: EntityDataValue::Byte(b),
-    };
-
-    let client = crate::test_util::live_entity_client(());
-    let e = client.ecs.write().spawn(MinecraftEntityId(7)).id();
-    let mut tracker = EntityTracker::default();
-    tracker.known.insert(MinecraftEntityId(7), e);
-
-    // fall-flying bit: fires on the false->true edge only
-    let out = tracker.handle_packet(&client, &packet(vec![flags(0x80)]));
-    assert!(
-        matches!(
-            &out[..],
-            [BotEvent::EntityUpdate(_), BotEvent::EntityElytraFlew(_)]
-        ),
-        "expected Update+ElytraFlew, got {out:?}"
+/// An item stack anywhere in the metadata gives `itemDrop`.
+#[test]
+fn item_metadata_gives_item_drop() {
+    let mut sim = spawned(EntityKind::Item, 9);
+    let out = step(
+        &mut sim,
+        vec![metadata(
+            9,
+            vec![EntityDataItem {
+                index: 8,
+                value: EntityDataValue::ItemStack(ItemStack::new(
+                    mineflayer_engine::registry::builtin::ItemKind::Stone,
+                    1,
+                )),
+            }],
+        )],
     );
-    let out = tracker.handle_packet(&client, &packet(vec![flags(0x80)]));
-    assert!(
-        matches!(&out[..], [BotEvent::EntityUpdate(_)]),
-        "expected EntityUpdate only, got {out:?}"
+    assert_names(&out, &["EntityUpdate", "ItemDrop"]);
+}
+
+/// Packets for an entity that a later packet of the same pass removes
+/// still resolve it, and `entityGone` carries its handle.
+#[test]
+fn an_entity_removed_later_in_the_pass_still_resolves() {
+    let mut sim = spawned(EntityKind::Item, 9);
+    let out = step(
+        &mut sim,
+        vec![
+            ClientboundTakeItemEntity {
+                item_id: 9,
+                player_id: ME,
+                amount: 1,
+            }
+            .into_variant(),
+            remove(9),
+        ],
     );
-    // bit clears then sets again: a fresh edge refires
-    tracker.handle_packet(&client, &packet(vec![flags(0x00)]));
-    let out = tracker.handle_packet(&client, &packet(vec![flags(0x80)]));
+    let [
+        BotEvent::PlayerCollect {
+            collector: Some(_),
+            collected: Some(collected),
+        },
+        BotEvent::EntityGone {
+            entity: Some(gone),
+            id: MinecraftEntityId(9),
+        },
+    ] = &out[..]
+    else {
+        panic!("{out:?}");
+    };
+    assert_eq!(collected.id(), gone.id());
+}
+
+/// Riding: `mount` when the bot joins a vehicle's passengers, `dismount`
+/// when the vehicle is removed.
+#[test]
+fn removing_the_vehicle_dismounts() {
+    let mut sim = spawned(EntityKind::Minecart, 5);
+    let out = step(
+        &mut sim,
+        vec![
+            ClientboundSetPassengers {
+                vehicle: MinecraftEntityId(5),
+                passengers: vec![ME],
+            }
+            .into_variant(),
+        ],
+    );
     assert!(
-        matches!(
-            &out[..],
-            [BotEvent::EntityUpdate(_), BotEvent::EntityElytraFlew(_)]
-        ),
-        "expected Update+ElytraFlew, got {out:?}"
+        matches!(&out[..], [BotEvent::Mounted { vehicle: Some(_) }]),
+        "{out:?}"
+    );
+    assert!(sim.bot.vehicle().is_some());
+
+    let out = step(&mut sim, vec![remove(5)]);
+    assert_names(&out, &["EntityGone", "Dismounted"]);
+    assert!(sim.bot.vehicle().is_none());
+}
+
+#[test]
+fn equipment_and_effects_are_kept_per_entity() {
+    use mineflayer_engine::{inventory::components::EquipmentSlot, registry::builtin::MobEffect};
+    let mut sim = spawned(EntityKind::Zombie, 7);
+    let sword = ItemStack::new(mineflayer_engine::registry::builtin::ItemKind::IronSword, 1);
+    step(
+        &mut sim,
+        vec![
+            ClientboundSetEquipment {
+                entity_id: MinecraftEntityId(7),
+                slots: EquipmentSlots {
+                    slots: vec![(EquipmentSlot::Mainhand, sword.clone())],
+                },
+            }
+            .into_variant(),
+        ],
+    );
+    let zombie = sim.bot.entities()[&MinecraftEntityId(7)].clone();
+    assert_eq!(
+        sim.bot.equipment(&zombie).get(&EquipmentSlot::Mainhand),
+        Some(&sword)
+    );
+
+    let data = MobEffectData {
+        amplifier: 2,
+        duration: 100,
+        ..Default::default()
+    };
+    step(
+        &mut sim,
+        vec![
+            ClientboundUpdateMobEffect {
+                entity_id: MinecraftEntityId(7),
+                mob_effect: MobEffect::Speed,
+                data: data.clone(),
+            }
+            .into_variant(),
+        ],
+    );
+    let end = |sim: &mut BotSim| {
+        step(
+            sim,
+            vec![
+                ClientboundRemoveMobEffect {
+                    entity_id: MinecraftEntityId(7),
+                    effect: MobEffect::Speed,
+                }
+                .into_variant(),
+            ],
+        )
+    };
+    let out = end(&mut sim);
+    assert!(
+        matches!(&out[..], [BotEvent::EntityEffectEnd { data: d, .. }] if d.amplifier == 2),
+        "{out:?}"
+    );
+    // an effect that is not tracked ends with upstream's fallback data
+    let out = end(&mut sim);
+    assert!(
+        matches!(&out[..], [BotEvent::EntityEffectEnd { data: d, .. }] if d.amplifier == -1 && d.duration == -1),
+        "{out:?}"
     );
 }
 
 #[test]
 fn profile_keys_tracked_from_player_info_update() {
-    use mineflayer_engine::{
-        auth::game_profile::GameProfile,
-        protocol::packets::game::{
-            c_player_info_remove::ClientboundPlayerInfoRemove,
-            c_player_info_update::{ActionEnumSet, ClientboundPlayerInfoUpdate, PlayerInfoEntry},
-            s_chat_session_update::{ProfilePublicKeyData, RemoteChatSessionData},
+    use mineflayer_engine::auth::game_profile::GameProfile;
+
+    let mut sim = sim();
+    let uuid = uuid::Uuid::from_u128(0x1234);
+    let update = |chat_session: Option<RemoteChatSessionData>| ClientboundPlayerInfoUpdate {
+        actions: ActionEnumSet {
+            add_player: true,
+            initialize_chat: chat_session.is_some(),
+            update_game_mode: true,
+            update_listed: true,
+            update_latency: true,
+            update_display_name: false,
+            update_list_order: false,
+            update_hat: false,
+        },
+        entries: vec![PlayerInfoEntry {
+            profile: GameProfile::new(uuid, "faye".into()),
+            chat_session,
+            ..Default::default()
+        }],
+    };
+    let session = RemoteChatSessionData {
+        session_id: uuid::Uuid::from_u128(0xbeef),
+        profile_public_key: ProfilePublicKeyData {
+            expires_at: 0,
+            key: vec![1, 2, 3],
+            key_signature: vec![4, 5],
         },
     };
+    let keys = |sim: &BotSim| {
+        sim.bot
+            .players()
+            .get("faye")
+            .and_then(|p| p.profile_keys.clone())
+    };
 
-    let client = crate::test_util::despawned_client();
-    let mut tracker = EntityTracker::default();
-    let uuid = uuid::Uuid::from_u128(0x1234);
-    tracker.handle_packet(
-        &client,
-        &ClientboundGamePacket::PlayerInfoUpdate(ClientboundPlayerInfoUpdate {
-            actions: ActionEnumSet {
-                add_player: true,
-                initialize_chat: true,
-                update_game_mode: true,
-                update_listed: true,
-                update_latency: true,
-                update_display_name: false,
-                update_list_order: false,
-                update_hat: false,
-            },
-            entries: vec![PlayerInfoEntry {
-                profile: GameProfile::new(uuid, "faye".into()),
-                chat_session: Some(RemoteChatSessionData {
-                    session_id: uuid::Uuid::from_u128(0xbeef),
-                    profile_public_key: ProfilePublicKeyData {
-                        expires_at: 0,
-                        key: vec![1, 2, 3],
-                        key_signature: vec![4, 5],
-                    },
-                }),
-                ..Default::default()
-            }],
-        }),
-    );
+    step(&mut sim, vec![update(Some(session.clone())).into_variant()]);
     assert_eq!(
-        tracker.chat_sessions.get(&uuid),
-        Some(&ProfileKeys {
+        keys(&sim),
+        Some(ProfileKeys {
             public_key: vec![1, 2, 3],
             signature: vec![4, 5],
         })
     );
-
-    // a re-add without a chat session clears the old key
-    tracker.handle_packet(
-        &client,
-        &ClientboundGamePacket::PlayerInfoUpdate(ClientboundPlayerInfoUpdate {
-            actions: ActionEnumSet {
-                add_player: true,
-                initialize_chat: false,
-                update_game_mode: false,
-                update_listed: false,
-                update_latency: false,
-                update_display_name: false,
-                update_list_order: false,
-                update_hat: false,
-            },
-            entries: vec![PlayerInfoEntry {
-                profile: GameProfile::new(uuid, "faye".into()),
-                ..Default::default()
-            }],
-        }),
+    // a re-add without a chat session clears the key
+    step(&mut sim, vec![update(None).into_variant()]);
+    assert_eq!(keys(&sim), None);
+    // PlayerInfoRemove clears it too
+    step(&mut sim, vec![update(Some(session)).into_variant()]);
+    step(
+        &mut sim,
+        vec![
+            ClientboundPlayerInfoRemove {
+                profile_ids: vec![uuid],
+            }
+            .into_variant(),
+        ],
     );
-    assert!(tracker.chat_sessions.is_empty());
-
-    // re-add the key, then PlayerInfoRemove clears it
-    tracker.chat_sessions.insert(
-        uuid,
-        ProfileKeys {
-            public_key: vec![1],
-            signature: vec![2],
-        },
-    );
-    tracker.handle_packet(
-        &client,
-        &ClientboundGamePacket::PlayerInfoRemove(ClientboundPlayerInfoRemove {
-            profile_ids: vec![uuid],
-        }),
-    );
-    assert!(tracker.chat_sessions.is_empty());
+    assert!(!sim.bot.players().contains_key("faye"));
 }

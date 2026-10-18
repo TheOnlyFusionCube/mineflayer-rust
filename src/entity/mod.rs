@@ -3,16 +3,12 @@
 //!
 //! Entity *state* lives in the engine's ECS (tracked by its `EntityPlugin`); this
 //! module only adds what the engine doesn't expose: packet-driven entity events
-//! ([`BotEvent`] variants decoded in `observe_event`), tracked side state
-//! that isn't in the ECS (equipment, raw attributes, vehicles), and the
-//! `bot.*` method surface.
+//! ([`BotEvent`] variants decoded in `observe_event`), the per-entity
+//! components the engine does not keep (equipment, raw attributes,
+//! vehicles), which go away with their entity, and the `bot.*` method
+//! surface.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::LazyLock,
-};
-
-use parking_lot::RwLock;
+use std::{collections::HashMap, sync::LazyLock};
 
 use mineflayer_engine::{
     EntityRef, Event, FormattedText, Vec3,
@@ -55,9 +51,22 @@ use crate::{Bot, BotEvent, Error, Result};
 mod damage;
 mod tracker;
 
-pub(crate) use tracker::{
-    EntityTracker, entity_by_minecraft_id, entity_id_by_minecraft_id, observe_event,
-};
+pub(crate) use tracker::{entity_by_minecraft_id, entity_id_by_minecraft_id, observe_event};
+
+/// Records, before the engine applies each entity packet, what the packet
+/// destroys (see `tracker::EntityPre`).
+pub(crate) struct EntityStatePlugin;
+
+impl mineflayer_engine::app::Plugin for EntityStatePlugin {
+    fn build(&self, app: &mut mineflayer_engine::app::App) {
+        app.init_resource::<tracker::MetadataScratch>()
+            .init_resource::<mineflayer_engine::connection::PacketPreApply>()
+            .world_mut()
+            .resource_mut::<mineflayer_engine::connection::PacketPreApply>()
+            .0
+            .push(tracker::record_entity_pre);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Queries and properties
@@ -338,13 +347,11 @@ impl Bot {
             .into_iter()
             .map(|info| {
                 let entity = self.client.entity_by_uuid(info.uuid);
-                let profile_keys = self
-                    .shared
-                    .entities
-                    .read()
-                    .chat_sessions
-                    .get(&info.uuid)
-                    .cloned();
+                let profile_keys =
+                    crate::bot::with_component::<tracker::EntityDomain, _>(&self.client, |d| {
+                        d.chat_sessions.get(&info.uuid).cloned()
+                    })
+                    .flatten();
                 (
                     info.profile.name.clone(),
                     Player {
@@ -395,27 +402,27 @@ impl Bot {
 
     /// `Entity.vehicle` for an arbitrary entity.
     pub fn entity_vehicle(&self, entity: &EntityRef) -> Option<EntityRef> {
-        let id = *entity.get_component::<MinecraftEntityId>()?;
-        let vehicle = *self.shared.entities.read().vehicle_of.get(&id)?;
-        self.shared.entities.write().resolve(&self.client, vehicle)
+        let vehicle = entity.get_component::<tracker::Vehicle>()?.0?;
+        entity_by_minecraft_id(&self.client, vehicle)
     }
 
     /// `entity.equipment` — the entity's equipment by slot, tracked from
     /// `c_set_equipment` (the engine drops that packet). Empty for entities that
     /// never sent equipment.
     pub fn equipment(&self, entity: &EntityRef) -> HashMap<EquipmentSlot, ItemStack> {
-        // resolve the id before touching the tracker — holding the
-        // component guard across the tracker read inverts the bridge's
-        // (tracker-write → ecs-read) lock order and deadlocks
-        let id = entity.get_component::<MinecraftEntityId>().map(|id| *id);
-        id.and_then(|id| self.shared.entities.read().equipment.get(&id).cloned())
+        entity
+            .get_component::<tracker::Equipment>()
+            .map(|e| e.0.clone())
             .unwrap_or_default()
     }
 
     /// `bot.fireworkRocketDuration` — estimated remaining boost ticks from
     /// the last `usedFirework`; `0` when none is active.
     pub fn firework_rocket_duration(&self) -> u32 {
-        self.shared.entities.read().firework_rocket_duration
+        crate::bot::with_component::<tracker::EntityDomain, _>(&self.client, |d| {
+            d.firework_rocket_duration
+        })
+        .unwrap_or_default()
     }
 
     // -- actions ---------------------------------------------------------
@@ -798,15 +805,15 @@ mod tests {
             .write()
             .init_resource::<mineflayer_engine::entity::indexing::EntityUuidIndex>();
         let bot = crate::test_util::bot(client);
-        let mut tracker = EntityTracker::default();
-        tracker.chat_sessions.insert(
-            uuid,
-            ProfileKeys {
-                public_key: vec![9],
-                signature: vec![8],
-            },
-        );
-        *bot.shared.entities.write() = tracker;
+        crate::bot::with_component_mut::<tracker::EntityDomain, _>(&bot.client, |d| {
+            d.chat_sessions.insert(
+                uuid,
+                ProfileKeys {
+                    public_key: vec![9],
+                    signature: vec![8],
+                },
+            )
+        });
 
         let players = bot.players();
         assert_eq!(

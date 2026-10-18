@@ -61,8 +61,9 @@ impl Bot {
         let mut damages = ((impact * impact + impact) * DAMAGE_MULTIPLIER * power + 1.0).floor();
 
         if !raw {
-            let id = *entity.get_component::<MinecraftEntityId>()?;
-            let attributes = self.shared.entities.read().attributes.get(&id).cloned();
+            let attributes = entity
+                .get_component::<super::tracker::AttributeSnapshots>()
+                .map(|a| a.0.clone());
             let armor = attributes
                 .as_ref()
                 .and_then(|a| a.get(&Attribute::Armor))
@@ -78,13 +79,7 @@ impl Bot {
                 .map(|kind| kind.0)
                 == Some(EntityKind::Player)
             {
-                let scale = match self
-                    .shared
-                    .entities
-                    .read()
-                    .difficulty
-                    .unwrap_or(Difficulty::Normal)
-                {
+                let scale = match self.game().difficulty.unwrap_or(Difficulty::Normal) {
                     Difficulty::Peaceful => 0.0,
                     Difficulty::Easy => 0.5,
                     Difficulty::Normal => 1.0,

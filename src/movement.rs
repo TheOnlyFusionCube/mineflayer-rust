@@ -403,7 +403,7 @@ impl Bot {
 
 /// Bridge-side bookkeeping for the movement events the engine doesn't lift
 /// into `Event`s: `move`, `forcedMove`, `abilities`. (`mount`/`dismount`
-/// are decoded by the entity tracker — see `entity::EntityTracker`.)
+/// come from the entity domain's `SetPassengers` decode.)
 #[derive(Default)]
 pub(crate) struct MovementTracker {
     /// Position + look direction the last `Move` was diffed against;
@@ -446,8 +446,8 @@ pub(crate) fn bridge_events(
 /// Movement-relevant clientbound packets → `BotEvent`s. The engine handles
 /// `PlayerPosition`/`PlayerAbilities` internally, keeping them opaque to
 /// `Event` consumers — decode them here like upstream's
-/// `position`/`abilities` handlers do. (`SetPassengers` is owned by the
-/// entity tracker.)
+/// `position`/`abilities` handlers do. (`SetPassengers` belongs to the
+/// entity domain.)
 fn packet_events(
     _client: &mineflayer_engine::Client,
     _tracker: &mut MovementTracker,

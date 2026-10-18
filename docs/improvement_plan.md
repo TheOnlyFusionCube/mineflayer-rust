@@ -1318,7 +1318,7 @@ the commit that completes the item.
 | ST2 | done | (this commit) |
 | ST3 | done | (this commit) |
 | ST4 | done; `pending` stays (the engine keeps no "windowOpen not sent yet" state); `eat_generation` and `eat_notify` wait for OP6 | `5b5537f`, (this commit) |
-| ST5 | open | |
+| ST5 | done; `EntityGone.entity` stays `Option`: an id the engine never spawned has no entity (upstream invents a blank one) | (this commit) |
 | ST6 | done | (this commit) |
 | ST7 | open | |
 | OP1 | done | (this commit) |

@@ -108,6 +108,11 @@
 - A login or a respawn now also clears the engine's buffered early window
   content and its last closed container, as upstream does; a later window
   that reuses an id no longer gets stale contents.
+- The entity events read the metadata through the engine's typed decode,
+  not by protocol index, so a metadata layout change in a new Minecraft
+  version cannot misfire `entityCrouch`, `entityElytraFlew`, or
+  `entitySleep`. `entityEffectEnd` reports the effect data the engine
+  kept. The explosion-damage difficulty is `bot.game().difficulty`.
 
 ## 0.2.0 — 2026-10-16
 

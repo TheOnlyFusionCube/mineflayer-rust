@@ -202,8 +202,10 @@ for the examples.
 
 **D-storage (first plan D2). Where per-bot state lives.** ECS component when an ECS
 system or an ECS query with engine components reads it; a component created
-on first use for plugin-analog state; `BotShared` for everything else. See
-`BotShared`.
+on first use for plugin-analog state; a component on another entity for
+state about that entity (third plan ST5: equipment, attributes, vehicle
+links), so it despawns with the entity; `BotShared` only for what is not
+game state. See `BotShared`.
 
 ## Architecture
 
