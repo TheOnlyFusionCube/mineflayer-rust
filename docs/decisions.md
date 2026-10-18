@@ -293,6 +293,9 @@ new engine change:
   would only change where the packet arrives from. Since third plan ST5
   they are components on their entity, and the metadata events read the
   engine's typed metadata decode instead of protocol indices.
+- Block entities (`world::block_entity`, third plan CP1): the engine
+  stores none, so the port keeps them by position from the chunk and
+  `block_entity_data` packets, in a component on the client entity.
 - Where the engine's apply destroys what an event needs (a removed
   entity, an ended effect, a replaced slot, a replaced block), a port
   plugin records it before the apply: the `PacketPreApply` hooks of

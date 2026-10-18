@@ -30,8 +30,10 @@ use mineflayer_engine::{
 
 use crate::{Bot, BotEvent, Error, Result};
 
+mod block_entity;
 mod tracker;
 
+pub use block_entity::BlockEntity;
 pub(crate) use tracker::{LidCounts, WorldState, observe_event};
 
 /// Records the state each server block update replaces, for

@@ -78,6 +78,10 @@
   cancels the running action), and `Bot::plugin_events` with
   `Bot::emit_plugin_event` (a typed event channel per plugin event type).
   `tests/plugin.rs` is a plugin written against this API only.
+- `Block::block_entity()` (upstream `block.blockEntity`) and
+  `Bot::sign_text(&block, back)` (one side of `block.getSignText()`): the
+  port keeps the block entities of the loaded chunks from the chunk and
+  `block_entity_data` packets.
 - `Bot::spawned()` (`await once(bot, 'spawn')`) and `Bot::chat_messages()`,
   a stream of upstream's `chat` `(username, message)` pairs.
 - The `test-util` feature exports `test_util::sim::BotSim`, which runs a

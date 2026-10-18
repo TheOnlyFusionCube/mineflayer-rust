@@ -12,6 +12,7 @@
 #   ./scripts/live-server.sh        # start (idempotent), prints LIVE_SERVER_READY
 #   ./scripts/live-server.sh stop   # kill the fixture server
 #   ./scripts/live-server.sh reset  # stop, delete the worlds, start with seed 13371337
+#   ./scripts/live-server.sh rcon <command>  # one console command (test setup)
 #
 # State lives in .live/ (gitignored): server.jar, server.log, server.pid,
 # version.txt, eula.txt, server.properties, jdk/, world*.
@@ -326,5 +327,8 @@ case "${1:-start}" in
         rm -rf "$LIVE_DIR/world" "$LIVE_DIR/world_nether" "$LIVE_DIR/world_the_end"
         start_server
         ;;
-    *) echo "usage: $0 [start|stop|reset]" >&2; exit 2 ;;
+    # one console command for a live test that needs fixture setup, such
+    # as an item (the fixture's RCON listens on 127.0.0.1 only)
+    rcon) rcon "${2:?usage: $0 rcon <command>}" ;;
+    *) echo "usage: $0 [start|stop|reset|rcon <command>]" >&2; exit 2 ;;
 esac

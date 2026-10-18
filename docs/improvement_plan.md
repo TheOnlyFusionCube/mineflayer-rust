@@ -1343,7 +1343,7 @@ the commit that completes the item.
 | CL5 | done | `3a39167`, (this commit) |
 | CL6 | done | `e67a4be` |
 | CL7 | done | (this commit) |
-| CP1 | open | |
+| CP1 | done; the port keeps the block entities (D-redecode), not the engine | (this commit) |
 | CP2 | open | |
 | CP3 | open | |
 | CP4 | open | |

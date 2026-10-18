@@ -23,5 +23,6 @@ mod misc;
 mod movement;
 mod pathfinder;
 mod plugins;
+mod sign;
 mod windows;
 mod world;

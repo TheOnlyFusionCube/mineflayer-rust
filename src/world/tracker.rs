@@ -205,7 +205,10 @@ pub(crate) fn observe_event(
             with_component_mut::<WorldState, _>(client, WorldState::tick_clocks);
             vec![]
         }
-        Event::Packet(packet) => decode_packet(client, lids, packet),
+        Event::Packet(packet) => {
+            super::block_entity::observe(client, packet);
+            decode_packet(client, lids, packet)
+        }
         _ => vec![],
     }
 }
@@ -333,8 +336,10 @@ pub(super) fn block_update_event(
         with_world(client, |w| w.get_block_state(pos)).flatten()
     });
     if old.map(|s| s.as_block_kind()) != Some(new_state.as_block_kind()) {
-        // upstream drops the lid count when the block type changes.
+        // upstream drops the lid count when the block type changes, and
+        // the block entity goes with the block
         lids.0.remove(&pos);
+        super::block_entity::forget(client, pos);
     }
     BotEvent::BlockUpdate {
         old: old.map(|state| Block::new(client, pos, state)),
