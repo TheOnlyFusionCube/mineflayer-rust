@@ -254,8 +254,9 @@ pub fn check_node_reached(
                             pathfinder.goal = None;
                             pathfinder.opts = None;
                             if let Some(local_player_events) = local_player_events {
+                                let goto = pathfinder.goto.unwrap_or_default();
                                 let _ = local_player_events
-                                    .send(Event::Pathfinder(PathEvent::GoalReached));
+                                    .send(Event::Pathfinder(PathEvent::GoalReached { goto }));
                             }
                         }
                     }
@@ -465,7 +466,12 @@ pub fn recalculate_near_end_of_path(
                         PathfinderTimeout::Time(Duration::from_secs(1))
                     };
 
-                    goto_events.write(GotoEvent { entity, goal, opts });
+                    goto_events.write(GotoEvent {
+                        entity,
+                        goal,
+                        opts,
+                        id: pathfinder.goto.unwrap_or_default(),
+                    });
                     pathfinder.is_calculating = true;
 
                     if executing_path.path.is_empty() {
@@ -516,7 +522,12 @@ pub fn recalculate_if_has_goal_but_no_path(
             && let Some(opts) = pathfinder.opts.clone()
         {
             debug!("Recalculating path because it has a goal but no ExecutingPath");
-            goto_events.write(GotoEvent { entity, goal, opts });
+            goto_events.write(GotoEvent {
+                entity,
+                goal,
+                opts,
+                id: pathfinder.goto.unwrap_or_default(),
+            });
             pathfinder.is_calculating = true;
         }
     }

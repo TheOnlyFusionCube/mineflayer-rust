@@ -49,6 +49,11 @@
   ordered against the start messages.
 - `engine::Event::Pathfinder` carries pathfinder results.
 - `engine::registry::tags::item_tag_by_name`.
+- `engine::pathfinder::GotoId`: `start_goto` and `start_goto_with_opts`
+  return it, and each `engine::PathEvent` carries the goto it belongs to
+  (`PathFound { goto, .. }`, `GoalReached { goto }`, `Stopped { goto }`).
+  `PathfinderOpts::total_timeout` and `PathEvent::Timeout { goto }` bound
+  the total search time of one goto.
 - `BotBuilder::plugin(plugin)`, the `bot.loadPlugin` analog: a Bevy plugin
   added to the bot's app after the engine's and the port's.
 - `BotBuilder::respawn(bool)` (upstream `options.respawn`) and

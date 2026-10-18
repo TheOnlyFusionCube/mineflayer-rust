@@ -171,6 +171,7 @@ pub fn patch_path(
         goal,
         world_lock,
         goto_id_atomic,
+        goto: pathfinder.goto.unwrap_or_default(),
         mining_cache,
         custom_state,
         opts: PathfinderOpts {

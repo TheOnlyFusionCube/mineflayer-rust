@@ -761,6 +761,7 @@ impl Pathfinder<'_> {
             goal: engine_goal,
             world_lock: client.world(),
             goto_id_atomic: Arc::new(atomic::AtomicUsize::new(0)),
+            goto: Default::default(),
             mining_cache: MiningCache::new(inventory_menu),
             custom_state,
             opts,

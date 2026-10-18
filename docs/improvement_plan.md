@@ -1322,7 +1322,7 @@ the commit that completes the item.
 | ST6 | done | (this commit) |
 | ST7 | done; `OBSERVERS` stays as the emission order (D-port-plugins) | (this commit) |
 | OP1 | done | (this commit) |
-| OP2 | open | |
+| OP2 | done | (this commit) |
 | OP3 | open | |
 | OP4 | open | |
 | OP5 | open | |

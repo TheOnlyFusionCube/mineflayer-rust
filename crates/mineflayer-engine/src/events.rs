@@ -28,6 +28,7 @@ use crate::{
         AddPlayerEvent, DeathEvent, GamePacketDecodeFailedEvent, KeepAliveEvent, RemovePlayerEvent,
         UpdatePlayerEvent,
     },
+    pathfinder::GotoId,
     player::PlayerInfo,
 };
 
@@ -159,6 +160,8 @@ pub enum PathEvent {
     /// `is_partial == true` means that no route exists or that the search
     /// used its whole budget.
     PathFound {
+        /// The goto the search belongs to.
+        goto: GotoId,
         /// The path nodes the bot will walk, from its own position.
         path: Vec<BlockPos>,
         /// Whether the search gave up before reaching the goal.
@@ -166,12 +169,26 @@ pub enum PathEvent {
         /// How long the A* search ran.
         elapsed: Duration,
     },
+    /// The partial searches of a goto used its
+    /// [`PathfinderOpts::total_timeout`](crate::pathfinder::PathfinderOpts::total_timeout).
+    /// Sent once per run of partial searches; the goal stays, and the bot
+    /// keeps walking the partial path.
+    Timeout {
+        /// The goto that used its time.
+        goto: GotoId,
+    },
     /// The goal's success check holds — the path executed to its end, or
     /// the goal was already satisfied.
-    GoalReached,
+    GoalReached {
+        /// The goto that reached its goal.
+        goto: GotoId,
+    },
     /// The goal was abandoned without reaching it (a stop, or a world
     /// change).
-    Stopped,
+    Stopped {
+        /// The goto that was stopped.
+        goto: GotoId,
+    },
 }
 
 /// A component that contains an event sender for events that are only

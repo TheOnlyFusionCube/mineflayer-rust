@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use bevy_ecs::prelude::*;
 
@@ -22,15 +28,34 @@ pub struct GotoEvent {
     pub entity: Entity,
     pub goal: Arc<dyn Goal>,
     pub opts: PathfinderOpts,
+    /// Which goto this is. Each [`PathEvent`] of the goto carries it; a
+    /// repath of the goto keeps it.
+    ///
+    /// [`PathEvent`]: crate::events::PathEvent
+    pub id: GotoId,
 }
 
 impl GotoEvent {
+    /// A new goto, with a new [`GotoId`].
     pub fn new(entity: Entity, goal: impl Goal + 'static, opts: PathfinderOpts) -> Self {
         Self {
             entity,
             goal: Arc::new(goal),
             opts,
+            id: GotoId::next(),
         }
+    }
+}
+
+/// The identifier of one goto, unique in the process.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct GotoId(pub u64);
+
+impl GotoId {
+    /// A new identifier. `GotoId(0)` is never returned.
+    pub fn next() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 }
 
@@ -57,6 +82,7 @@ pub struct PathfinderOpts {
     pub(crate) retry_on_no_path: bool,
     pub(crate) min_timeout: PathfinderTimeout,
     pub(crate) max_timeout: PathfinderTimeout,
+    pub(crate) total_timeout: Option<Duration>,
 }
 
 impl PathfinderOpts {
@@ -67,6 +93,7 @@ impl PathfinderOpts {
             retry_on_no_path: true,
             min_timeout: PathfinderTimeout::Time(Duration::from_secs(1)),
             max_timeout: PathfinderTimeout::Time(Duration::from_secs(5)),
+            total_timeout: None,
         }
     }
     /// Set the function that's used for checking what moves are possible.
@@ -112,6 +139,17 @@ impl PathfinderOpts {
     /// Defaults to `PathfinderTimeout::Time(Duration::from_secs(5))`.
     pub fn max_timeout(mut self, max_timeout: impl Into<PathfinderTimeout>) -> Self {
         self.max_timeout = max_timeout.into();
+        self
+    }
+    /// The search time one goto may use while it finds only partial paths.
+    /// Each search has its own [`Self::max_timeout`]; this bounds their sum.
+    /// When the sum reaches it, the goto gets one
+    /// [`PathEvent::Timeout`](crate::events::PathEvent::Timeout) and keeps
+    /// its goal. A complete path sets the sum to zero.
+    ///
+    /// Defaults to `None` (no total limit).
+    pub fn total_timeout(mut self, total_timeout: Duration) -> Self {
+        self.total_timeout = Some(total_timeout);
         self
     }
 }

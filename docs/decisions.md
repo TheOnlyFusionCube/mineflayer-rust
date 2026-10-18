@@ -131,6 +131,14 @@ merge; plan item E2 keeps this list current):
     window tracker used to clear its own copies; the engine kept stale
     ones. Test: `login_and_respawn_drop_early_content_and_the_last_closed_container`
     in `mineflayer-client/tests/simulation/inventory_packets.rs`.
+25. (OP2) Goto identifiers. `pathfinder::GotoId` is on `GotoEvent` (a
+    repath keeps its goto's id) and on every `PathEvent`;
+    `start_goto`/`start_goto_with_opts` return it, and `Pathfinder::goto`
+    holds the current one. `PathfinderOpts::total_timeout` bounds the
+    search time of one goto's partial searches; when it is used,
+    `PathEvent::Timeout` goes out once and the goal stays (upstream
+    `thinkTimeout`). Test: `a_goto_over_its_total_time_times_out_once_and_keeps_its_goal`
+    in `mineflayer-engine/src/pathfinder/tests.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

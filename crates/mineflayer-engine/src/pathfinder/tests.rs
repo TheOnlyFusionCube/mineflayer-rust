@@ -11,7 +11,7 @@ use mineflayer_registry::builtin::BlockKind;
 use mineflayer_world::{Chunk, ChunkStorage, PartialChunkStorage};
 
 use super::{
-    ExecutingPath, GotoEvent, Pathfinder, StopPathfindingEvent,
+    ExecutingPath, GotoEvent, GotoId, Pathfinder, StopPathfindingEvent,
     astar::PathfinderTimeout,
     goals::BlockPosGoal,
     moves,
@@ -46,7 +46,9 @@ fn setup_blockposgoal_simulation(
             retry_on_no_path: true,
             min_timeout: PathfinderTimeout::Nodes(1_000_000),
             max_timeout: PathfinderTimeout::Nodes(5_000_000),
+            total_timeout: None,
         },
+        id: GotoId(7),
     });
     simulation
 }
@@ -297,6 +299,7 @@ fn test_mine_through_non_colliding_block() {
         opts: PathfinderOpts::new()
             .min_timeout(PathfinderTimeout::Nodes(1_000_000))
             .max_timeout(PathfinderTimeout::Nodes(5_000_000)),
+        id: GotoId(7),
     });
 
     assert_simulation_reaches(&mut simulation, 200, BlockPos::new(0, 70, 0));
@@ -389,7 +392,9 @@ fn pathfinder_reports_no_path_as_an_event() {
             retry_on_no_path: true,
             min_timeout: PathfinderTimeout::Nodes(1_000_000),
             max_timeout: PathfinderTimeout::Nodes(5_000_000),
+            total_timeout: None,
         },
+        id: GotoId(7),
     });
 
     let mut found = None;
@@ -398,10 +403,12 @@ fn pathfinder_reports_no_path_as_an_event() {
         loop {
             match rx.try_recv() {
                 Ok(Event::Pathfinder(PathEvent::PathFound {
+                    goto,
                     path,
                     is_partial,
                     elapsed,
                 })) => {
+                    assert_eq!(goto, GotoId(7), "the search reports its goto");
                     found = Some((path, is_partial, elapsed));
                     break 'ticks;
                 }
@@ -441,6 +448,7 @@ fn pathfinder_reports_reached_goal_as_an_event() {
         opts: PathfinderOpts::new()
             .min_timeout(PathfinderTimeout::Nodes(1_000_000))
             .max_timeout(PathfinderTimeout::Nodes(5_000_000)),
+        id: GotoId(7),
     });
 
     let mut reached = false;
@@ -448,7 +456,8 @@ fn pathfinder_reports_reached_goal_as_an_event() {
         simulation.tick();
         loop {
             match rx.try_recv() {
-                Ok(Event::Pathfinder(PathEvent::GoalReached)) => {
+                Ok(Event::Pathfinder(PathEvent::GoalReached { goto })) => {
+                    assert_eq!(goto, GotoId(7));
                     reached = true;
                     break 'ticks;
                 }
@@ -476,6 +485,7 @@ fn pathfinder_reports_stop_as_an_event() {
         opts: PathfinderOpts::new()
             .min_timeout(PathfinderTimeout::Nodes(1_000_000))
             .max_timeout(PathfinderTimeout::Nodes(5_000_000)),
+        id: GotoId(7),
     });
     // Let the goto land (goal set, search running or done).
     simulation.tick();
@@ -493,7 +503,8 @@ fn pathfinder_reports_stop_as_an_event() {
         simulation.tick();
         loop {
             match rx.try_recv() {
-                Ok(Event::Pathfinder(PathEvent::Stopped)) => {
+                Ok(Event::Pathfinder(PathEvent::Stopped { goto })) => {
+                    assert_eq!(goto, GotoId(7));
                     stopped = true;
                     break 'ticks;
                 }
@@ -503,6 +514,68 @@ fn pathfinder_reports_stop_as_an_event() {
         }
     }
     assert!(stopped, "Stopped never arrived on the event channel");
+}
+
+/// A goto whose partial searches use its total time gets one `Timeout`
+/// and keeps its goal, so the bot keeps walking toward it (upstream's
+/// `thinkTimeout` leaves `stateGoal` installed).
+#[test]
+fn a_goto_over_its_total_time_times_out_once_and_keeps_its_goal() {
+    let mut partial_chunks = PartialChunkStorage::default();
+    // a floor toward a goal past its end: the first search ends partial
+    // with a path along the floor, the repaths at its end find nothing
+    let floor: Vec<BlockPos> = (0..4).map(|x| BlockPos::new(x, 70, 0)).collect();
+    let (mut simulation, mut rx) =
+        pathfinder_event_simulation(&mut partial_chunks, BlockPos::new(0, 71, 0), &floor);
+    simulation.app.world_mut().write_message(GotoEvent {
+        entity: simulation.entity,
+        goal: Arc::new(BlockPosGoal(BlockPos::new(30, 71, 0))),
+        opts: PathfinderOpts::new()
+            .allow_mining(false)
+            .min_timeout(PathfinderTimeout::Nodes(500))
+            .max_timeout(PathfinderTimeout::Nodes(500))
+            .total_timeout(Duration::ZERO),
+        id: GotoId(9),
+    });
+
+    let (mut found, mut partial, mut timeouts) = (0, 0, 0);
+    for _ in 0..1000 {
+        simulation.tick();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::Pathfinder(PathEvent::PathFound {
+                    goto,
+                    is_partial,
+                    path,
+                    ..
+                }) => {
+                    assert_eq!(goto, GotoId(9));
+                    found += 1;
+                    if is_partial && !path.is_empty() {
+                        partial += 1;
+                    }
+                }
+                Event::Pathfinder(PathEvent::Timeout { goto }) => {
+                    assert_eq!(goto, GotoId(9));
+                    timeouts += 1;
+                }
+                _ => {}
+            }
+        }
+        if found >= 5 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        partial >= 1 && found >= 5,
+        "{partial} partial of {found} searches"
+    );
+    assert_eq!(timeouts, 1, "the timeout goes out once");
+    assert!(
+        simulation.component::<Pathfinder>().goal.is_some(),
+        "the goal stays"
+    );
 }
 
 #[test]
@@ -527,6 +600,7 @@ fn a_partial_search_returns_without_a_pause() {
         goal: Arc::new(BlockPosGoal(BlockPos::new(0, 71, 1_000))),
         world_lock: Arc::new(RwLock::new(chunks.into())),
         goto_id_atomic: Default::default(),
+        goto: GotoId::default(),
         mining_cache: MiningCache::new(None),
         custom_state: CustomPathfinderState::default(),
         opts: PathfinderOpts::new()

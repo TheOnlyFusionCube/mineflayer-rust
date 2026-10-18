@@ -44,7 +44,7 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use custom_state::{CustomPathfinderState, CustomPathfinderStateRef};
 use futures_lite::future;
-pub use goto_event::{GotoEvent, PathfinderOpts};
+pub use goto_event::{GotoEvent, GotoId, PathfinderOpts};
 use mineflayer_client::{StartWalkEvent, inventory::InventorySystems, movement::MoveEventsSystems};
 use mineflayer_core::{
     position::{BlockPos, Vec3},
@@ -117,7 +117,17 @@ pub struct Pathfinder {
     pub goal: Option<Arc<dyn Goal>>,
     pub opts: Option<PathfinderOpts>,
     pub is_calculating: bool,
+    /// Counts the searches, so that a search that a newer one replaced
+    /// throws its result away.
     pub goto_id: Arc<AtomicUsize>,
+    /// The goto that [`Self::goal`] belongs to.
+    pub goto: Option<GotoId>,
+    /// The search time of the current goto since its last complete path,
+    /// for [`PathfinderOpts::total_timeout`].
+    pub partial_search_time: Duration,
+    /// [`PathEvent::Timeout`] was sent for the current run of partial
+    /// searches.
+    pub timeout_sent: bool,
 }
 
 /// A component that's present on clients that are actively following a
@@ -141,6 +151,8 @@ impl ExecutingPath {
 #[derive(Clone, Debug, Message)]
 pub struct PathFoundEvent {
     pub entity: Entity,
+    /// The goto the search was for.
+    pub goto: GotoId,
     pub start: BlockPos,
     pub path: Option<VecDeque<astar::Edge<BlockPos, moves::MoveData>>>,
     pub is_partial: bool,
@@ -202,13 +214,14 @@ pub trait PathfinderClientExt {
     /// bot.start_goto(BlockPosGoal(BlockPos::new(0, 70, 0)));
     /// # }
     /// ```
-    fn start_goto(&self, goal: impl Goal + 'static);
+    fn start_goto(&self, goal: impl Goal + 'static) -> GotoId;
     /// Same as [`Self::start_goto`], but allows you to set custom
     /// options for pathfinding, including disabling mining and setting custom
     /// moves.
     ///
-    /// Also see [`Self::goto_with_opts`].
-    fn start_goto_with_opts(&self, goal: impl Goal + 'static, opts: PathfinderOpts);
+    /// Also see [`Self::goto_with_opts`]. The returned id is on every
+    /// [`PathEvent`] of this goto.
+    fn start_goto_with_opts(&self, goal: impl Goal + 'static, opts: PathfinderOpts) -> GotoId;
     /// Stop calculating a path, and stop moving once the current movement is
     /// finished.
     ///
@@ -245,13 +258,14 @@ impl PathfinderClientExt for Client {
         self.start_goto_with_opts(goal, opts);
         self.wait_until_goto_target_reached().await;
     }
-    fn start_goto(&self, goal: impl Goal + 'static) {
-        self.start_goto_with_opts(goal, PathfinderOpts::new());
+    fn start_goto(&self, goal: impl Goal + 'static) -> GotoId {
+        self.start_goto_with_opts(goal, PathfinderOpts::new())
     }
-    fn start_goto_with_opts(&self, goal: impl Goal + 'static, opts: PathfinderOpts) {
-        self.ecs
-            .write()
-            .write_message(GotoEvent::new(self.entity, goal, opts));
+    fn start_goto_with_opts(&self, goal: impl Goal + 'static, opts: PathfinderOpts) -> GotoId {
+        let event = GotoEvent::new(self.entity, goal, opts);
+        let id = event.id;
+        self.ecs.write().write_message(event);
+        id
     }
     fn stop_pathfinding(&self) {
         self.ecs.write().write_message(StopPathfindingEvent {
@@ -351,11 +365,18 @@ pub fn goto_listener(
             pathfinder.is_calculating = false;
             debug!("already at goal, not pathfinding");
             if let Some(local_player_events) = local_player_events {
-                let _ = local_player_events.send(Event::Pathfinder(PathEvent::GoalReached));
+                let _ = local_player_events
+                    .send(Event::Pathfinder(PathEvent::GoalReached { goto: event.id }));
             }
             continue;
         }
 
+        if pathfinder.goto != Some(event.id) {
+            // a new goto, not a repath: its search time starts at zero
+            pathfinder.goto = Some(event.id);
+            pathfinder.partial_search_time = Duration::ZERO;
+            pathfinder.timeout_sent = false;
+        }
         // we store the goal so it can be recalculated later if necessary
         pathfinder.goal = Some(event.goal.clone());
         pathfinder.opts = Some(event.opts.clone());
@@ -407,6 +428,7 @@ pub fn goto_listener(
                 goal: goal.clone(),
                 world_lock: world_lock.clone(),
                 goto_id_atomic: goto_id_atomic.clone(),
+                goto: event.id,
                 mining_cache: MiningCache::new(inventory_menu.clone()),
                 custom_state: custom_state.clone(),
                 opts: PathfinderOpts {
@@ -474,6 +496,7 @@ pub fn goto_listener(
         }
 
         let mining_cache = MiningCache::new(inventory_menu);
+        let goto = event.id;
         let task = thread_pool.spawn(async move {
             let found = calculate_path(CalculatePathCtx {
                 entity,
@@ -481,6 +504,7 @@ pub fn goto_listener(
                 goal,
                 world_lock,
                 goto_id_atomic,
+                goto,
                 mining_cache,
                 custom_state,
                 opts,
@@ -514,6 +538,8 @@ pub struct CalculatePathCtx {
     pub goal: Arc<dyn Goal>,
     pub world_lock: Arc<RwLock<mineflayer_world::World>>,
     pub goto_id_atomic: Arc<AtomicUsize>,
+    /// The goto the search is for; the [`PathFoundEvent`] carries it.
+    pub goto: GotoId,
     pub mining_cache: MiningCache,
     pub custom_state: CustomPathfinderState,
 
@@ -628,6 +654,7 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
 
     Some(PathFoundEvent {
         entity: ctx.entity,
+        goto: ctx.goto,
         start: ctx.start,
         path: Some(mapped_path),
         is_partial,
@@ -684,16 +711,34 @@ pub fn path_found_listener(
             continue;
         };
         if let Some(local_player_events) = local_player_events {
-            let path = event
+            let path: Vec<BlockPos> = event
                 .path
                 .as_ref()
                 .map(|path| path.iter().map(|edge| edge.movement.target).collect())
                 .unwrap_or_default();
+            let empty = path.is_empty();
             let _ = local_player_events.send(Event::Pathfinder(PathEvent::PathFound {
+                goto: event.goto,
                 path,
                 is_partial: event.is_partial,
                 elapsed: event.elapsed,
             }));
+            if pathfinder.goto == Some(event.goto) {
+                if !event.is_partial {
+                    pathfinder.partial_search_time = Duration::ZERO;
+                    pathfinder.timeout_sent = false;
+                } else if !empty {
+                    pathfinder.partial_search_time += event.elapsed;
+                    let total = pathfinder.opts.as_ref().and_then(|o| o.total_timeout);
+                    if total.is_some_and(|total| pathfinder.partial_search_time >= total)
+                        && !pathfinder.timeout_sent
+                    {
+                        pathfinder.timeout_sent = true;
+                        let _ = local_player_events
+                            .send(Event::Pathfinder(PathEvent::Timeout { goto: event.goto }));
+                    }
+                }
+            }
         }
         if let Some(found_path) = &event.path {
             if let Some(mut executing_path) = executing_path {
@@ -828,7 +873,8 @@ pub fn handle_stop_pathfinding_event(
             pathfinder.goal = None;
             pathfinder.is_calculating = false;
             if stopped_a_goal && let Some(local_player_events) = local_player_events {
-                let _ = local_player_events.send(Event::Pathfinder(PathEvent::Stopped));
+                let goto = pathfinder.goto.unwrap_or_default();
+                let _ = local_player_events.send(Event::Pathfinder(PathEvent::Stopped { goto }));
             }
         }
 

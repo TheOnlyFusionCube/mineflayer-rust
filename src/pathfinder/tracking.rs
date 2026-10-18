@@ -61,6 +61,7 @@ pub(crate) fn bridge_events(
             path,
             is_partial,
             elapsed,
+            ..
         } => {
             if !is_partial {
                 // a complete path establishes the goal: the budget
@@ -143,7 +144,7 @@ pub(crate) fn bridge_events(
             }
             out
         }
-        PathEvent::GoalReached => {
+        PathEvent::GoalReached { .. } => {
             // the engine satisfied a goal. Take the facade goal only when
             // it is still ours and its success check holds now (a newer
             // `set_goal` may have replaced it while the event was in
@@ -170,7 +171,7 @@ pub(crate) fn bridge_events(
             }
             out
         }
-        PathEvent::Stopped => {
+        PathEvent::Stopped { .. } => {
             // the engine abandoned a goal. A stop the port initiated
             // (`stop()`, a `set_goal` on a satisfied goal, the follow
             // driver's despawn) already cleared the facade goal and
@@ -184,6 +185,9 @@ pub(crate) fn bridge_events(
             }
             out
         }
+        // the port keeps its own budget per goal issue (`PathTracker`) and
+        // sets no `total_timeout`, so the engine never sends this
+        PathEvent::Timeout { .. } => out,
     }
 }
 

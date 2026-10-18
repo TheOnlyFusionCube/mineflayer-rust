@@ -3,6 +3,7 @@ use crate::pathfinder::tests::*;
 
 fn path_found(path: Vec<BlockPos>, is_partial: bool, ms: u64) -> Event {
     Event::Pathfinder(PathEvent::PathFound {
+        goto: Default::default(),
         path,
         is_partial,
         elapsed: Duration::from_millis(ms),
@@ -282,7 +283,9 @@ fn bridge_satisfied_goal_reports_reached() {
     let out = bridge_events(
         &client,
         &mut tracker,
-        &Event::Pathfinder(PathEvent::GoalReached),
+        &Event::Pathfinder(PathEvent::GoalReached {
+            goto: Default::default(),
+        }),
     );
     assert!(
         out.iter()
@@ -312,7 +315,9 @@ fn bridge_dynamic_goal_reached_stays_installed() {
     let out = bridge_events(
         &client,
         &mut tracker,
-        &Event::Pathfinder(PathEvent::GoalReached),
+        &Event::Pathfinder(PathEvent::GoalReached {
+            goto: Default::default(),
+        }),
     );
     assert!(out.is_empty(), "dynamic reach must be silent, got {out:?}");
     assert!(with_component::<PathfinderFacade, _>(&client, |f| f.goal.is_some()).unwrap_or(false));
@@ -331,7 +336,9 @@ fn bridge_stopped_without_a_facade_goal_is_silent() {
     let out = bridge_events(
         &client,
         &mut tracker,
-        &Event::Pathfinder(PathEvent::Stopped),
+        &Event::Pathfinder(PathEvent::Stopped {
+            goto: Default::default(),
+        }),
     );
     assert!(out.is_empty(), "expected silence, got {out:?}");
 }
@@ -350,7 +357,9 @@ fn bridge_stopped_with_a_facade_goal_reports_path_stop() {
     let out = bridge_events(
         &client,
         &mut tracker,
-        &Event::Pathfinder(PathEvent::Stopped),
+        &Event::Pathfinder(PathEvent::Stopped {
+            goto: Default::default(),
+        }),
     );
     assert!(
         out.iter()
