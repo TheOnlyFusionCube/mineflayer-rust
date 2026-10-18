@@ -30,7 +30,9 @@ use tokio::{
 use tracing::{debug, error, info, trace};
 
 use super::packet::{
-    config::ReceiveConfigPacketEvent, game::ReceiveGamePacketEvent, login::ReceiveLoginPacketEvent,
+    config::ReceiveConfigPacketEvent,
+    game::{GamePacketDecodeFailedEvent, ReceiveGamePacketEvent},
+    login::ReceiveLoginPacketEvent,
 };
 use crate::packet::{config, game, login};
 
@@ -148,12 +150,14 @@ pub struct QueuedPacketEvents {
     login: Vec<ReceiveLoginPacketEvent>,
     config: Vec<ReceiveConfigPacketEvent>,
     game: Vec<ReceiveGamePacketEvent>,
+    game_decode_failed: Vec<GamePacketDecodeFailedEvent>,
 }
 impl QueuedPacketEvents {
     fn write_messages(&mut self, ecs: &mut World) {
         ecs.write_message_batch(self.login.drain(..));
         ecs.write_message_batch(self.config.drain(..));
         ecs.write_message_batch(self.game.drain(..));
+        ecs.write_message_batch(self.game_decode_failed.drain(..));
     }
 }
 
@@ -270,7 +274,24 @@ pub fn handle_raw_packet(
             unreachable!()
         }
         ConnectionProtocol::Game => {
-            let packet = Arc::new(deserialize_packet::<ClientboundGamePacket>(stream)?);
+            let packet = match deserialize_packet::<ClientboundGamePacket>(stream) {
+                Ok(packet) => Arc::new(packet),
+                Err(error) => {
+                    let packet_id = match *error {
+                        ReadPacketError::Parse { packet_id, .. } => Some(packet_id),
+                        ReadPacketError::UnknownPacketId { id, .. } => Some(id),
+                        _ => None,
+                    };
+                    queued_packet_events
+                        .game_decode_failed
+                        .push(GamePacketDecodeFailedEvent {
+                            entity,
+                            packet_id,
+                            error: error.to_string(),
+                        });
+                    return Err(error);
+                }
+            };
             trace!("Packet: {packet:?}");
             game::process_packet(ecs, entity, packet.as_ref());
             queued_packet_events

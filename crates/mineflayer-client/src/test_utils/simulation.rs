@@ -114,6 +114,14 @@ impl Simulation {
             raw_conn.injected_clientbound_packets.push(buf);
         });
     }
+    /// Receive bytes as one clientbound packet (the packet id first), also
+    /// bytes that do not decode.
+    pub fn receive_raw_packet(&mut self, bytes: impl Into<Box<[u8]>>) {
+        let bytes = bytes.into();
+        self.with_component_mut::<RawConnection>(|raw_conn| {
+            raw_conn.injected_clientbound_packets.push(bytes);
+        });
+    }
     pub fn write_message(&mut self, message: impl Message) {
         self.app.world_mut().write_message(message);
     }

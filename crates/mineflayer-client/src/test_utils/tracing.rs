@@ -32,7 +32,7 @@ static RELOAD_HANDLES: LazyLock<LayerReloadHandles> = LazyLock::new(|| {
         ),
     );
     let (test_layer, test_reload_handle) = reload::Layer::new(TestTracingLayer {
-        panic_on_level: Level::WARN,
+        panic_on_level: Some(Level::WARN),
     });
 
     tracing_subscriber::registry()
@@ -46,6 +46,15 @@ static RELOAD_HANDLES: LazyLock<LayerReloadHandles> = LazyLock::new(|| {
 });
 
 pub fn init_with_level<'a>(max_level: Level) -> MutexGuard<'a, ()> {
+    init_inner(max_level, Some(max_level))
+}
+
+/// Like [`init`], but no log fails the test. For tests of error paths.
+pub fn init_allowing_errors<'a>() -> MutexGuard<'a, ()> {
+    init_inner(Level::WARN, None)
+}
+
+fn init_inner<'a>(max_level: Level, panic_on_level: Option<Level>) -> MutexGuard<'a, ()> {
     let lock = LOCK.lock();
 
     RELOAD_HANDLES
@@ -58,19 +67,19 @@ pub fn init_with_level<'a>(max_level: Level) -> MutexGuard<'a, ()> {
         .unwrap();
     RELOAD_HANDLES
         .test
-        .modify(|layer| layer.panic_on_level = max_level)
+        .modify(|layer| layer.panic_on_level = panic_on_level)
         .unwrap();
 
     lock
 }
 
 struct TestTracingLayer {
-    panic_on_level: Level,
+    panic_on_level: Option<Level>,
 }
 impl<S: Subscriber> Layer<S> for TestTracingLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let level = *event.metadata().level();
-        if level <= self.panic_on_level {
+        if self.panic_on_level.is_some_and(|max| level <= max) {
             panic!("Logged on level {level}.");
         }
     }

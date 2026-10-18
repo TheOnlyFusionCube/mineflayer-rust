@@ -10,6 +10,7 @@ mod correct_sprint_sneak_movement;
 mod despawn_entities_when_changing_dimension;
 mod enchantments;
 mod fast_login;
+mod game_packet_decode_failed;
 mod inventory_packets;
 mod login_to_dimension_with_same_name;
 mod mine_block_rollback;

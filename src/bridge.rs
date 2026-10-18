@@ -305,6 +305,12 @@ fn translate(
         Event::KeepAlive(_) => vec![],
         // the pathfinder observer translates these
         Event::Pathfinder(_) => vec![],
+        Event::PacketDecodeFailed { packet_id, error } => {
+            let id = packet_id.map_or("an unknown id".to_string(), |id| format!("id {id:#04x}"));
+            vec![BotEvent::Error(format!(
+                "dropped a game packet ({id}) that did not decode: {error}"
+            ))]
+        }
     }
 }
 
@@ -618,6 +624,14 @@ mod tests {
         assert!(matches!(
             translate(&mut s, &qr, &client, Event::Login)[..],
             [BotEvent::Connected, BotEvent::Login]
+        ));
+        let decode_failed = Event::PacketDecodeFailed {
+            packet_id: Some(0x6c),
+            error: "boom".to_string(),
+        };
+        assert!(matches!(
+            &translate(&mut s, &qr, &client, decode_failed)[..],
+            [BotEvent::Error(e)] if e.contains("id 0x6c") && e.contains("boom")
         ));
         assert!(matches!(
             translate(&mut s, &qr, &client, Event::Tick)[..],

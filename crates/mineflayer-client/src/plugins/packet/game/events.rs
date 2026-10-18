@@ -38,6 +38,18 @@ pub struct ReceiveGamePacketEvent {
     pub packet: Arc<ClientboundGamePacket>,
 }
 
+/// A game packet arrived but did not decode. The engine logs the error and
+/// drops the packet; this message tells the rest of the app that it did.
+#[derive(Clone, Debug, Message)]
+pub struct GamePacketDecodeFailedEvent {
+    /// The client entity that received the packet.
+    pub entity: Entity,
+    /// The packet id, if the decoder read that far.
+    pub packet_id: Option<u32>,
+    /// The decode error.
+    pub error: String,
+}
+
 /// An event for sending a packet to the server while we're in the `game` state.
 #[derive(Clone, Debug, EntityEvent)]
 pub struct SendGamePacketEvent {

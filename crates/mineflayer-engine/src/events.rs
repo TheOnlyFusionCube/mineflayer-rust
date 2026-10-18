@@ -25,7 +25,8 @@ use crate::{
     client_chat::{ChatPacket, ChatReceivedEvent},
     disconnect::DisconnectEvent,
     packet::game::{
-        AddPlayerEvent, DeathEvent, KeepAliveEvent, RemovePlayerEvent, UpdatePlayerEvent,
+        AddPlayerEvent, DeathEvent, GamePacketDecodeFailedEvent, KeepAliveEvent, RemovePlayerEvent,
+        UpdatePlayerEvent,
     },
     player::PlayerInfo,
 };
@@ -137,6 +138,13 @@ pub enum Event {
     /// [`ConnectionFailedEvent`].
     ConnectionFailed(Arc<ConnectionError>),
     ReceiveChunk(ChunkPos),
+    /// A game packet arrived but did not decode, so the engine dropped it.
+    PacketDecodeFailed {
+        /// The packet id, if the decoder read that far.
+        packet_id: Option<u32>,
+        /// The decode error.
+        error: String,
+    },
     /// A pathfinder result — see [`PathEvent`].
     Pathfinder(PathEvent),
 }
@@ -193,6 +201,7 @@ impl Plugin for EventsPlugin {
                 connection_failed_listener
                     .after(mineflayer_client::join::poll_create_connection_task),
                 receive_chunk_listener,
+                packet_decode_failed_listener,
             ),
         )
         .add_systems(
@@ -267,6 +276,20 @@ pub fn packet_listener(
     for event in events.read() {
         if let Ok(local_player_events) = query.get(event.entity) {
             let _ = local_player_events.send(Event::Packet(event.packet.clone()));
+        }
+    }
+}
+
+pub fn packet_decode_failed_listener(
+    query: Query<&LocalPlayerEvents>,
+    mut events: MessageReader<GamePacketDecodeFailedEvent>,
+) {
+    for event in events.read() {
+        if let Ok(local_player_events) = query.get(event.entity) {
+            let _ = local_player_events.send(Event::PacketDecodeFailed {
+                packet_id: event.packet_id,
+                error: event.error.clone(),
+            });
         }
     }
 }

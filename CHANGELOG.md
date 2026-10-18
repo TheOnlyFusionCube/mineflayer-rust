@@ -21,6 +21,9 @@
 - `mineflayer::engine` no longer has `swarm`, `ClientBuilder`, `JoinOpts`,
   `auto_reconnect`, `NoState`, `HandleFn`, or `BoxHandleFn`. The bot never
   used them; join with `Client::join` or `StartClientOpts`.
+- `engine::Event`, `engine::PathEvent`, `GotoEvent`, `PathfinderOpts`,
+  `Pathfinder`, and `PathFoundEvent` are no longer `#[non_exhaustive]`.
+  A match over `Event` must name the new `PacketDecodeFailed` variant.
 - `engine::entity::inventory::Inventory` has two more public fields
   (`early_content`, `last_closed`), so a struct literal needs
   `..Default::default()`.
@@ -33,6 +36,10 @@
   ordered against the start messages.
 - `engine::Event::Pathfinder` carries pathfinder results.
 - `engine::registry::tags::item_tag_by_name`.
+- `BotEvent::Error` when a game packet does not decode. The engine drops
+  such a packet; before, only a `tracing` error log showed it. The engine
+  side is `engine::Event::PacketDecodeFailed` and the ECS message
+  `engine::packet::game::GamePacketDecodeFailedEvent`.
 
 ### Changed
 

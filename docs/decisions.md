@@ -94,6 +94,11 @@ merge; plan item E2 keeps this list current):
     obstruction patch, and the port's `get_path_from_to` do not stall
     their caller. A path that cannot be replayed over the search's world
     cache logs an error and returns `None` instead of panicking.
+18. (DF2) A game packet that fails to decode writes the
+    `GamePacketDecodeFailedEvent` message, which becomes
+    `Event::PacketDecodeFailed`; the error log stays. Test utilities:
+    `Simulation::receive_raw_packet` and `init_allowing_errors`. Test:
+    `mineflayer-client/tests/simulation/game_packet_decode_failed.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
