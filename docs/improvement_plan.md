@@ -1331,7 +1331,7 @@ the commit that completes the item.
 | EV2 | done | (this commit) |
 | EV3 | done | (this commit) |
 | EV4 | open | |
-| PL1 | open | |
+| PL1 | done | (this commit) |
 | PL2 | open | |
 | PL3 | open | |
 | PL4 | open | |

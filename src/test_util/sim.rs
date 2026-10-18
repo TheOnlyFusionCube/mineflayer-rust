@@ -47,7 +47,12 @@ impl BotSim {
     /// A bot that has logged in and spawned in an empty chunk at the
     /// origin.
     pub(crate) fn new() -> Self {
-        let mut sim = Self::connected(BotBuilder::default());
+        Self::spawned(BotBuilder::default())
+    }
+
+    /// [`Self::new`] for a bot built from `builder`.
+    pub(crate) fn spawned(builder: BotBuilder) -> Self {
+        let mut sim = Self::connected(builder);
         // in separate passes, as a server's packets arrive
         sim.receive(default_login_packet());
         sim.tick();
@@ -61,7 +66,7 @@ impl BotSim {
     /// A bot in the game state that has received no game packet yet.
     pub(crate) fn connected(builder: BotBuilder) -> Self {
         let mut sim =
-            Simulation::new_with_plugins(ConnectionProtocol::Game, crate::plugins::BotPlugins);
+            Simulation::new_with_plugins(ConnectionProtocol::Game, builder.plugins.clone());
         let sent = SentPackets::new(&mut sim);
         let (tx, engine_events) = mpsc::unbounded_channel();
         sim.app

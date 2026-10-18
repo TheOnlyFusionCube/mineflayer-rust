@@ -47,6 +47,11 @@
   ordered against the start messages.
 - `engine::Event::Pathfinder` carries pathfinder results.
 - `engine::registry::tags::item_tag_by_name`.
+- `BotBuilder::plugin(plugin)`, the `bot.loadPlugin` analog: a Bevy plugin
+  added to the bot's app after the engine's and the port's.
+- `BotBuilder::respawn(bool)` (upstream `options.respawn`) and
+  `BotBuilder::accept_resource_packs(bool)`: switch off the engine's
+  auto-respawn and its accept-every-pack reply.
 - `Bot::event_stream()`, a `Stream` of `BotEvent`s that yields
   `BotEvent::Lagged(n)` when the receiver lost `n` events, instead of
   hiding the loss. The examples use it.

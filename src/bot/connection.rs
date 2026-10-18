@@ -70,6 +70,9 @@ pub struct BotBuilder {
     /// `options.agent`-analog — the engine's SOCKS5 proxy support
     /// (`Client::join_with_proxy`); also covers the `connect` proxy use case.
     proxy: Option<mineflayer_engine::protocol::connect::Proxy>,
+    /// The app's plugins: the engine's, the port's, the switches, and the
+    /// user's (see [`BotBuilder::plugin`]).
+    pub(crate) plugins: crate::plugins::BotPlugins,
 }
 
 /// How the bot authenticates — covers `auth`, `accessToken`, and prebuilt
@@ -130,6 +133,7 @@ impl Default for BotBuilder {
             check_timeout_interval: Duration::from_secs(30),
             packet_events: true,
             proxy: None,
+            plugins: Default::default(),
         }
     }
 }
@@ -265,6 +269,33 @@ impl BotBuilder {
         self.packet_events = enabled;
         self
     }
+    /// `bot.loadPlugin` analog: add a Bevy plugin to the bot's app, after
+    /// the engine's and the port's. It runs inside the engine's ECS, so it
+    /// can add systems, components, and messages; see the engine's
+    /// `ClientPlugins` for what it can order against. The plugin is cloned
+    /// once for each `connect` of this builder.
+    pub fn plugin(mut self, plugin: impl mineflayer_engine::app::Plugin + Clone) -> Self {
+        self.plugins.user.push(crate::plugins::add_plugin(plugin));
+        self
+    }
+
+    /// `options.respawn` (default `true`): `false` leaves out the engine's
+    /// auto-respawn, so the bot stays dead until [`Bot::respawn`] is
+    /// called.
+    ///
+    /// [`Bot::respawn`]: crate::Bot::respawn
+    pub fn respawn(mut self, enabled: bool) -> Self {
+        self.plugins.respawn = enabled;
+        self
+    }
+
+    /// Whether the engine accepts every resource pack the server pushes
+    /// (default `true`). With `false`, nothing answers a push on its own.
+    pub fn accept_resource_packs(mut self, enabled: bool) -> Self {
+        self.plugins.accept_resource_packs = enabled;
+        self
+    }
+
     /// `options.agent`-analog — connect through a SOCKS5 proxy
     /// (the engine's `Client::join_with_proxy`; covers the server connection,
     /// not Mojang session auth).
@@ -345,12 +376,8 @@ impl BotBuilder {
             .await
             .map_err(|e| Error::Connect(e.to_string()))?;
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (opts, _) = StartClientOpts::new_with_plugins(
-            account,
-            address,
-            Some(tx),
-            crate::plugins::BotPlugins,
-        );
+        let (opts, _) =
+            StartClientOpts::new_with_plugins(account, address, Some(tx), builder.plugins.clone());
         let opts = match builder.proxy.clone() {
             Some(proxy) => opts.proxy(proxy),
             None => opts,

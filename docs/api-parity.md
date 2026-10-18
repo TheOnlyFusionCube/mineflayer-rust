@@ -59,7 +59,7 @@ Events become `BotEvent` variants or per-domain event enums; payloads use the en
 | `options.storageBuilder` | lifecycle | `n/a` | wontfix | n/a — anvil provider out of scope |
 | `options.client` | lifecycle | `Bot::new(client)` | ported | doc-hidden escape hatch; no event bridge on prebuilt clients |
 | `options.brand` | lifecycle | `BotBuilder::brand(impl Into<String>)` | ported | `minecraft:brand` custom payload sent on `Event::Login` — upstream's login-packet timing; the engine also sends `"vanilla"` during config phase, and the server keeps the last brand received, so ours wins |
-| `options.respawn` | lifecycle | `n/a` | diverges | the engine auto-respawns unconditionally; no toggle exposed |
+| `options.respawn` | lifecycle | `BotBuilder::respawn(bool)` | ported | `false` leaves the engine's `AutoRespawnPlugin` out of the app; `bot.respawn()` respawns by hand |
 | `options.plugins` | lifecycle | `n/a` | wontfix | no runtime plugin loader — compile-time plugin model (same as `loadInternalPlugins`/`loadPlugin*`/`hasPlugin`) |
 | `options.physicsEnabled` | lifecycle | `n/a` | wontfix | the engine's PhysicsPlugin is baked into `Client::join`'s default plugins — no disable seam; `bot.physics_enabled()` reports always-true |
 | `options.chat (settings passthrough)` | lifecycle | `BotBuilder::chat(ChatVisibility)` | ported | `'enabled'`/`'commandsOnly'`/`'disabled'` → `ChatVisibility::Full`/`System`/`Hidden`; merged into the `ClientInformation` sent on Init |
