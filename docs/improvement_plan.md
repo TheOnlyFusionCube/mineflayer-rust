@@ -1323,8 +1323,8 @@ the commit that completes the item.
 | ST7 | done; `OBSERVERS` stays as the emission order (D-port-plugins) | (this commit) |
 | OP1 | done | (this commit) |
 | OP2 | done | (this commit) |
-| OP3 | open | |
-| OP4 | open | |
+| OP3 | done | (this commit) |
+| OP4 | done; follow and dynamic goals step in the bridge on each `Tick`, not in an ECS system (D-port-plugins: the bridge is the one sender, and a goal step must read the facade between passes) | (this commit) |
 | OP5 | open | |
 | OP6 | open | |
 | EV1 | done | `a8f77a5` |

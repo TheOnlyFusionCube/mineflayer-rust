@@ -7,34 +7,25 @@
 //! `Arc<dyn Goal>` + [`PathfinderOpts`] on the `Pathfinder` component and its
 //! systems repath on obstruction, timeout, and partial-path completion while
 //! the goal stands — the same recovery loop upstream drives by re-running
-//! A* after `path_reset`, so mid-path fixes come free. Facade bookkeeping
-//! The engine has no slot for (the [`Goal`] enum the user set, `dynamic`,
-//! `Movements`, watcher cancellation) lives in the `PathfinderFacade` ECS
+//! A* after `path_reset`, so mid-path fixes come free. What the engine has
+//! no slot for (the [`Goal`] the user set, `dynamic`, `Movements`, the
+//! `goto`s waiting on the goal) lives in the `PathfinderFacade` ECS
 //! component on the client entity.
 //!
-//! Path events come from the engine's `Event::Pathfinder` stream (path
-//! found with path/is_partial/elapsed, goal reached, stopped) — see
-//! `tracking`. One piece of bookkeeping needs care beyond translation:
+//! Each engine goto has a [`GotoId`], and every engine path event names
+//! its goto. The facade records the goto its goal runs as now, so the
+//! bridge (`tracking`) acts only on the events of that goto: an event of a
+//! replaced or stopped goto is stale by construction. Upstream's
+//! `thinkTimeout` bounds the searches of one goal end to end; the engine's
+//! `total_timeout` sums the partial searches of one goto and reports
+//! `Timeout` once, with the goal kept (upstream's surviving `stateGoal`).
 //!
-//! - upstream's `thinkTimeout` bounds one A* end-to-end, but the engine
-//!   splits the search into a fresh `max_timeout` per repath, so the
-//!   budget is tracked cumulatively per goal issue — partial progress
-//!   can't keep a `goto` pending forever (upstream's `timeout`). The
-//!   reject is promise-level like upstream's: the facade goal is the
-//!   surviving `stateGoal` and stays installed (watchers and partial
-//!   paths keep running); only `last_failure` records the outcome so a
-//!   pending `goto` can settle.
-//!
-//! - `path_update` — a path was installed, a repath result merged
-//!   mid-run (the executing path grows — consumption only shrinks), or
-//!   a calculation finished (the engine clears `is_calculating` for every
-//!   result, failures included, matching upstream's per-result
-//!   `path_update`).
-//! - `goal_reached` — the engine cleared the goal while its success check
-//!   holds (suppressed for `dynamic` goals, like upstream).
+//! - `path_update` — a search finished (complete, partial, or failed).
+//! - `goal_reached` — the engine reached the goal of the current goto
+//!   (suppressed for `dynamic` goals, like upstream).
 //! - `path_stop` — the goal was abandoned without reaching (emitted by
-//!   `stop()`, by a follow-goal going invalid, or here for the engine-internal
-//!   clears like world changes; deduped via the facade goal).
+//!   `stop()`, by a follow target that despawned, or by the bridge for an
+//!   engine-internal stop such as a world change).
 //! - `goal_updated` / `path_reset` — emitted synchronously by
 //!   `set_goal`/`set_movements` at upstream's call sites.
 //!
@@ -45,10 +36,7 @@
 
 use std::{
     collections::HashSet,
-    sync::{
-        Arc,
-        atomic::{self, AtomicBool},
-    },
+    sync::{Arc, atomic},
     time::Duration,
 };
 
@@ -57,7 +45,8 @@ use mineflayer_engine::{
     ecs::prelude::Component,
     entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, Position, inventory::Inventory},
     pathfinder::{
-        self, CalculatePathCtx, PathfinderClientExt, PathfinderOpts, calculate_path,
+        self, CalculatePathCtx, GotoEvent, GotoId, PathfinderClientExt, PathfinderOpts,
+        calculate_path,
         custom_state::CustomPathfinderState,
         goals::{self, Goal as EngineGoal},
         mining::MiningCache,
@@ -67,8 +56,7 @@ use mineflayer_engine::{
     registry::builtin::BlockKind,
     world::ChunkStorage,
 };
-use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
+use tokio::sync::oneshot;
 
 mod goal;
 mod movements;
@@ -78,19 +66,18 @@ pub use goal::Goal;
 use goal::*;
 pub use movements::Movements;
 use movements::*;
-pub(crate) use tracking::{PathTracker, bridge_events};
+pub(crate) use tracking::bridge_events;
 
-use crate::bot::{TickStream, with_component, with_component_mut};
+use crate::bot::{with_component, with_component_mut};
 use crate::{Bot, BotEvent, Error, Result, windows::Item, world::Block};
 
 /// Cost added to an edge that enters a `blocks_to_avoid` block — the same
 /// 100 upstream's `Movements` uses for an unsafe step.
 const AVOID_STEP_COST: f32 = 100.0;
 
-/// `bot.pathfinder.thinkTimeout` upstream (5000 ms) — the per-search time
-/// budget; the engine's `PathfinderOpts::max_timeout` plays the same role,
-/// and the bridge applies it cumulatively across repaths (see
-/// [`bridge_events`]) since upstream's sliced A* shares one budget.
+/// `bot.pathfinder.thinkTimeout` upstream (5000 ms) — the time budget of
+/// one goal's searches; the engine gets it as each search's `max_timeout`
+/// and as the goto's `total_timeout`.
 const DEFAULT_THINK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Upstream's `results.status` on `path_update` — the A* outcome a search
@@ -107,7 +94,7 @@ pub enum PathStatus {
     /// route exists.
     NoPath,
     /// `'timeout'` — the search hit its time budget (`think_timeout`)
-    /// without a complete or partial path.
+    /// without a complete path.
     Timeout,
 }
 
@@ -168,57 +155,93 @@ pub struct PathResult {
     pub path: Vec<BlockPos>,
 }
 
-/// Facade state the engine has no slot for: the [`Goal`] the user set (the engine
-/// keeps only the opaque `Arc<dyn Goal>`), the `dynamic` flag, the
-/// `Movements`, and the cancel flag for the follow/dynamic watcher.
+/// What a waiting `goto` learns about its goal.
+type Waiter = oneshot::Sender<std::result::Result<(), PathError>>;
+
+/// Facade state the engine has no slot for.
 #[derive(Component)]
 pub(crate) struct PathfinderFacade {
-    /// The last `set_goal` argument. `None` once the goal is reached or
-    /// abandoned (cleared by the bridge diff, `stop`, or a watcher exit).
+    /// The last `set_goal` argument (upstream's `stateGoal`). `None` once
+    /// the goal is reached or abandoned.
     pub goal: Option<Goal>,
-    /// Bumped every `set_goal` and every `set_movements` re-issue — lets
-    /// the bridge tell "goal was replaced" from "goal was abandoned" when
-    /// it would otherwise clobber a new goal with a stale clear, and lets
-    /// watchers tell "my issue is still current" from "a newer goal or
-    /// movements config superseded it".
-    pub goal_gen: u64,
-    /// Bumped by `set_goal` only — `goto` waits compare it to learn "the
-    /// goal was replaced" (`GoalChanged`) even when the `goal_updated`
-    /// event lagged out of the broadcast window. `set_movements`
-    /// re-issues don't count: upstream emits `path_reset` there, not
-    /// `goal_updated`, so a pending goto must survive it.
-    pub set_gen: u64,
     /// The `setGoal` `dynamic` argument — suppresses `goal_reached` and
     /// re-paths whenever the goal stops holding (upstream semantics).
     pub dynamic: bool,
     /// `bot.pathfinder.movements`.
     pub movements: Movements,
-    /// `bot.pathfinder.thinkTimeout` — the per-search budget, applied as
-    /// `PathfinderOpts::max_timeout` at issue time; the bridge compares a
-    /// failed search's duration against it to report `NoPath` vs
-    /// `Timeout`.
+    /// `bot.pathfinder.thinkTimeout`.
     pub think_timeout: Duration,
-    /// The terminal search outcome that cleared `goal`, if any — lets a
-    /// `goto` ticking in just after the failure-clear still reject
-    /// `NoPath`/`Timeout` instead of the generic `PathStopped`.
-    pub last_failure: Option<PathError>,
-    /// Set to cancel the running follow/dynamic watcher.
-    watcher_cancel: Option<Arc<AtomicBool>>,
+    /// The engine goto that `goal` runs as. A follow step and a
+    /// `set_movements` start a new one. `None` while a `dynamic` goal
+    /// waits at its target.
+    pub goto: Option<GotoId>,
+    /// The follow target's block when `goal` last went to the engine.
+    follow_block: Option<BlockPos>,
+    /// The `goto` calls waiting for `goal`'s outcome.
+    waiters: Vec<Waiter>,
 }
 
 impl Default for PathfinderFacade {
     fn default() -> Self {
         Self {
             goal: None,
-            goal_gen: 0,
-            set_gen: 0,
             dynamic: false,
             movements: Movements::default(),
             think_timeout: DEFAULT_THINK_TIMEOUT,
-            last_failure: None,
-            watcher_cancel: None,
+            goto: None,
+            follow_block: None,
+            waiters: Vec::new(),
         }
     }
+}
+
+impl PathfinderFacade {
+    /// Give every waiting `goto` its outcome.
+    fn settle(&mut self, outcome: std::result::Result<(), PathError>) {
+        for waiter in self.waiters.drain(..) {
+            let _ = waiter.send(outcome);
+        }
+    }
+
+    /// A goto of `goal` under the facade's movements and budget, recorded
+    /// as the goto the goal runs as.
+    fn goto_event(
+        &mut self,
+        entity: bevy_ecs::entity::Entity,
+        goal: Arc<dyn EngineGoal>,
+    ) -> GotoEvent {
+        let opts = self
+            .movements
+            .to_opts()
+            .max_timeout(self.think_timeout)
+            .total_timeout(self.think_timeout);
+        let event = GotoEvent {
+            entity,
+            goal,
+            opts,
+            id: GotoId::next(),
+        };
+        self.goto = Some(event.id);
+        event
+    }
+}
+
+/// Change the facade and send the goto that `f` returns under one ECS
+/// lock, so the facade's `goto` and the engine's goal can't be seen apart.
+fn update_facade<R>(
+    client: &mineflayer_engine::Client,
+    f: impl FnOnce(&mut PathfinderFacade) -> (R, Option<GotoEvent>),
+) -> Option<R> {
+    let mut ecs = client.ecs.write();
+    let (result, goto) = {
+        let mut entity = ecs.get_entity_mut(client.entity).ok()?;
+        let mut facade = entity.entry::<PathfinderFacade>().or_default().into_mut();
+        f(&mut facade)
+    };
+    if let Some(goto) = goto {
+        ecs.write_message(goto);
+    }
+    Some(result)
 }
 
 /// Publish the `Movements` constraints into `CustomPathfinderState` so
@@ -281,106 +304,16 @@ impl Pathfinder<'_> {
     /// # Ok(())
     /// # }
     /// ```
-    ///
-    /// Events are the fast path; the tick poll is the source of truth —
-    /// the event stream floods with packets on a busy world, and a lagged
-    /// receiver could skip the one event this future waits on. The
-    /// `set_gen`/`last_failure` facade fields give the poll the same
-    /// discrimination the events carry.
     pub async fn goto(&self, goal: Goal) -> Result<()> {
-        // subscribe before set_goal so an already-satisfied goal can't
-        // emit `GoalReached` before we listen
-        let mut rx = self.bot.subscribe();
-        let mut ticks = self.client().get_tick_broadcaster();
-        // `End` arrives over `rx`, but >8192 queued events at disconnect
-        // can push it past a lagged receiver — the bridge's root token
-        // closes that gap
-        let root = self.bot.root.clone();
-        let client = self.client().clone();
-        let probe = goal.clone();
-        // captured inside the set_goal facade write — a separate read
-        // afterwards could adopt a racing replacement's generation and
-        // never see the GoalChanged
-        let my_gen = self.set_goal_inner(goal, false)?;
-        loop {
-            tokio::select! {
-                biased;
-                r = rx.recv() => {
-                    match r {
-                        Ok(BotEvent::GoalReached { .. }) => return Ok(()),
-                        Ok(BotEvent::PathUpdate { status, .. }) => {
-                            // a terminal update settles this goto only
-                            // when the bridge recorded OUR failure —
-                            // `set_gen` still ours and `last_failure`
-                            // carrying the same outcome. The facade goal
-                            // may still be installed (a `Timeout` leaves
-                            // upstream's `stateGoal` running) or already
-                            // cleared (`NoPath`); anything else is stale
-                            // (a previous goal's update, or an aborted
-                            // calc's `noPath` report) — skip it.
-                            if matches!(status, PathStatus::NoPath | PathStatus::Timeout)
-                                && let Some(err) = with_component::<PathfinderFacade, _>(&client, |f| {
-                                    (f.set_gen == my_gen)
-                                        .then_some(f.last_failure)
-                                        .flatten()
-                                })
-                                .flatten()
-                            {
-                                return Err(err.into());
-                            }
-                        }
-                        Ok(BotEvent::PathStop { .. }) => {
-                            return Err(PathError::PathStopped.into());
-                        }
-                        Ok(BotEvent::GoalUpdated { .. }) => {
-                            // a `set_goal` after ours — our own event is
-                            // skipped because `set_gen` is still ours
-                            if with_component::<PathfinderFacade, _>(&client, |f| f.set_gen) != Some(my_gen) {
-                                return Err(PathError::GoalChanged.into());
-                            }
-                        }
-                        Ok(BotEvent::End(_)) => return Err(Error::NotConnected),
-                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(broadcast::error::RecvError::Closed) => {
-                            return Err(Error::NotConnected);
-                        }
-                    }
-                }
-                _ = root.cancelled() => return Err(Error::NotConnected),
-                t = ticks.recv() => {
-                    if matches!(t, Err(broadcast::error::RecvError::Closed)) {
-                        return Err(Error::NotConnected);
-                    }
-                    // a Lagged tick still means time passed — poll anyway.
-                    // resolve from state, lagged events or not: the
-                    // facade goal is cleared on reach/stop/`NoPath`, but a
-                    // `Timeout` leaves the goal installed (upstream's
-                    // surviving `stateGoal`) with only `last_failure`
-                    // recording the outcome
-                    match with_component::<PathfinderFacade, _>(&client, |f| {
-                        (f.set_gen, f.goal.is_some(), f.last_failure)
-                    }) {
-                        // a `set_goal` after ours — the `goal_updated`
-                        // event may never have reached us (Lagged)
-                        Some((set_gen, _, _)) if set_gen != my_gen => {
-                            return Err(PathError::GoalChanged.into());
-                        }
-                        // a recorded failure rejects whether the goal is
-                        // still installed (Timeout) or cleared (NoPath)
-                        Some((_, _, Some(failed))) => {
-                            return Err(failed.into());
-                        }
-                        Some((_, false, _)) => {
-                            return if probe.is_end(&client, client.position()) {
-                                Ok(())
-                            } else {
-                                Err(PathError::PathStopped.into())
-                            };
-                        }
-                        _ => {}
-                    }
-                }
-            }
+        let (waiter, outcome) = oneshot::channel();
+        self.set_goal_inner(goal, false, Some(waiter))?;
+        tokio::select! {
+            outcome = outcome => match outcome {
+                Ok(outcome) => outcome.map_err(Error::from),
+                // the facade went away with the client entity
+                Err(_) => Err(Error::NotConnected),
+            },
+            _ = self.bot.root.cancelled() => Err(Error::NotConnected),
         }
     }
 
@@ -394,41 +327,52 @@ impl Pathfinder<'_> {
     /// `Goal::Follow` with `dynamic = false` ends at the first in-range
     /// tick, and `dynamic = true` follows until stopped or despawned.
     pub fn set_goal(&self, goal: Goal, dynamic: bool) -> Result<()> {
-        self.set_goal_inner(goal, dynamic).map(|_| ())
+        self.set_goal_inner(goal, dynamic, None)
     }
 
-    /// `set_goal` that also returns the `set_gen` it established —
-    /// captured inside the same facade write so a `goto` can't adopt a
-    /// racing replacement's generation (the identity check's read side).
-    fn set_goal_inner(&self, goal: Goal, dynamic: bool) -> Result<u64> {
+    fn set_goal_inner(&self, goal: Goal, dynamic: bool, waiter: Option<Waiter>) -> Result<()> {
         let client = self.client().clone();
-        let movements = self.movements();
-        sync_constraints(&client, &movements);
+        sync_constraints(&client, &self.movements());
         // Already satisfied — the engine would drop the goto without ever
         // storing the goal, so mirror upstream's monitor: `goal_updated`
         // then `goal_reached`, and stop the in-flight path (upstream's
         // resetPath also cleared it).
         let satisfied = !dynamic && goal.is_end(&client, client.position());
-        // the facade write lands BEFORE the ECS patch — same interleave
-        // argument as `stop()`: an ownerless installed goal is
-        // silent, an ownerless clear edge is a phantom `NoPath`
-        let set_gen = with_component_mut::<PathfinderFacade, _>(&client, |f| {
-            cancel_watcher(f);
-            // `newGoal !== goal` — upstream's identity check wouldn't
-            // reject a goto when the identical goal is re-issued, so an
-            // equal goal doesn't bump `set_gen` (the re-path below still
-            // happens; only the replacement flag is deduped). `dynamic`
-            // isn't part of the identity — upstream compares only the
-            // goal object.
-            let same = f.goal.as_ref().is_some_and(|g| same_goal(g, &goal));
-            f.goal = (!satisfied).then(|| goal.clone());
-            f.dynamic = dynamic;
-            f.goal_gen += 1;
-            if !same {
-                f.set_gen += 1;
+        let engine_goal =
+            if satisfied {
+                None
+            } else {
+                Some(goal.engine_goal(&client).ok_or_else(|| {
+                    Error::NotFound("Goal::Follow's entity isn't loaded".to_string())
+                })?)
+            };
+        let follow_block = follow_block(&goal);
+        update_facade(&client, |f| {
+            // `newGoal !== goal` — upstream's identity check doesn't reject
+            // a goto when the identical goal is re-issued, so an equal goal
+            // keeps the waiting gotos. `dynamic` isn't part of the
+            // identity — upstream compares only the goal object.
+            if !f.goal.as_ref().is_some_and(|g| same_goal(g, &goal)) {
+                f.settle(Err(PathError::GoalChanged));
             }
-            f.last_failure = None;
-            f.set_gen
+            f.dynamic = dynamic;
+            f.follow_block = follow_block;
+            match engine_goal {
+                Some(engine_goal) => {
+                    f.goal = Some(goal.clone());
+                    f.waiters.extend(waiter);
+                    ((), Some(f.goto_event(client.entity, engine_goal)))
+                }
+                None => {
+                    f.goal = None;
+                    f.goto = None;
+                    f.settle(Ok(()));
+                    if let Some(waiter) = waiter {
+                        let _ = waiter.send(Ok(()));
+                    }
+                    ((), None)
+                }
+            }
         })
         .ok_or_else(|| {
             Error::InvalidState("pathfinder facade is missing — client entity is gone".into())
@@ -447,75 +391,6 @@ impl Pathfinder<'_> {
         }
         if satisfied {
             self.bot.emit_event(BotEvent::GoalReached { goal });
-            return Ok(set_gen);
-        }
-        let result = self.issue(goal, dynamic, movements);
-        if result.is_err() {
-            with_component_mut::<PathfinderFacade, _>(&client, |f| f.goal = None);
-        }
-        result.map(|_| set_gen)
-    }
-
-    /// Issue a goal to the engine (or its watcher task for
-    /// [`Goal::Follow`]/`dynamic`) after `set_goal` has done the facade
-    /// bookkeeping.
-    fn issue(&self, goal: Goal, dynamic: bool, movements: Movements) -> Result<()> {
-        let client = self.client().clone();
-        // Watchers re-check `goal_gen` against this before every
-        // re-issue — a `set_goal` since their spawn bumps it, so they
-        // can never write a stale `GotoEvent` over a replacement goal
-        // (the engine's `goto_listener` keeps the last event, and a stale
-        // goal would later emit a spurious `path_stop`).
-        let (issue_gen, think_timeout) =
-            with_component::<PathfinderFacade, _>(&client, |f| (f.goal_gen, f.think_timeout))
-                .unwrap_or_default();
-        let opts = movements.to_opts().max_timeout(think_timeout);
-        match goal {
-            Goal::Follow { entity, range } => {
-                let cancel = Arc::new(AtomicBool::new(false));
-                // set_movements re-issues through here too — always retire
-                // the previous watcher before starting a new one
-                with_component_mut::<PathfinderFacade, _>(&client, |f| {
-                    cancel_watcher(f);
-                    f.watcher_cancel = Some(cancel.clone());
-                });
-                // movements travel with the driver — every re-issue is
-                // a fresh issue, so `think_timeout` is re-read then
-                // (`set_think_timeout` must reach re-issues)
-                follow_driver(
-                    client.clone(),
-                    entity,
-                    range,
-                    movements,
-                    cancel,
-                    self.bot.driver_handle(),
-                    issue_gen,
-                );
-            }
-            _ => {
-                let chunks = client.world().read().chunks.clone();
-                let Some(engine_goal) = goal.to_engine(&chunks) else {
-                    return Err(Error::NotFound(
-                        "Goal::Follow's entity isn't loaded".to_string(),
-                    ));
-                };
-                client.start_goto_with_opts(SharedGoal(engine_goal.clone()), opts);
-                if dynamic {
-                    let cancel = Arc::new(AtomicBool::new(false));
-                    with_component_mut::<PathfinderFacade, _>(&client, |f| {
-                        cancel_watcher(f);
-                        f.watcher_cancel = Some(cancel.clone());
-                    });
-                    dynamic_watcher(
-                        client.clone(),
-                        engine_goal,
-                        movements,
-                        cancel,
-                        self.bot.root.clone(),
-                        issue_gen,
-                    );
-                }
-            }
         }
         Ok(())
     }
@@ -523,23 +398,17 @@ impl Pathfinder<'_> {
     /// `bot.pathfinder.stop()` — stop navigating now (upstream clears the
     /// path immediately, so this is the `force` stop, not the
     /// mid-move-friendly `stop_pathfinding`). Emits `path_stop` here like
-    /// upstream's `stop()`; the engine's goal clear then arrives with the
-    /// facade goal already `None`, so the bridge doesn't re-report it.
+    /// upstream's `stop()`; the engine's `Stopped` then names a goto the
+    /// facade no longer runs, so the bridge doesn't report it again.
     pub fn stop(&self) {
         let client = self.client();
         // upstream: `if (!stateGoal && path.length === 0) return` — an
         // idle stop emits nothing
         let active = !client.is_goto_target_reached()
             || with_component::<PathfinderFacade, _>(client, |f| f.goal.is_some()).unwrap_or(false);
-        // the facade write lands BEFORE the engine's stop handler runs:
-        // the opposite order lets a bridge tick see `calc_finished &&
-        // goal_cleared` with the facade goal still set and report a
-        // phantom `NoPath` a pending `goto` would trust over `PathStopped`.
-        // This order shows an ownerless installed goal — every arm
-        // gates on the facade goal, so it's silent.
         let stopped = with_component_mut::<PathfinderFacade, _>(client, |f| {
-            cancel_watcher(f);
-            f.last_failure = None;
+            f.goto = None;
+            f.settle(Err(PathError::PathStopped));
             f.goal.take()
         })
         .flatten();
@@ -582,37 +451,39 @@ impl Pathfinder<'_> {
 
     /// `bot.pathfinder.setMovements(movements)` — replaces the config and,
     /// like upstream, abandons the in-progress path (`path_reset` with
-    /// `movements_updated`) and re-paths under the new movements.
+    /// `movements_updated`) and re-paths under the new movements. The
+    /// waiting `goto`s keep waiting for the same goal.
     pub fn set_movements(&self, movements: Movements) {
         let client = self.client().clone();
         sync_constraints(&client, &movements);
         let was_executing = client.is_executing_path();
-        let goal_and_dynamic = with_component_mut::<PathfinderFacade, _>(&client, |f| {
-            f.movements = movements.clone();
-            // re-issuing is a new goal generation — watchers still
-            // holding the previous generation stop instead of
-            // overwriting the fresh goto with the old movements.
-            // `last_failure` is per-generation too: a stale `Timeout`
-            // must not reject the re-issued goal's pending `goto`
-            f.goal_gen += 1;
-            f.last_failure = None;
-            f.goal.clone().zip(Some(f.dynamic))
-        })
-        .flatten();
+        let engine_goal = self
+            .goal()
+            .and_then(|goal| goal.engine_goal(&client).zip(Some(goal)));
+        update_facade(&client, |f| {
+            f.movements = movements;
+            // reissue only the goal the engine goal was built from: a
+            // `set_goal` since then already sent its own goto
+            let goto = match engine_goal {
+                Some((engine_goal, goal))
+                    if f.goto.is_some() && f.goal.as_ref().is_some_and(|g| same_goal(g, &goal)) =>
+                {
+                    Some(f.goto_event(client.entity, engine_goal))
+                }
+                _ => None,
+            };
+            ((), goto)
+        });
         if was_executing {
             self.bot.emit_event(BotEvent::PathReset {
                 reason: PathResetReason::MovementsUpdated,
             });
         }
-        if let Some((goal, dynamic)) = goal_and_dynamic {
-            let _ = self.issue(goal, dynamic, movements);
-        }
     }
 
-    /// `bot.pathfinder.thinkTimeout` — the per-search budget applied to
-    /// every issued goto (default 5000 ms like upstream). Passed to
-    /// The engine as `PathfinderOpts::max_timeout`; also the NoPath-vs-Timeout
-    /// threshold the bridge classifies a failed search against.
+    /// `bot.pathfinder.thinkTimeout` — the search budget of every issued
+    /// goto (default 5000 ms like upstream); also the NoPath-vs-Timeout
+    /// threshold for a failed search.
     pub fn think_timeout(&self) -> Duration {
         with_component::<PathfinderFacade, _>(self.client(), |f| f.think_timeout)
             .unwrap_or(DEFAULT_THINK_TIMEOUT)
@@ -798,176 +669,15 @@ fn classify_search_result(
     }
 }
 
-/// Cancel the follow/dynamic watcher if one is running — the flag, not a
-/// task handle, so a stale watcher can never clobber a successor's state.
-fn cancel_watcher(facade: &mut PathfinderFacade) {
-    if let Some(cancel) = facade.watcher_cancel.take() {
-        cancel.store(true, atomic::Ordering::Relaxed);
+/// The block of a [`Goal::Follow`] target, `None` for other goals or an
+/// unloaded target.
+fn follow_block(goal: &Goal) -> Option<BlockPos> {
+    match goal {
+        Goal::Follow { entity, .. } => entity
+            .get_component::<Position>()
+            .map(|p| BlockPos::from(**p)),
+        _ => None,
     }
-}
-
-/// The [`Goal::Follow`] driver: every tick, re-issue a radius goal on the
-/// entity's new block position (the engine merges it into the running path).
-/// Ends silently when the facade goal is gone or its generation moved on
-/// — a non-dynamic follow ends once the bridge reports `goal_reached`,
-/// and `stop()`/`set_goal`/`set_movements` retire it through the cancel
-/// flag and `goal_gen`. Disconnect retires it through the root token
-/// (the tick channel alone never closes while the driver holds a
-/// `Client`). The entity leaving the world mirrors upstream's `isValid()`
-/// failure: the driver clears the facade goal, stops pathfinding, and
-/// reports `path_stop` itself (the ECS goal may never have been
-/// installed, so the diff can't see it).
-fn follow_driver(
-    client: mineflayer_engine::Client,
-    entity: EntityRef,
-    range: f32,
-    movements: Movements,
-    cancel: Arc<AtomicBool>,
-    bot: Bot,
-    issue_gen: u64,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticks = TickStream::new(&client, bot.root.clone());
-        let mut last_target: Option<BlockPos> = None;
-        // the goal was just issued — a drop observed on the first poll
-        // is a fresh one
-        let mut was_live = true;
-        let mut despawned = false;
-        loop {
-            if !ticks.next().await {
-                return;
-            }
-            if cancel.load(atomic::Ordering::Relaxed) {
-                break;
-            }
-            // a just-observed goal drop may be a failed search the
-            // bridge hasn't cleared yet — re-issuing in that window
-            // installs a stale goal nobody owns; skip this tick so the
-            // failure-clear can run first
-            let live = pathfinder_live(&client);
-            let fresh_drop = was_live && !live;
-            was_live = live;
-            if with_component::<PathfinderFacade, _>(&client, |f| {
-                f.goal.is_some() && f.goal_gen == issue_gen
-            }) != Some(true)
-            {
-                // reached (non-dynamic), stopped, or replaced — whoever
-                // cleared or superseded it already reported the outcome;
-                // a goal_gen check alone isn't enough: `goal.is_some()` on
-                // the *new* goal would still be true
-                return;
-            }
-            let Some(pos) = entity.get_component::<Position>().map(|p| **p) else {
-                despawned = true;
-                break;
-            };
-            let block_pos = BlockPos::from(pos);
-            if last_target == Some(block_pos) || fresh_drop {
-                continue;
-            }
-            last_target = Some(block_pos);
-            // every issue reads the live think_timeout — a
-            // `set_think_timeout` mid-follow must reach re-issues
-            let think_timeout = with_component::<PathfinderFacade, _>(&client, |f| f.think_timeout)
-                .unwrap_or(DEFAULT_THINK_TIMEOUT);
-            client.start_goto_with_opts(
-                SharedGoal(Arc::new(goals::RadiusGoal::new(pos, range))),
-                movements.to_opts().max_timeout(think_timeout),
-            );
-        }
-        if cancel.load(atomic::Ordering::Relaxed) || !despawned {
-            return;
-        }
-        // the entity despawned — the follow goal is no longer valid.
-        // Report `path_stop` only if the goal is still ours: a
-        // reach/stop/replace that beat us to the facade already owns the
-        // outcome (emitting again would double `path_stop`).
-        let stopped = with_component_mut::<PathfinderFacade, _>(&client, |f| {
-            if f.goal_gen == issue_gen {
-                f.goal.take()
-            } else {
-                None
-            }
-        })
-        .flatten();
-        let Some(goal) = stopped else {
-            return;
-        };
-        client.stop_pathfinding();
-        bot.emit_event(BotEvent::PathStop { goal: Some(goal) });
-    })
-}
-
-/// The `dynamic`-goal watcher: once the engine clears a reached goal, keep
-/// re-issuing it whenever the goal's success check stops holding —
-/// upstream's "dynamic goals never complete" semantics, which the engine's
-/// goal-clears-on-success can't express on its own. `goal_gen` gates the
-/// re-issue so a watcher can't write a stale `GotoEvent` over a goal
-/// `set_goal`/`set_movements` installed after it spawned. Disconnect
-/// retires it through the root token, like [`follow_driver`].
-fn dynamic_watcher(
-    client: mineflayer_engine::Client,
-    goal: Arc<dyn EngineGoal>,
-    movements: Movements,
-    cancel: Arc<AtomicBool>,
-    root: CancellationToken,
-    issue_gen: u64,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut ticks = TickStream::new(&client, root);
-        // the goal was just issued — a drop observed on the first poll
-        // is a fresh one
-        let mut was_live = true;
-        loop {
-            if !ticks.next().await {
-                return;
-            }
-            if cancel.load(atomic::Ordering::Relaxed) {
-                break;
-            }
-            // a just-observed goal drop may be a failed search the
-            // bridge hasn't cleared yet — re-issuing in that window
-            // installs a stale goal nobody owns; skip this tick so the
-            // failure-clear can run first
-            let live = pathfinder_live(&client);
-            let fresh_drop = was_live && !live;
-            was_live = live;
-            if !client.is_goto_target_reached() {
-                continue;
-            }
-            // while the goal still holds, idle at it — upstream keeps
-            // stateGoal set and satisfied
-            if goal.success(player_pos_to_block_pos(client.position())) {
-                continue;
-            }
-            if fresh_drop {
-                continue;
-            }
-            let Some(think_timeout) = with_component::<PathfinderFacade, _>(&client, |f| {
-                (f.goal.is_some() && f.goal_gen == issue_gen).then_some(f.think_timeout)
-            })
-            .flatten() else {
-                break;
-            };
-            client.start_goto_with_opts(
-                SharedGoal(goal.clone()),
-                movements.to_opts().max_timeout(think_timeout),
-            );
-        }
-    })
-}
-
-/// Whether the ECS pathfinder looks live — a goal installed, a search
-/// in flight, or a path executing. Watchers diff this across their own
-/// ticks: a fresh drop may be a failed search whose failure-clear
-/// hasn't run yet (the engine's goal drop lands in Update, the bridge sees
-/// it on the next GameTick), and a re-issue inside that window would
-/// install an unclaimed goal the bot then walks.
-fn pathfinder_live(client: &mineflayer_engine::Client) -> bool {
-    client
-        .try_query_self::<&pathfinder::Pathfinder, _>(|p| p.goal.is_some() || p.is_calculating)
-        .unwrap_or(false)
-        || client.is_executing_path()
 }
 
 #[cfg(test)]

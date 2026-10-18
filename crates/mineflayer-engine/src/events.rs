@@ -192,6 +192,8 @@ pub enum PathEvent {
     Timeout {
         /// The goto that used its time.
         goto: GotoId,
+        /// The partial path of the search that used the last of the time.
+        path: Vec<BlockPos>,
     },
     /// The goal's success check holds — the path executed to its end, or
     /// the goal was already satisfied.

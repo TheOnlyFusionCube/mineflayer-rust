@@ -719,7 +719,7 @@ pub fn path_found_listener(
             let empty = path.is_empty();
             let _ = local_player_events.send(Event::Pathfinder(PathEvent::PathFound {
                 goto: event.goto,
-                path,
+                path: path.clone(),
                 is_partial: event.is_partial,
                 elapsed: event.elapsed,
             }));
@@ -734,8 +734,10 @@ pub fn path_found_listener(
                         && !pathfinder.timeout_sent
                     {
                         pathfinder.timeout_sent = true;
-                        let _ = local_player_events
-                            .send(Event::Pathfinder(PathEvent::Timeout { goto: event.goto }));
+                        let _ = local_player_events.send(Event::Pathfinder(PathEvent::Timeout {
+                            goto: event.goto,
+                            path,
+                        }));
                     }
                 }
             }

@@ -150,6 +150,10 @@ merge; plan item E2 keeps this list current):
     `resource_pack_push` packet is gone. Test:
     `a_denial_is_the_only_answer_when_accept_is_off` in the port's
     `src/plugins/tests.rs`.
+28. (OP3) `PathEvent::Timeout` carries the partial path of the search
+    that used the last of the time, so the port's `path_update` with
+    status `timeout` has upstream's `results.path`. Test:
+    `a_goto_over_its_total_time_times_out_once_and_keeps_its_goal`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

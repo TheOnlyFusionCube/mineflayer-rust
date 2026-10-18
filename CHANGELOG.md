@@ -89,6 +89,13 @@
 
 ### Changed
 
+- `pathfinder().goto` waits for the outcome of its own goal and no longer
+  polls each tick. Events of a replaced or stopped goal can no longer
+  settle a newer `goto`. The `thinkTimeout` budget is the engine's
+  `total_timeout`.
+- Follow goals and `dynamic` goals step on each game tick inside the
+  event bridge; the two background tasks per goal are gone.
+- `engine::PathEvent::Timeout` has a `path` field (the partial path).
 - `BotEvent::BlockUpdate.old` is the state the update replaced, also for
   the first update of a position (it reported `old == new` there) and for
   repeated updates of one position in one pass.

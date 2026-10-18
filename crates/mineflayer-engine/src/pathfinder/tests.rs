@@ -555,8 +555,9 @@ fn a_goto_over_its_total_time_times_out_once_and_keeps_its_goal() {
                         partial += 1;
                     }
                 }
-                Event::Pathfinder(PathEvent::Timeout { goto }) => {
+                Event::Pathfinder(PathEvent::Timeout { goto, path }) => {
                     assert_eq!(goto, GotoId(9));
+                    assert!(!path.is_empty(), "the timeout carries the partial path");
                     timeouts += 1;
                 }
                 _ => {}

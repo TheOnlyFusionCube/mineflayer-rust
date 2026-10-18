@@ -255,7 +255,7 @@ const OBSERVERS: &[Observer] = &[
     },
     |cx, e| packet_events(cx.client, cx.local, e),
     |cx, e| crate::movement::bridge_events(cx.client, &mut cx.local.movement, e),
-    |cx, e| crate::pathfinder::bridge_events(cx.client, &mut cx.local.pathfinder, e),
+    |cx, e| crate::pathfinder::bridge_events(cx.client, e),
     |cx, e| entity::observe_event(cx.client, e),
     |cx, e| crate::windows::observe_event(cx.client, &cx.shared.events, e),
     |cx, e| {
@@ -308,8 +308,6 @@ struct BridgeState {
     movement: crate::movement::MovementTracker,
     /// The misc domain's per-tick `Sleep`/`Wake`/`Breath` baselines.
     misc: crate::misc::TickBaselines,
-    /// Pathfinder component-diff state for the goal/path events.
-    pathfinder: crate::pathfinder::PathTracker,
 }
 
 /// Translate one engine event into zero or more `BotEvent`s, in emission

@@ -60,8 +60,8 @@ pub enum Goal {
     /// fails. Negating the heuristic misleads A* the way the engine's
     /// deprecated `InverseGoal` did (`diverges`).
     Invert(Box<Goal>),
-    /// `goals.GoalFollow(entity, range)` — a watcher task re-issues a
-    /// radius goal whenever the entity's block position changes
+    /// `goals.GoalFollow(entity, range)` — the bot paths to a radius
+    /// goal again whenever the entity's block position changes
     /// (`diverges`: re-paths on whole-block moves rather than upstream's
     /// continuous moving goal). Like upstream, `dynamic` is the
     /// `set_goal` flag, not a property of the goal — `dynamic = false`
@@ -85,9 +85,8 @@ impl Goal {
     /// whose entity isn't loaded. A `Follow` resolves to a
     /// [`goals::RadiusGoal`] at the entity's *current* position — inside
     /// composites that's upstream's snapshot semantics (a composite never
-    /// sees the entity's later moves; `diverges`). Top-level `Follow`s
-    /// never reach here — [`Pathfinder::issue`] drives them with a
-    /// watcher that re-paths as the entity moves. `chunks` is the bot's
+    /// sees the entity's later moves; `diverges`). A top-level `Follow`
+    /// is sent again each time the entity moves to another block. `chunks` is the bot's
     /// live chunk storage, needed only by the `ReachBlockPosGoal`-backed
     /// variants' line-of-sight check.
     pub(super) fn to_engine(&self, chunks: &ChunkStorage) -> Option<Arc<dyn EngineGoal>> {
@@ -151,16 +150,24 @@ impl Goal {
             Goal::Follow { entity, range } => entity.get_component::<Position>().is_some_and(|p| {
                 goals::RadiusGoal::new(**p, *range).success(player_pos_to_block_pos(pos))
             }),
-            _ => {
-                let chunks = if self.needs_chunks() {
-                    client.world().read().chunks.clone()
-                } else {
-                    ChunkStorage::default()
-                };
-                self.to_engine(&chunks)
-                    .is_some_and(|goal| goal.success(player_pos_to_block_pos(pos)))
-            }
+            _ => self
+                .engine_goal(client)
+                .is_some_and(|goal| goal.success(player_pos_to_block_pos(pos))),
         }
+    }
+
+    /// [`Goal::to_engine`] over the bot's chunks, locked only for the
+    /// goals that read them.
+    pub(super) fn engine_goal(
+        &self,
+        client: &mineflayer_engine::Client,
+    ) -> Option<Arc<dyn EngineGoal>> {
+        let chunks = if self.needs_chunks() {
+            client.world().read().chunks.clone()
+        } else {
+            ChunkStorage::default()
+        };
+        self.to_engine(&chunks)
     }
 }
 
@@ -220,20 +227,6 @@ pub(super) fn same_goal(a: &Goal, b: &Goal) -> bool {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| same_goal(x, y))
         }
         _ => false,
-    }
-}
-
-/// A shared handle on an engine goal — the ECS stores `Arc<dyn Goal>` on
-/// the `Pathfinder` component, so wrapping the `Arc` is how the facade
-/// keeps an evaluable copy for `dynamic` re-pathing.
-#[derive(Debug)]
-pub(super) struct SharedGoal(pub(super) Arc<dyn EngineGoal>);
-impl EngineGoal for SharedGoal {
-    fn heuristic(&self, n: BlockPos) -> f32 {
-        self.0.heuristic(n)
-    }
-    fn success(&self, n: BlockPos) -> bool {
-        self.0.success(n)
     }
 }
 
@@ -490,7 +483,7 @@ mod tests {
             &Goal::BreakBlock(BlockPos::new(1, 2, 3))
         ));
 
-        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let client = pathfinder_client(Position::new(Vec3::new(0., 64., 0.)));
         let e1 = client.ecs.write().spawn(()).id();
         let e2 = client.ecs.write().spawn(()).id();
         let f1 = Goal::Follow {
@@ -519,7 +512,7 @@ mod tests {
     /// reached goal as still pending at the boundary.
     #[test]
     fn follow_is_end_uses_block_center() {
-        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let client = pathfinder_client(Position::new(Vec3::new(0., 64., 0.)));
         // entity (0.4, 64.5, 0.4) vs block (0,64,0) center (0.5,64.5,
         // 0.5): ≈0.14 — in range at r=0.5. The old Vec3 check against
         // the bot's origin would measure ≈0.75 and disagree.
@@ -560,7 +553,7 @@ mod tests {
     /// fails the conversion (`issue` then rejects "isn't loaded").
     #[test]
     fn composite_follow_resolves_to_position_snapshot() {
-        let client = watcher_client(Position::new(Vec3::new(0., 64., 0.)));
+        let client = pathfinder_client(Position::new(Vec3::new(0., 64., 0.)));
         let target_entity = client
             .ecs
             .write()
