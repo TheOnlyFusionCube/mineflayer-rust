@@ -43,6 +43,12 @@
 
 ### Changed
 
+- Keybind, selector, score, nbt, and object chat components no longer
+  fail the whole packet. They decode to `FormattedText::Unresolved`, which
+  keeps the fields and renders vanilla's fallback text. Before, a chat
+  line, title, or container title with one of them was dropped, so for
+  example `open_container` timed out on a server GUI with a keybind in
+  its title. A match over `FormattedText` must name the new variant.
 - The engine applies the inventory packets the bot used to patch in:
   `carried`/`state_id` from content and slot packets for the active menu,
   `set_player_inventory`, `set_cursor_item` (it was ignored), content

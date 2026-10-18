@@ -99,6 +99,11 @@ merge; plan item E2 keeps this list current):
     `Event::PacketDecodeFailed`; the error log stays. Test utilities:
     `Simulation::receive_raw_packet` and `init_allowing_errors`. Test:
     `mineflayer-client/tests/simulation/game_packet_decode_failed.rs`.
+19. (DF1) `FormattedText::Unresolved` holds keybind, selector, score,
+    nbt, and object components (`mineflayer-chat/src/unresolved_component.rs`):
+    the kind, the style and `extra` children, and the other fields as
+    JSON, written back unchanged. Display is vanilla's fallback. Upstream
+    returns an error for these kinds, which dropped the whole packet.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

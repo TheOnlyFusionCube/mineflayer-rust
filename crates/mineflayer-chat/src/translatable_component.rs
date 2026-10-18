@@ -194,6 +194,7 @@ impl Display for TranslatableComponent {
                     Ok(c) => c.to_string(),
                     Err(_) => c.key.to_string(),
                 },
+                FormattedText::Unresolved(c) => c.fallback_text().to_owned(),
             };
 
             f.write_str(&component_text)?;

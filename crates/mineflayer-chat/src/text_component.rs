@@ -155,6 +155,7 @@ impl Display for TextComponent {
             let component_text = match &component {
                 FormattedText::Text(c) => c.text.to_string(),
                 FormattedText::Translatable(c) => c.read()?.to_string(),
+                FormattedText::Unresolved(c) => c.fallback_text().to_owned(),
             };
 
             f.write_str(&component_text)?;

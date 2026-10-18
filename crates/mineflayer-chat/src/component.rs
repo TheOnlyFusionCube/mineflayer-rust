@@ -14,6 +14,7 @@ use crate::{
     style::{ChatFormatting, Style},
     text_component::TextComponent,
     translatable_component::{PrimitiveOrComponent, TranslatableComponent},
+    unresolved_component::{UnresolvedComponent, UnresolvedKind},
 };
 
 /// A chat component, basically anything you can see in chat.
@@ -22,6 +23,8 @@ use crate::{
 pub enum FormattedText {
     Text(TextComponent),
     Translatable(TranslatableComponent),
+    /// A keybind, selector, score, nbt, or object component.
+    Unresolved(UnresolvedComponent),
 }
 
 pub static DEFAULT_STYLE: LazyLock<Style> = LazyLock::new(|| Style {
@@ -35,6 +38,7 @@ impl FormattedText {
         match self {
             Self::Text(c) => &mut c.base,
             Self::Translatable(c) => &mut c.base,
+            Self::Unresolved(c) => &mut c.base,
         }
     }
 
@@ -42,33 +46,13 @@ impl FormattedText {
         match self {
             Self::Text(c) => &c.base,
             Self::Translatable(c) => &c.base,
+            Self::Unresolved(c) => &c.base,
         }
     }
 
     /// Add a component as a sibling of this one
     fn append(&mut self, sibling: FormattedText) {
         self.get_base_mut().siblings.push(sibling);
-    }
-
-    /// Get the "separator" component from the json
-    fn parse_separator(
-        json: &serde_json::Value,
-    ) -> Result<Option<FormattedText>, serde_json::Error> {
-        if let Some(separator) = json.get("separator") {
-            return Ok(Some(FormattedText::deserialize(separator)?));
-        }
-        Ok(None)
-    }
-
-    #[cfg(feature = "simdnbt")]
-    fn parse_separator_nbt(nbt: &simdnbt::borrow::NbtCompound) -> Option<FormattedText> {
-        use simdnbt::FromNbtTag;
-
-        if let Some(separator) = nbt.get("separator") {
-            FormattedText::from_nbt_tag(separator)
-        } else {
-            None
-        }
     }
 
     /// Render all components into a single `String`, using your custom
@@ -186,6 +170,7 @@ impl FormattedText {
                     append_text(&c.key);
                 }
             },
+            Self::Unresolved(c) => append_text(c.fallback_text()),
         };
 
         for sibling in &self.get_base().siblings {
@@ -342,45 +327,14 @@ impl<'de> Deserialize<'de> for FormattedText {
                         Vec::new(),
                     ));
                 }
-            } else if let Some(score) = json.get("score") {
-                // object = GsonHelper.getAsJsonObject(jsonObject, "score");
-                if score.get("name").is_none() || score.get("objective").is_none() {
-                    return Err(de::Error::missing_field(
-                        "A score component needs at least a name and an objective",
-                    ));
-                }
-                // TODO
-                return Err(de::Error::custom(
-                    "score text components aren't yet supported",
-                ));
-            } else if json.get("selector").is_some() {
-                return Err(de::Error::custom(
-                    "selector text components aren't yet supported",
-                ));
-            } else if json.get("keybind").is_some() {
-                return Err(de::Error::custom(
-                    "keybind text components aren't yet supported",
-                ));
-            } else if json.get("object").is_some() {
-                return Err(de::Error::custom(
-                    "object text components aren't yet supported",
-                ));
+            } else if let Some(fields) = json.as_object()
+                && let Some(kind) = UnresolvedKind::from_fields(fields)
+            {
+                component =
+                    FormattedText::Unresolved(UnresolvedComponent::new(kind, fields.clone()));
             } else {
-                let Some(_nbt) = json.get("nbt") else {
-                    return Err(de::Error::custom(
-                        format!("Don't know how to turn {json} into a FormattedText").as_str(),
-                    ));
-                };
-                let _separator =
-                    FormattedText::parse_separator(&json).map_err(de::Error::custom)?;
-
-                let _interpret = match json.get("interpret") {
-                    Some(v) => v.as_bool().ok_or(Some(false)).unwrap(),
-                    None => false,
-                };
-                if let Some(_block) = json.get("block") {}
                 return Err(de::Error::custom(
-                    "nbt text components aren't yet supported",
+                    format!("Don't know how to turn {json} into a FormattedText").as_str(),
                 ));
             }
             if let Some(extra) = json.get("extra") {
@@ -432,6 +386,7 @@ impl simdnbt::Serialize for FormattedText {
         match self {
             FormattedText::Text(c) => c.to_compound(),
             FormattedText::Translatable(c) => c.to_compound(),
+            FormattedText::Unresolved(c) => c.to_compound(),
         }
     }
 }
@@ -566,35 +521,18 @@ impl FormattedText {
                 component =
                     FormattedText::Translatable(TranslatableComponent::new(translate, Vec::new()));
             }
-        } else if let Some(score) = compound.compound("score") {
-            if score.get("name").is_none() || score.get("objective").is_none() {
-                trace!("A score component needs at least a name and an objective");
-                return None;
-            }
-            // TODO: implement these
-            return None;
-        } else if compound.get("selector").is_some() {
-            trace!("selector text components aren't supported");
-            return None;
-        } else if compound.get("keybind").is_some() {
-            trace!("keybind text components aren't supported");
-            return None;
-        } else if compound.get("object").is_some() {
-            trace!("object text components aren't supported");
-            return None;
         } else if let Some(tag) = compound.get("") {
             return FormattedText::from_nbt_tag(tag);
         } else {
-            let _nbt = compound.get("nbt")?;
-            let _separator = FormattedText::parse_separator_nbt(&compound)?;
-
-            let _interpret = match compound.get("interpret") {
-                Some(v) => v.byte().unwrap_or_default() != 0,
-                None => false,
+            let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(compound.to_owned())
+            else {
+                return None;
             };
-            if let Some(_block) = compound.get("block") {}
-            trace!("nbt text components aren't yet supported");
-            return None;
+            let Some(kind) = UnresolvedKind::from_fields(&fields) else {
+                trace!("{fields:?} is not a text component");
+                return None;
+            };
+            component = FormattedText::Unresolved(UnresolvedComponent::new(kind, fields));
         }
         if let Some(extra) = compound.get("extra") {
             // if it's an array, deserialize every item
@@ -686,6 +624,7 @@ impl Display for FormattedText {
         match self {
             FormattedText::Text(c) => c.fmt(f),
             FormattedText::Translatable(c) => c.fmt(f),
+            FormattedText::Unresolved(c) => c.fmt(f),
         }
     }
 }

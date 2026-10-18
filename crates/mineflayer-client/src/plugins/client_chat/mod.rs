@@ -191,7 +191,7 @@ impl ChatPacket {
                 false
             }
             _ => match self.message() {
-                FormattedText::Text(_) => false,
+                FormattedText::Text(_) | FormattedText::Unresolved(_) => false,
                 FormattedText::Translatable(t) => t.key == "commands.message.display.incoming",
             },
         }

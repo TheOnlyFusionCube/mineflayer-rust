@@ -1105,16 +1105,17 @@ mod tests {
         assert_eq!(msg.to_string(), "<faye> hello");
         assert!(msg.text().is_none());
 
-        // documented gap: the engine's deserializer rejects score/selector/
-        // keybind/nbt/object components (prismarine-chat accepts them)
-        for json in [
-            r#"{"score":{"name":"a","objective":"b"}}"#,
-            r#"{"selector":"@a"}"#,
-            r#"{"keybind":"key.jump"}"#,
+        // score/selector/keybind components parse and render vanilla's
+        // fallback text, like prismarine-chat
+        for (json, text) in [
+            (r#"{"score":{"name":"a","objective":"b","value":"3"}}"#, "3"),
+            (r#"{"selector":"@a"}"#, "@a"),
+            (r#"{"keybind":"key.jump"}"#, "key.jump"),
         ] {
-            assert!(
-                ChatMessage::parse(json).is_err(),
-                "{json} should fail to parse"
+            assert_eq!(
+                ChatMessage::parse(json).unwrap().to_string(),
+                text,
+                "{json}"
             );
         }
     }
