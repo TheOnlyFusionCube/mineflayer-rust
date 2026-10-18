@@ -22,10 +22,7 @@ use mineflayer_engine::{
     block::BlockTrait,
     core::attribute_modifier_operation::AttributeModifierOperation,
     ecs::prelude::Component,
-    entity::{
-        ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory,
-        mining::get_mine_progress,
-    },
+    entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, inventory::Inventory},
     inventory::{
         ItemStack,
         components::{AttributeModifiers, EquipmentSlotGroup, Tool as ToolComponent},
@@ -98,29 +95,6 @@ pub(crate) fn can_harvest(state: mineflayer_engine::block::BlockState, stack: &I
         }
     }
     false
-}
-
-/// `getDigTime` analog — mine progress per tick for `stack` on `state`
-/// (upstream sorts candidates by dig time ascending; progress per tick
-/// is its monotone inverse, so we sort descending).
-#[allow(clippy::too_many_arguments)]
-fn dig_progress(
-    state: mineflayer_engine::block::BlockState,
-    stack: &ItemStack,
-    fluid_on_eyes: &FluidOnEyes,
-    physics: &Physics,
-    attributes: &Attributes,
-    active_effects: &ActiveEffects,
-) -> f32 {
-    let block = Box::<dyn BlockTrait>::from(state);
-    get_mine_progress(
-        block.as_ref(),
-        stack,
-        fluid_on_eyes,
-        physics,
-        attributes,
-        active_effects,
-    )
 }
 
 /// Melee damage an item deals held in the main hand — 1 (the empty
@@ -289,7 +263,7 @@ impl Tool<'_> {
                 let slots = menu.slots();
                 let player = menu.player_slots_range();
                 let progress = |stack: &ItemStack| {
-                    dig_progress(
+                    crate::interact::mine_progress(
                         state,
                         stack,
                         fluid_on_eyes,
@@ -401,9 +375,9 @@ impl Tool<'_> {
             }
             // cheapest dig time first (upstream sorts toolCostFilter asc)
             pulls.sort_by(|a, b| {
-                self.dig_progress_of(&b.stack, block)
-                    .partial_cmp(&self.dig_progress_of(&a.stack, block))
-                    .unwrap_or(std::cmp::Ordering::Equal)
+                self.bot
+                    .mine_progress(&b.stack, block)
+                    .total_cmp(&self.bot.mine_progress(&a.stack, block))
             });
             for item in pulls.into_iter().take(max_tools) {
                 chest
@@ -419,27 +393,6 @@ impl Tool<'_> {
         Err(Error::NotFound(
             "NoChest: There are no chests with available tools in them!".into(),
         ))
-    }
-
-    /// `get_mine_progress` for one stack outside the pick closure —
-    /// `0.` when the player components are gone.
-    fn dig_progress_of(&self, stack: &ItemStack, block: &Block) -> f32 {
-        let state = block.state;
-        self.bot
-            .client
-            .try_query_self::<(&Physics, &FluidOnEyes, &Attributes, &ActiveEffects), _>(
-                |(physics, fluid_on_eyes, attributes, active_effects)| {
-                    dig_progress(
-                        state,
-                        stack,
-                        fluid_on_eyes,
-                        physics,
-                        attributes,
-                        active_effects,
-                    )
-                },
-            )
-            .unwrap_or(0.)
     }
 
     /// `bot.tool.equipForEntity(entity)` — equip the strongest melee

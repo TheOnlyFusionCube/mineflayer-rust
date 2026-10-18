@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use mineflayer_engine::ecs as bevy_ecs;
 use mineflayer_engine::{
     BlockPos, Vec3,
-    block::BlockTrait,
+    block::{BlockState, BlockTrait},
     core::{direction::Direction, game_type::GameMode, hit_result::BlockHitResult},
     ecs::{entity::Entity, prelude::Component, world::World},
     entity::{
@@ -17,6 +17,7 @@ use mineflayer_engine::{
         mining::get_mine_progress,
     },
     interact::pick::HitResultComponent,
+    inventory::ItemStack,
     local_player::WorldHolder,
     mining::{CancelMiningEvent, Mining, MiningQueued},
     physics::collision::BlockWithShape,
@@ -120,6 +121,27 @@ fn cancel_engine_mining(ecs: &mut World, entity: Entity) {
 
 /// Per-tick mine progress → the `digTime` contract: `∞` for unbreakable
 /// (`progress <= 0`), otherwise `ceil(1/progress)` ticks in ms.
+/// Mine progress per tick of `stack` on `state`: the one scorer that dig
+/// time and both best-tool picks use. Dig time is its inverse, so the
+/// fastest tool has the most progress.
+pub(crate) fn mine_progress(
+    state: BlockState,
+    stack: &ItemStack,
+    fluid_on_eyes: &FluidOnEyes,
+    physics: &Physics,
+    attributes: &Attributes,
+    active_effects: &ActiveEffects,
+) -> f32 {
+    get_mine_progress(
+        Box::<dyn BlockTrait>::from(state).as_ref(),
+        stack,
+        fluid_on_eyes,
+        physics,
+        attributes,
+        active_effects,
+    )
+}
+
 fn dig_time_ms(progress: f32) -> Option<Duration> {
     (progress > 0.).then(|| Duration::from_millis((progress.recip().ceil() * 50.) as u64))
 }
@@ -437,27 +459,30 @@ impl Bot {
         if self.game_mode() == Some(GameMode::Creative) {
             return Some(Duration::ZERO);
         }
-        let block_trait = Box::<dyn BlockTrait>::from(block.state);
-        let progress = self
+        let held = self
             .client
-            .try_query_self::<(
-                &Inventory,
-                &FluidOnEyes,
-                &Physics,
-                &Attributes,
-                &ActiveEffects,
-            ), _>(|(inventory, fluid_on_eyes, physics, attributes, effects)| {
-                get_mine_progress(
-                    block_trait.as_ref(),
-                    inventory.held_item(),
-                    fluid_on_eyes,
-                    physics,
-                    attributes,
-                    effects,
-                )
-            })
+            .try_query_self::<&Inventory, _>(|inventory| inventory.held_item().clone())
             .ok()?;
-        dig_time_ms(progress)
+        dig_time_ms(self.mine_progress(&held, block))
+    }
+
+    /// [`mine_progress`] of `stack` on `block` for this bot; `0.` when the
+    /// player components are gone.
+    pub(crate) fn mine_progress(&self, stack: &ItemStack, block: &Block) -> f32 {
+        self.client
+            .try_query_self::<(&FluidOnEyes, &Physics, &Attributes, &ActiveEffects), _>(
+                |(fluid_on_eyes, physics, attributes, effects)| {
+                    mine_progress(
+                        block.state,
+                        stack,
+                        fluid_on_eyes,
+                        physics,
+                        attributes,
+                        effects,
+                    )
+                },
+            )
+            .unwrap_or(0.)
     }
 
     /// `bot.canDigBlock(block)` — diggable material within the survival

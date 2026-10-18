@@ -55,10 +55,7 @@ use std::{
 use mineflayer_engine::{
     BlockPos, EntityRef, Event, PathEvent, Vec3, ecs as bevy_ecs,
     ecs::prelude::Component,
-    entity::{
-        ActiveEffects, Attributes, FluidOnEyes, Physics, Position, inventory::Inventory,
-        mining::get_mine_progress,
-    },
+    entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, Position, inventory::Inventory},
     pathfinder::{
         self, CalculatePathCtx, PathfinderClientExt, PathfinderOpts, calculate_path,
         custom_state::CustomPathfinderState,
@@ -637,7 +634,6 @@ impl Pathfinder<'_> {
     /// `inventory.items()` covers; crafting/armor/offhand slots are out.
     pub fn best_harvest_tool(&self, block: &Block) -> Option<Item> {
         let client = self.client();
-        let block_trait = Box::<dyn mineflayer_engine::block::BlockTrait>::from(block.state);
         client
             .try_query_self::<(
                 &Inventory,
@@ -657,8 +653,8 @@ impl Pathfinder<'_> {
                     if stack.is_empty() {
                         continue;
                     }
-                    let progress = get_mine_progress(
-                        &*block_trait,
+                    let progress = crate::interact::mine_progress(
+                        block.state,
                         stack,
                         fluid,
                         physics,
