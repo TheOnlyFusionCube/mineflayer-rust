@@ -393,3 +393,45 @@ fn book_add_replace_remove() {
     observe_event(&mut book, &remove);
     assert!(book.entries.is_empty());
 }
+
+/// With an empty recipe book, the vanilla table still has the recipes:
+/// upstream's static `minecraft-data` table.
+#[test]
+fn recipes_for_finds_recipes_the_server_did_not_unlock() {
+    use crate::test_util::sim::BotSim;
+    use mineflayer_engine::protocol::packets::game::ClientboundContainerSetContent;
+
+    let mut sim = BotSim::new();
+    let mut items = vec![ItemStack::Empty; 46];
+    items[36] = ItemStack::new(ItemKind::OakPlanks, 2);
+    sim.receive(ClientboundContainerSetContent {
+        container_id: 0,
+        state_id: 1,
+        items,
+        carried_item: ItemStack::Empty,
+    });
+    sim.tick();
+    assert_eq!(sim.bot.known_recipe_count(), 0);
+    let sticks = sim.bot.recipes_for(ItemKind::Stick, None, None, None);
+    assert!(!sticks.is_empty(), "the planks make sticks");
+    assert!(
+        sim.bot
+            .recipes_for(ItemKind::Chest, None, None, None)
+            .is_empty(),
+        "two planks make no chest"
+    );
+    // a chest needs the 3x3 grid
+    assert!(sim.bot.recipes_all(ItemKind::Chest, None, None).is_empty());
+    let table = Block::new(
+        sim.bot.client(),
+        mineflayer_engine::BlockPos::new(0, 0, 0),
+        mineflayer_engine::block::BlockState::from(
+            mineflayer_engine::registry::builtin::BlockKind::CraftingTable,
+        ),
+    );
+    assert!(
+        !sim.bot
+            .recipes_all(ItemKind::Chest, None, Some(&table))
+            .is_empty()
+    );
+}

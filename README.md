@@ -260,8 +260,8 @@ re-exports) so that they always match the version the bot uses.
   APIs are `diverges` by construction.
 - **`diverges` rows are real.** Prominent ones: `event('chat')` is a raw
   always-on packet event (the derived `Message`/`MessageStr` family is the
-  strict upstream semantic); `recipes_for`/`recipes_all` see only
-  server-unlocked recipe-book entries; `bot.physics` is read-only;
+  strict upstream semantic); `bot.physics` changes only gravity, air
+  drag, and airborne inertia;
   `find_player` returns `Option`, not upstream's union type. Read
   api-parity.md before porting code that touches them.
 - **No `bot.on(...)` emitter on `Window`.** Window events are `BotEvent`

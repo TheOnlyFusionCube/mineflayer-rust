@@ -85,10 +85,16 @@ with the new `mineflayer-protocol` definition:
    (`rcon> gamerule respawn_radius 0: …is now set to: 0`). If the new
    version renames the rule again, add the new name to the `rcon` calls in
    the script.
+4. Write the recipe table again from the new server jar:
+   `python3 scripts/gen-recipes.py`. It replaces
+   `src/craft/vanilla_recipes.json` (the shaped and shapeless crafting
+   recipes). If the recipe JSON format changed, correct the script. The
+   test `the_table_has_every_crafting_recipe` checks the count; change it
+   to the count that the script prints.
 
 ## 6. Verify
 
-1. Run `scripts/verify.sh`. All nine steps must pass.
+1. Run `scripts/verify.sh`. All steps must pass.
 2. Run the full live suite on a reset world:
    `cargo test --features live -- --ignored --test-threads=1`.
 3. Run each example against the fixture one time

@@ -2,14 +2,16 @@
 //!
 //! # Where recipes come from
 //!
-//! Upstream reads a static minecraft-data table; this port reads the
-//! server's own recipe book: mc26 sends `c_recipe_book_add` with full
-//! `RecipeDisplayEntry`s (shape, per-slot alternatives, result) as
-//! recipes unlock, and `c_recipe_book_remove` retracts them. The bridge
-//! records both into `RecipeBook`; `recipes_for`/`recipes_all` convert
-//! the crafting displays into [`Recipe`]s. The book only contains what
-//! the server has unlocked — a fresh vanilla join knows one recipe
-//! (crafting table) and learns more as the inventory changes.
+//! Upstream reads a static minecraft-data table. This port reads two
+//! sources: the server's recipe book and the vanilla table. mc26 sends
+//! `c_recipe_book_add` with full `RecipeDisplayEntry`s (shape, per-slot
+//! alternatives, result) as recipes unlock, and `c_recipe_book_remove`
+//! retracts them; the bridge records both into `RecipeBook`. The book only
+//! contains what the server has unlocked — a fresh vanilla join knows one
+//! recipe — so the vanilla crafting table (`vanilla_recipes.json`,
+//! generated from the server jar) supplies the rest. `recipes_for` and
+//! `recipes_all` return the book's recipes first, then the table's that
+//! the book lacks.
 //!
 //! `craft` itself is book-free, exactly like upstream's `craft.js`: it
 //! clicks the 2x2 player grid or a 3x3 table window and takes the
@@ -522,13 +524,13 @@ fn result_matches(r: &Recipe, kind: ItemKind, metadata: Option<i32>) -> bool {
 
 impl Bot {
     /// `bot.recipesFor(itemType, metadata, minResultCount, craftingTable)`
-    /// — unlocked recipes whose result is `kind` (metadata filter per
-    /// upstream) and craftable `minResultCount` times with the CURRENT
-    /// inventory. `crafting_table: Some(_)` means a table is usable.
+    /// — recipes whose result is `kind` (metadata filter per upstream)
+    /// and craftable `minResultCount` times with the CURRENT inventory.
+    /// `crafting_table: Some(_)` means a table is usable.
     ///
-    /// Recipes come from the server's recipe book (see module docs) —
-    /// unlike upstream's static table this only covers unlocked
-    /// recipes.
+    /// The recipes are the server's recipe book, then the vanilla table
+    /// (upstream's static `minecraft-data` recipes) for those the book
+    /// lacks: a recipe the server has not unlocked is found too.
     pub fn recipes_for(
         &self,
         kind: ItemKind,
@@ -540,14 +542,15 @@ impl Bot {
         let has_table = crafting_table.is_some();
         let inventory = self.inventory();
         let counts = inventory_counts(&inventory);
-        self.book_recipes()
-            .filter(|r| result_matches(r, kind, metadata))
+        self.recipes(kind, metadata)
+            .into_iter()
             .filter(|r| r.requirements_met(&mut counts.clone(), min, has_table))
             .collect()
     }
 
-    /// `bot.recipesAll(itemType, metadata, craftingTable)` — unlocked
-    /// recipes whose result is `kind`, ignoring inventory contents.
+    /// `bot.recipesAll(itemType, metadata, craftingTable)` — the recipes
+    /// whose result is `kind` (the recipe book, then the vanilla table),
+    /// ignoring inventory contents.
     pub fn recipes_all(
         &self,
         kind: ItemKind,
@@ -555,10 +558,29 @@ impl Bot {
         crafting_table: Option<&Block>,
     ) -> Vec<Recipe> {
         let has_table = crafting_table.is_some();
-        self.book_recipes()
-            .filter(|r| result_matches(r, kind, metadata))
+        self.recipes(kind, metadata)
+            .into_iter()
             .filter(|r| !r.requires_table || has_table)
             .collect()
+    }
+
+    /// The recipe book's recipes for `kind`, then the vanilla table's
+    /// that the book lacks.
+    fn recipes(&self, kind: ItemKind, metadata: Option<i32>) -> Vec<Recipe> {
+        let mut recipes: Vec<Recipe> = self
+            .book_recipes()
+            .filter(|r| result_matches(r, kind, metadata))
+            .collect();
+        let book = recipes.len();
+        for recipe in vanilla::RECIPES
+            .iter()
+            .filter(|r| result_matches(r, kind, metadata))
+        {
+            if !recipes[..book].contains(recipe) {
+                recipes.push(recipe.clone());
+            }
+        }
+        recipes
     }
 
     /// How many recipe-book entries the server has unlocked for us.
@@ -778,3 +800,4 @@ fn unused_recipe_slots(recipe: &Recipe, w: usize, h: usize) -> Vec<i32> {
 
 #[cfg(test)]
 mod tests;
+mod vanilla;
