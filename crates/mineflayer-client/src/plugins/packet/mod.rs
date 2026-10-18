@@ -39,6 +39,7 @@ impl Plugin for PacketPlugin {
         .add_observer(config::handle_outgoing_packets_observer)
         .add_observer(login::handle_outgoing_packets_observer)
         .add_systems(Update, death_event_on_0_health)
+        .init_resource::<crate::connection::PacketPreApply>()
         .add_message::<game::ReceiveGamePacketEvent>()
         .add_message::<game::GamePacketDecodeFailedEvent>()
         .add_message::<config::ReceiveConfigPacketEvent>()

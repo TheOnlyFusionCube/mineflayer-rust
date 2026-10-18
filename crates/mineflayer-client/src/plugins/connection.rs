@@ -261,6 +261,13 @@ impl RawConnection {
     }
 }
 
+/// Functions that see each game packet before the engine applies it, in
+/// the order they were added. A plugin pushes one to read the state that a
+/// packet is about to change, for example an entity before
+/// `remove_entities` despawns it. A hook must not block.
+#[derive(Default, Resource)]
+pub struct PacketPreApply(pub Vec<fn(&mut World, Entity, &ClientboundGamePacket)>);
+
 pub fn handle_raw_packet(
     ecs: &mut World,
     raw_packet: &[u8],
@@ -293,6 +300,13 @@ pub fn handle_raw_packet(
                 }
             };
             trace!("Packet: {packet:?}");
+            if ecs.contains_resource::<PacketPreApply>() {
+                ecs.resource_scope(|ecs, hooks: Mut<PacketPreApply>| {
+                    for hook in &hooks.0 {
+                        hook(ecs, entity, &packet);
+                    }
+                });
+            }
             game::process_packet(ecs, entity, packet.as_ref());
             queued_packet_events
                 .game

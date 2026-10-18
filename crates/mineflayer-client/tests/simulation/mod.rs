@@ -20,6 +20,7 @@ mod move_and_despawn_entity;
 mod move_despawned_entity;
 mod packet_order;
 mod packet_order_set_carried_item;
+mod packet_pre_apply;
 mod receive_spawn_entity_and_start_config_packet;
 mod receive_start_config_packet;
 mod reply_to_ping_with_pong;

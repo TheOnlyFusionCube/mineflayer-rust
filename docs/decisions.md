@@ -120,6 +120,11 @@ merge; plan item E2 keeps this list current):
     registers them as one unordered tuple, so the events of one pass
     went out in an order that changed from run to run (found by the
     golden test, `tests/golden/bridge_events.txt`).
+23. (ST2) `connection::PacketPreApply`, a resource of
+    `fn(&mut World, Entity, &ClientboundGamePacket)` that
+    `handle_raw_packet` calls before `process_packet` (through
+    `resource_scope`, no allocation per packet). `PacketPlugin` inits it
+    empty. Test: `mineflayer-client/tests/simulation/packet_pre_apply.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated
