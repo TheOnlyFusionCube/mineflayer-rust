@@ -523,9 +523,9 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 
 | mineflayer API | domain | Rust signature (planned) | status | notes |
 |---|---|---|---|---|
-| `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | diverges | only game-phase pushes are tracked (config-phase pushes — server.properties/proxy packs — never emit the event or populate state); the engine also auto-accepts every push |
-| `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | diverges | only game-phase pushes are tracked; the engine's built-in `AcceptResourcePacksPlugin` auto-accepts on arrival, so a later denial usually has no effect |
-| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid: Uuid,url,hash,required}` | diverges | game-phase `resource_pack_push` only — config-phase pushes (server.properties/proxy packs, the dominant modern path) never reach `Event::Packet` |
+| `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | ported | answers the latest offer of either phase, in the phase the client is in; the engine also accepts every offer unless `BotBuilder::accept_resource_packs(false)` |
+| `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | diverges | takes effect with `BotBuilder::accept_resource_packs(false)`; by default the engine has already accepted the offer. With the switch off, a configuration-phase offer also waits for the user's answer (upstream accepts those itself) |
+| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid: Uuid,url,hash,required}` | ported | offers of the configuration and the game phase (engine `Event::ResourcePack`) |
 
 ## Creative mode (bot.creative)
 

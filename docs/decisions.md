@@ -144,6 +144,12 @@ merge; plan item E2 keeps this list current):
     (`Added<MinecraftEntityId>`), so a proxy's second login gave no
     `login`. Test: `each_login_packet_gives_login` in the port's
     `src/test_util/sim.rs` (it runs the real `EventsPlugin`).
+27. (CP5) `Event::ResourcePack(ResourcePackOffer)`, sent by the chained
+    `resource_pack_listener` from the `ResourcePackEvent` message of both
+    phases, with `in_config`. The port's misc decode of the game-phase
+    `resource_pack_push` packet is gone. Test:
+    `a_denial_is_the_only_answer_when_accept_is_off` in the port's
+    `src/plugins/tests.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

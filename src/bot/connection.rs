@@ -290,7 +290,15 @@ impl BotBuilder {
     }
 
     /// Whether the engine accepts every resource pack the server pushes
-    /// (default `true`). With `false`, nothing answers a push on its own.
+    /// (default `true`). With `false`, nothing answers a push on its own:
+    /// [`Bot::accept_resource_pack`] and [`Bot::deny_resource_pack`] answer
+    /// each [`BotEvent::ResourcePack`](crate::BotEvent::ResourcePack). A
+    /// server that offers a pack in the configuration phase waits for that
+    /// answer before the bot enters the game (upstream accepts those
+    /// itself).
+    ///
+    /// [`Bot::accept_resource_pack`]: crate::Bot::accept_resource_pack
+    /// [`Bot::deny_resource_pack`]: crate::Bot::deny_resource_pack
     pub fn accept_resource_packs(mut self, enabled: bool) -> Self {
         self.plugins.accept_resource_packs = enabled;
         self

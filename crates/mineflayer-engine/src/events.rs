@@ -147,6 +147,23 @@ pub enum Event {
     },
     /// A pathfinder result — see [`PathEvent`].
     Pathfinder(PathEvent),
+    /// The server offers a resource pack, in the configuration or the
+    /// game phase.
+    ResourcePack(ResourcePackOffer),
+}
+
+/// A resource pack that the server offers. The reply goes out in the
+/// phase the client is in when it answers.
+#[derive(Clone, Debug)]
+pub struct ResourcePackOffer {
+    /// The pack's id; a reply must name it.
+    pub id: uuid::Uuid,
+    pub url: String,
+    pub hash: String,
+    /// The server disconnects a client that declines it.
+    pub required: bool,
+    /// The offer came in the configuration phase.
+    pub in_config: bool,
 }
 
 /// A pathfinder result, lifted from the ECS messages into the client
@@ -214,6 +231,7 @@ impl Plugin for EventsPlugin {
                 login_listener,
                 receive_chunk_listener,
                 chat_listener,
+                resource_pack_listener,
                 add_player_listener,
                 update_player_listener,
                 remove_player_listener,
@@ -289,6 +307,23 @@ pub fn chat_listener(
     for event in events.read() {
         if let Ok(local_player_events) = query.get(event.entity) {
             let _ = local_player_events.send(Event::Chat(event.packet.clone()));
+        }
+    }
+}
+
+pub fn resource_pack_listener(
+    query: Query<(&LocalPlayerEvents, Has<mineflayer_client::InConfigState>)>,
+    mut events: MessageReader<mineflayer_client::packet::game::ResourcePackEvent>,
+) {
+    for event in events.read() {
+        if let Ok((local_player_events, in_config)) = query.get(event.entity) {
+            let _ = local_player_events.send(Event::ResourcePack(ResourcePackOffer {
+                id: event.id,
+                url: event.url.clone(),
+                hash: event.hash.clone(),
+                required: event.required,
+                in_config,
+            }));
         }
     }
 }

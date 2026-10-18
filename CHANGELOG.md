@@ -120,6 +120,12 @@
   engine's `log` feature (bevy's log plugin) is off by default, so a
   dependent's own `tracing_subscriber` `init()` after `connect` cannot
   panic.
+- `BotEvent::ResourcePack` also goes out for configuration-phase offers
+  (the packs of server.properties and of proxies), from the new engine
+  `Event::ResourcePack`. `accept_resource_pack` and `deny_resource_pack`
+  answer in the phase the client is in, and with
+  `accept_resource_packs(false)` they are the only answers, so a denial
+  takes effect.
 - `BotEvent::Login` goes out for each login packet, as upstream's
   `login` does; a proxy that moves the bot to another server gave none.
 - `WindowUpdateSlot.old` is the stack the packet replaced in the engine's

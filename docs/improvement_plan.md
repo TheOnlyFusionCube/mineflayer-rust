@@ -1347,7 +1347,7 @@ the commit that completes the item.
 | CP2 | open | |
 | CP3 | open | |
 | CP4 | open | |
-| CP5 | open | |
+| CP5 | done; the configuration-phase reply has no `BotSim` test (the harness runs the game state) | (this commit) |
 | CP6 | open | |
 | CP7 | done | (this commit) |
 | CP8 | open | |

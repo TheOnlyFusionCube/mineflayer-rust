@@ -72,6 +72,40 @@ fn packs_are_accepted_unless_accept_resource_packs_is_off() {
     );
 }
 
+/// With the engine's answer off, the offer still arrives as an event,
+/// and a denial is the only answer that goes out.
+#[test]
+fn a_denial_is_the_only_answer_when_accept_is_off() {
+    use mineflayer_engine::protocol::packets::game::s_resource_pack::Action;
+
+    let mut sim = BotSim::spawned(BotBuilder::default().accept_resource_packs(false));
+    sim.events();
+    sim.sent();
+    sim.receive(ClientboundResourcePackPush {
+        id: uuid::Uuid::from_u128(5),
+        url: "https://packs.invalid/p.zip".into(),
+        hash: String::new(),
+        required: false,
+        prompt: None,
+    });
+    sim.tick();
+    let offered = sim.events().into_iter().any(|e| {
+        matches!(e, crate::BotEvent::ResourcePack { uuid, .. } if uuid == uuid::Uuid::from_u128(5))
+    });
+    assert!(offered, "the offer is an event");
+    sim.bot.deny_resource_pack().unwrap();
+    sim.tick();
+    let answers: Vec<Action> = sim
+        .sent()
+        .into_iter()
+        .filter_map(|p| match p {
+            ServerboundGamePacket::ResourcePack(p) => Some(p.action),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(answers, [Action::Declined]);
+}
+
 #[derive(Component, Default)]
 struct Ticks(u32);
 

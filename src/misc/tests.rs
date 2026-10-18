@@ -1,11 +1,8 @@
-use std::io::Cursor;
-
 use mineflayer_engine::{
     protocol::packets::game::{
         c_clear_titles::ClientboundClearTitles,
         c_game_event::{ClientboundGameEvent, EventType},
         c_level_particles::ClientboundLevelParticles,
-        c_resource_pack_push::ClientboundResourcePackPush,
         c_set_subtitle_text::ClientboundSetSubtitleText,
         c_set_title_text::ClientboundSetTitleText,
         c_set_titles_animation::ClientboundSetTitlesAnimation,
@@ -150,16 +147,16 @@ fn game_event_spawn_reset() {
 }
 
 #[test]
-fn resource_pack_push_tracked() {
+fn resource_pack_offer_tracked() {
     let mut s = MiscState::default();
-    let push = ClientboundResourcePackPush {
-        id: mineflayer_engine::buf::McBuf::mc_read(&mut Cursor::new(&[0u8; 16][..])).unwrap(),
+    let offer = ResourcePackOffer {
+        id: uuid::Uuid::nil(),
         url: "https://packs.example/x.zip".into(),
         hash: "deadbeef".into(),
         required: true,
-        prompt: None,
+        in_config: true,
     };
-    let events = resource_pack_push(&mut s, &push);
+    let events = resource_pack_offer(&mut s, &offer);
     assert!(
         matches!(&events[..], [BotEvent::ResourcePack { uuid, url, hash, required }] if url == "https://packs.example/x.zip" && hash == "deadbeef" && *required && uuid.is_nil())
     );

@@ -16,9 +16,10 @@ use mineflayer_engine::{
     core::entity_id::MinecraftEntityId,
     ecs::prelude::Component,
     entity::{EntityKindComponent, Pose, Position, metadata::AirSupply},
-    protocol::packets::game::{
-        ClientboundGamePacket, c_game_event, c_resource_pack_push::ClientboundResourcePackPush,
-        s_player_command, s_resource_pack,
+    events::ResourcePackOffer,
+    protocol::packets::{
+        config,
+        game::{ClientboundGamePacket, c_game_event, s_player_command, s_resource_pack},
     },
     registry::{
         Registry,
@@ -41,10 +42,9 @@ use crate::{Bot, BotEvent, Error, Result};
 /// Scoreboard domain state lives in `scoreboard::ScoreboardState`.
 #[derive(Component)]
 pub(crate) struct MiscState {
-    /// The most recent game-phase resource-pack push that hasn't been
-    /// answered yet — kept whole so accept/deny can echo the exact uuid
-    /// the server sent.
-    pub latest_resource_pack: Option<ClientboundResourcePackPush>,
+    /// The most recent resource-pack offer, from either phase — kept so
+    /// accept/deny can echo the exact uuid the server sent.
+    pub latest_resource_pack: Option<ResourcePackOffer>,
     /// `bot.settings.difficulty` — stored client-side like upstream; it is
     /// not a `ClientInformation` field.
     pub difficulty: u8,
@@ -77,6 +77,10 @@ pub(crate) fn observe(
     match event {
         Event::Packet(packet) => handle_packet(client, packet),
         Event::Tick => tick_diffs(client, baselines),
+        Event::ResourcePack(offer) => {
+            with_component_mut::<MiscState, _>(client, |state| resource_pack_offer(state, offer))
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     }
 }
@@ -139,12 +143,6 @@ fn handle_packet(
     packet: &ClientboundGamePacket,
 ) -> Vec<BotEvent> {
     match packet {
-        // the one packet that writes misc state; the others need no ECS
-        // write lock (the bridge sees about 5,000 packets a second at peak)
-        ClientboundGamePacket::ResourcePackPush(p) => {
-            with_component_mut::<MiscState, _>(client, |state| resource_pack_push(state, p))
-                .unwrap_or_default()
-        }
         // entity sounds carry an entity id instead of a position
         ClientboundGamePacket::SoundEntity(p) => vec![sound_event(
             &p.sound,
@@ -156,15 +154,17 @@ fn handle_packet(
     }
 }
 
-/// Keep the push so that accept/deny can echo the exact uuid the server
-/// sent.
-fn resource_pack_push(state: &mut MiscState, p: &ClientboundResourcePackPush) -> Vec<BotEvent> {
-    state.latest_resource_pack = Some(p.clone());
+/// Keep the offer so that accept/deny can echo the exact uuid the server
+/// sent. The engine reports the offers of both phases, so the
+/// configuration-phase packs of server.properties and proxies are seen
+/// too.
+fn resource_pack_offer(state: &mut MiscState, offer: &ResourcePackOffer) -> Vec<BotEvent> {
+    state.latest_resource_pack = Some(offer.clone());
     vec![BotEvent::ResourcePack {
-        uuid: p.id,
-        url: p.url.clone(),
-        hash: p.hash.clone(),
-        required: p.required,
+        uuid: offer.id,
+        url: offer.url.clone(),
+        hash: offer.hash.clone(),
+        required: offer.required,
     }]
 }
 
@@ -570,51 +570,69 @@ impl Bot {
         Ok(())
     }
 
-    /// `bot.acceptResourcePack()` — answers the latest game-phase resource
-    /// pack push with `Accepted` then `SuccessfullyLoaded` (upstream's two
-    /// packet sequence). Config-phase pushes are auto-accepted by the engine's
-    /// `AcceptResourcePacksPlugin` (upstream does the same — the server
-    /// holds the configuration phase open until they're answered).
+    /// `bot.acceptResourcePack()` — answers the latest offer with
+    /// `Accepted` then `SuccessfullyLoaded`, in the phase the client is in
+    /// (configuration or game). With
+    /// [`BotBuilder::accept_resource_packs(false)`](crate::BotBuilder::accept_resource_packs)
+    /// this and [`Bot::deny_resource_pack`] are the only answers; else the
+    /// engine accepts each offer when it arrives.
     pub fn accept_resource_pack(&self) -> Result<()> {
-        let Some(push) = self
-            .client
-            .get_component::<MiscState>()
-            .and_then(|m| m.latest_resource_pack.clone())
-        else {
-            return Err(Error::InvalidState("no resource pack to answer".into()));
-        };
-        for action in [
-            s_resource_pack::Action::Accepted,
-            s_resource_pack::Action::SuccessfullyLoaded,
-        ] {
-            self.client
-                .write_packet(s_resource_pack::ServerboundResourcePack {
-                    id: push.id,
-                    action,
-                });
-        }
-        Ok(())
+        self.answer_resource_pack(&[
+            (
+                s_resource_pack::Action::Accepted,
+                config::s_resource_pack::Action::Accepted,
+            ),
+            (
+                s_resource_pack::Action::SuccessfullyLoaded,
+                config::s_resource_pack::Action::SuccessfullyLoaded,
+            ),
+        ])
     }
 
-    /// `bot.denyResourcePack()` — answers the latest push with `Declined`.
-    ///
-    /// Divergence: the engine's `AcceptResourcePacksPlugin` answers every
-    /// game-phase push with `Accepted` + `SuccessfullyLoaded` as it
-    /// arrives, so a denial races a reply that already went out — the
-    /// server will usually ignore it. See api-parity.md.
+    /// `bot.denyResourcePack()` — answers the latest offer with `Declined`.
+    /// It takes effect with
+    /// [`BotBuilder::accept_resource_packs(false)`](crate::BotBuilder::accept_resource_packs);
+    /// else the engine has already accepted the offer.
     pub fn deny_resource_pack(&self) -> Result<()> {
-        let Some(push) = self
+        self.answer_resource_pack(&[(
+            s_resource_pack::Action::Declined,
+            config::s_resource_pack::Action::Declined,
+        )])
+    }
+
+    /// Send `answers` for the latest offer: the game form, or the
+    /// configuration form while the client is in that phase.
+    fn answer_resource_pack(
+        &self,
+        answers: &[(s_resource_pack::Action, config::s_resource_pack::Action)],
+    ) -> Result<()> {
+        let Some(id) = self
             .client
             .get_component::<MiscState>()
-            .and_then(|m| m.latest_resource_pack.clone())
+            .and_then(|m| m.latest_resource_pack.as_ref().map(|offer| offer.id))
         else {
             return Err(Error::InvalidState("no resource pack to answer".into()));
         };
-        self.client
-            .write_packet(s_resource_pack::ServerboundResourcePack {
-                id: push.id,
-                action: s_resource_pack::Action::Declined,
-            });
+        let in_config = self
+            .client
+            .get_component::<mineflayer_engine::InConfigState>()
+            .is_some();
+        for (game, config) in answers {
+            if in_config {
+                self.client.ecs.write().commands().trigger(
+                    mineflayer_engine::packet::config::SendConfigPacketEvent::new(
+                        self.client.entity,
+                        config::ServerboundResourcePack {
+                            id,
+                            action: *config,
+                        },
+                    ),
+                );
+            } else {
+                self.client
+                    .write_packet(s_resource_pack::ServerboundResourcePack { id, action: *game });
+            }
+        }
         Ok(())
     }
 

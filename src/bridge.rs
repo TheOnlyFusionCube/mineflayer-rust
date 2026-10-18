@@ -346,6 +346,8 @@ fn translate(
         Event::KeepAlive(_) => vec![],
         // the pathfinder observer translates these
         Event::Pathfinder(_) => vec![],
+        // the misc observer translates these
+        Event::ResourcePack(_) => vec![],
         Event::PacketDecodeFailed { packet_id, error } => {
             let id = packet_id.map_or("an unknown id".to_string(), |id| format!("id {id:#04x}"));
             vec![BotEvent::Error(format!(
