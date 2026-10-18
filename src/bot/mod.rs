@@ -208,6 +208,7 @@ mod event;
 pub(crate) mod wait;
 pub use connection::{Auth, BotBuilder};
 pub use event::BotEvent;
+pub use wait::WaitEnd;
 
 /// `BotEvent` broadcast ring size, shared by every `Bot`. A busy world
 /// emits several thousand events a second (one `Packet` per clientbound
@@ -279,6 +280,70 @@ impl Bot {
             return rx;
         }
         self.shared.events.subscribe()
+    }
+
+    /// Wait for the first event that `pred` accepts: upstream's
+    /// `once(bot, name)`, with a time limit so a lost packet cannot hang
+    /// the caller. The wait also ends on [`BotEvent::End`], after `pred`
+    /// has seen it.
+    ///
+    /// The wait subscribes when this method is called, not when the future
+    /// is first polled. Call it before the action whose event it waits
+    /// for. Like [`Bot::events`], the first wait after `connect` also sees
+    /// the events from before `connect` returned.
+    ///
+    /// ```no_run
+    /// # async fn demo(bot: mineflayer::Bot) -> mineflayer::Result<()> {
+    /// use std::time::Duration;
+    ///
+    /// use mineflayer::BotEvent;
+    ///
+    /// // await once(bot, 'spawn')
+    /// bot.wait_for(Duration::from_secs(30), |e| matches!(e, BotEvent::Spawn))
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn wait_for<F>(
+        &self,
+        timeout: Duration,
+        pred: F,
+    ) -> impl Future<Output = std::result::Result<BotEvent, WaitEnd>> + use<F>
+    where
+        F: FnMut(&BotEvent) -> bool,
+    {
+        let mut rx = self.events();
+        async move { wait::await_event(&mut rx, timeout, pred).await }
+    }
+
+    /// [`Bot::wait_for`] for a wait that computes its result from the
+    /// matching event: it ends on the first event that `f` maps to `Some`.
+    ///
+    /// ```no_run
+    /// # async fn demo(bot: mineflayer::Bot) -> mineflayer::Result<()> {
+    /// use std::time::Duration;
+    ///
+    /// use mineflayer::BotEvent;
+    ///
+    /// let reason = bot
+    ///     .wait_map(Duration::from_secs(60), |e| match e {
+    ///         BotEvent::Kicked(reason, _) => Some(reason.clone()),
+    ///         _ => None,
+    ///     })
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn wait_map<T, F>(
+        &self,
+        timeout: Duration,
+        f: F,
+    ) -> impl Future<Output = std::result::Result<T, WaitEnd>> + use<T, F>
+    where
+        F: FnMut(&BotEvent) -> Option<T>,
+    {
+        let mut rx = self.events();
+        async move { wait::await_map(&mut rx, timeout, f).await }
     }
 
     /// Crate-internal receiver for waits inside the crate.
@@ -529,6 +594,27 @@ mod tests {
             .await
             .expect("alive channel stayed open with only a driver handle left")
             .expect_err("alive channel reported a value instead of closing");
+    }
+
+    /// `wait_for` subscribes when called, so an event sent before the
+    /// first poll still ends the wait, and the first wait after `connect`
+    /// sees the queued pre-connect events.
+    #[tokio::test]
+    async fn the_public_wait_subscribes_when_called() {
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
+        bot.emit_event(BotEvent::Spawn);
+        let spawn = bot.wait_for(Duration::from_secs(1), |e| matches!(e, BotEvent::Spawn));
+        assert!(matches!(spawn.await, Ok(BotEvent::Spawn)));
+
+        let health = bot.wait_map(Duration::from_secs(1), |e| {
+            matches!(e, BotEvent::Health).then_some(7)
+        });
+        bot.emit_event(BotEvent::Tick);
+        bot.emit_event(BotEvent::Health);
+        assert_eq!(health.await, Ok(7));
+
+        let never = bot.wait_for(Duration::from_millis(10), |_| false);
+        assert_eq!(never.await.unwrap_err(), WaitEnd::Timeout);
     }
 
     /// A crate-internal wait must not consume the bootstrap receiver; the

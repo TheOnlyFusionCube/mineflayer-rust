@@ -40,6 +40,8 @@
   ordered against the start messages.
 - `engine::Event::Pathfinder` carries pathfinder results.
 - `engine::registry::tags::item_tag_by_name`.
+- `Bot::wait_for` and `Bot::wait_map`, the analog of `once(bot, 'event')`
+  with a time limit, and the public `WaitEnd` for why a wait ended.
 - `Auth::Microsoft { on_msa_code }` (upstream `options.onMsaCode`): the
   Microsoft device code goes to a callback instead of stdout.
 - `BotEvent::Error` when a game packet does not decode. The engine drops

@@ -43,7 +43,7 @@ pub mod window_types;
 pub mod windows;
 pub mod world;
 
-pub use bot::{Auth, Bot, BotBuilder, BotEvent};
+pub use bot::{Auth, Bot, BotBuilder, BotEvent, WaitEnd};
 pub use error::{Error, Result};
 pub use movement::{Control, ControlState, PhysicsSettings};
 

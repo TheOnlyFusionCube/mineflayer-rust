@@ -110,9 +110,9 @@ async fn main() {
         .connect()
         .await
         .expect("connect failed");
-    let mut events = bot.events();
-    while !matches!(events.recv().await, Ok(BotEvent::Spawn)) {}
-    drop(events);
+    bot.wait_for(Duration::from_secs(30), |e| matches!(e, BotEvent::Spawn))
+        .await
+        .expect("spawn");
     bot.wait_for_chunks_to_load().await.expect("chunks");
     println!("spawned at {:?}", bot.position());
 

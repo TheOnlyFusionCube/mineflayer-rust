@@ -6,9 +6,10 @@ use tokio::sync::broadcast;
 
 use crate::{BotEvent, Error};
 
-/// Why an event wait ended without a match.
+/// Why an event wait ([`Bot::wait_for`](crate::Bot::wait_for)) ended
+/// without a match.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WaitEnd {
+pub enum WaitEnd {
     /// The time limit elapsed.
     Timeout,
     /// The bot emitted `End`: the connection is over.
@@ -16,6 +17,18 @@ pub(crate) enum WaitEnd {
     /// The event stream closed.
     Closed,
 }
+
+impl std::fmt::Display for WaitEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            WaitEnd::Timeout => "the wait timed out",
+            WaitEnd::Ended => "the bot disconnected during the wait",
+            WaitEnd::Closed => "the event stream closed during the wait",
+        })
+    }
+}
+
+impl std::error::Error for WaitEnd {}
 
 impl From<WaitEnd> for Error {
     fn from(end: WaitEnd) -> Self {
