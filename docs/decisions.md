@@ -208,8 +208,8 @@ crates need nightly. The nightly current at scaffold time stopped with an
 internal compiler error on the entity crate, and the next-gen trait solver
 cannot infer `mineflayer-core`'s const generics. Review monthly (first plan, H2, at `775ba66`).
 
-**DEC-1 (open, for the owner). Must the port and the engine build on
-stable Rust?** Spike (plan item AD0, 2026-10-17): `cargo +stable check
+**DEC-1 (decided 2026-10-18: no, not now). Must the port and the engine
+build on stable Rust?** Spike (plan item AD0, 2026-10-17): `cargo +stable check
 --workspace --all-targets` with stable 1.98.1, `RUSTFLAGS` cleared, and
 `--ignore-rust-version` (the crate declares `rust-version = 1.101`).
 Results:
@@ -234,6 +234,23 @@ script, plus 1.5 to 2 HD for a stable `simdnbt` (a fork in `crates/` or a
 allocator parameter), plus its merge cost, because each `simdnbt` release
 must be ported again. Next step if the owner says yes: patch `simdnbt`
 locally and rerun the check to list the remaining errors.
+
+Decision (third plan AD1, 2026-10-18): stay on the pinned nightly. A
+second spike patched a vendored `simdnbt` (a scalar byte swap, `is_ascii`,
+and `FastVec` without the allocator parameter: small and done), and
+replaced `trait_alias`, `#[backtrace]`, and the buffer crate's `Vec<u8>`
+specialization with stable code. The next gate stopped it:
+`mineflayer-inventory` gives each data component its default through a
+`min_specialization` blanket impl, and the specialized impls are in
+`default_components/generated.rs`, which the upstream code generator
+writes (D-codegen keeps generated files byte-identical to upstream). A
+stable form needs a change to that generator's output, so every engine
+merge would redo the fork of the generator output and of `simdnbt`.
+`generic_const_exprs` in core and `-Znext-solver=no` were not reached.
+The cost recurs at each upstream release, and the crates are not
+published (D-publish), so a dependent today builds from this repository
+with its toolchain file anyway. The spike's edits were reverted. Revisit
+when upstream leaves nightly or when publishing is decided.
 
 **D-locks (first plan B8). Every crate lock is `parking_lot`.** The engine's ECS lock is
 already `parking_lot`, and the type has no poisoning, so one panic under a
@@ -335,6 +352,16 @@ new engine change:
 
 Cost if wrong: add the engine event, record it in the D-engine list, and
 replace the port decode with a match on it.
+
+**D-single-threaded. Every schedule of a bot's app runs single-threaded**
+(third plan AD5, 2026-10-18). `SingleThreadedSchedules` in
+`src/plugins.rs` sets the executor of each schedule after the plugins are
+built. A bot's systems are small; Bevy's multi-threaded executor handed
+each to a shared thread pool 60 times a second, and the wakeups cost more
+than the work: ten idle bots used 38.5 s of CPU a minute with it, 5.6 s
+without (`docs/performance.md`). Cost if wrong: a bot whose systems grow
+heavy enough to gain from threads sets its own schedules' executors in a
+user plugin.
 
 **D-events. One `BotEvent` enum for the core.** The core events are one
 broadcast protocol; nested event types would cause match churn with no

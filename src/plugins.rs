@@ -66,7 +66,8 @@ impl PluginGroup for BotPlugins {
             .add(crate::world::WorldPlugin)
             .add(crate::windows::WindowPlugin)
             .add(crate::entity::EntityStatePlugin)
-            .add(crate::interact::DigPlugin);
+            .add(crate::interact::DigPlugin)
+            .add(SingleThreadedSchedules);
         if !self.respawn {
             group = group.disable::<AutoRespawnPlugin>();
         }
@@ -77,6 +78,26 @@ impl PluginGroup for BotPlugins {
             group = group.disable::<mineflayer_engine::physics::PhysicsPlugin>();
         }
         self.user.iter().fold(group, |group, add| add(group))
+    }
+}
+
+/// Run every schedule of the bot's app on the runner's own thread. A bot's
+/// systems are small, so handing each to a thread pool costs more than it
+/// gains: with the multi-threaded executor, ten idle bots took 0.64 CPU
+/// cores, mostly in thread wakeups (docs/performance.md).
+struct SingleThreadedSchedules;
+
+impl Plugin for SingleThreadedSchedules {
+    fn build(&self, _: &mut mineflayer_engine::app::App) {}
+
+    fn finish(&self, app: &mut mineflayer_engine::app::App) {
+        let mut schedules = app
+            .world_mut()
+            .resource_mut::<mineflayer_engine::ecs::schedule::Schedules>();
+        for (_, schedule) in schedules.iter_mut() {
+            schedule
+                .set_executor_kind(mineflayer_engine::ecs::schedule::ExecutorKind::SingleThreaded);
+        }
     }
 }
 

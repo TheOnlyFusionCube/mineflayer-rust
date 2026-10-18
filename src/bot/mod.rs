@@ -351,13 +351,24 @@ impl Bot {
     /// [`BotEvent::Spawn`], with no time limit. Like [`Bot::wait_for`], the
     /// first wait after `connect` also sees a spawn from before `connect`
     /// returned. Fails when the connection ends first.
+    ///
+    /// When the receiver falls behind and loses events, a spawn may be
+    /// among them, so the wait then ends when the bot is in the world.
     pub fn spawned(&self) -> impl Future<Output = std::result::Result<(), WaitEnd>> + use<> {
         let mut rx = self.events();
+        let client = self.client.clone();
         async move {
             loop {
                 match rx.recv().await {
                     Ok(BotEvent::Spawn) => return Ok(()),
                     Ok(BotEvent::End(_)) => return Err(WaitEnd::Ended),
+                    Err(broadcast::error::RecvError::Lagged(_))
+                        if client
+                            .get_component::<mineflayer_engine::events::SentSpawnEvent>()
+                            .is_some() =>
+                    {
+                        return Ok(());
+                    }
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                     Err(broadcast::error::RecvError::Closed) => return Err(WaitEnd::Closed),
                 }

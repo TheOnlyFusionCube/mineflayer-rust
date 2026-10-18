@@ -14,6 +14,9 @@
 #   ./scripts/live-server.sh reset  # stop, delete the worlds, start with seed 13371337
 #   ./scripts/live-server.sh rcon <command>  # one console command (test setup)
 #
+# LIVE_MAX_PLAYERS (default 20) sets max-players, for the many-bot
+# benchmark (docs/performance.md).
+#
 # State lives in .live/ (gitignored): server.jar, server.log, server.pid,
 # version.txt, eula.txt, server.properties, jdk/, world*.
 set -euo pipefail
@@ -243,6 +246,7 @@ server-port=$PORT
 level-seed=13371337
 sync-chunk-writes=false
 spawn-protection=0
+max-players=${LIVE_MAX_PLAYERS:-20}
 enable-rcon=true
 rcon.port=$RCON_PORT
 rcon.password=$rcon_password

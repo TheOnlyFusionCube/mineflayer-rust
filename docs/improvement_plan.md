@@ -1345,16 +1345,16 @@ the commit that completes the item.
 | CL7 | done | (this commit) |
 | CP1 | done; the port keeps the block entities (D-redecode), not the engine | (this commit) |
 | CP2 | done; `dont_create_flow` and `allow_free_motion` are removed (the engine always refuses to break next to a liquid and has no free motion); `MovementConstraints` stays, because `SuccessorsFn` is a plain `fn` | (this commit) |
-| CP3 | open | |
+| CP3 | not done: placing blocks needs a placed-block overlay in the engine's A* world (later moves must stand on the new block) and a stateful placement executor (equip, sneak to the edge, look at the face, use, wait for the block); both are engine changes with no upstream counterpart, and a half version would make a bot step into gaps | |
 | CP4 | done; three constants are settable (gravity, air drag, airborne inertia), the others are refused with `Unsupported`; the physics switch works (BotSim test) | (this commit) |
 | CP5 | done; the configuration-phase reply has no `BotSim` test (the harness runs the game state) | (this commit) |
-| CP6 | open | |
+| CP6 | done; no source parameter: the book comes first and the table adds what it lacks, which upstream's static table covers | (this commit) |
 | CP7 | done | (this commit) |
 | CP8 | done | (this commit) |
-| AD0 | done; DEC-1 waits for the owner | (this commit) |
-| AD1 | open | |
-| AD2 | open | |
+| AD0 | done; DEC-1 decided: no (see AD1) | (this commit) |
+| AD1 | not done, by decision DEC-1: the inventory crate's specialization is in upstream-generated code; see `docs/decisions.md` | |
+| AD2 | not done: publishing needs a public repository and a crates.io account (D-publish), and DEC-2 waits on that; an irreversible step for the owner | |
 | AD3 | done; 24 examples build; no per-example live test (the examples wait for a player's chat), `titles` checked by hand on the fixture | (this commit) |
 | AD4 | done; the CI artifact is not observed yet (no remote) | (this commit) |
-| AD5 | open | |
+| AD5 | done; follow-up: run `Update` at the game-tick rate for headless bots (CPU is 2.2x Node at 100 bots; see `docs/performance.md`) | (this commit) |
 | AD6 | done | `4659c99`, (this commit) |

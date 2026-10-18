@@ -133,3 +133,44 @@ keepalive watchdog test alone is 35 s, the craft test 146 s in a run
 without a reset), not client CPU. The plan keeps the change only if the
 suite gets faster, so the profile stays at the default. The pathfinder's
 `OPT_LEVEL == 0` debug warning remains.
+
+## Many idle bots against upstream (third plan AD5, 2026-10-18)
+
+Probes: `examples/idle_bots.rs` (release build) and
+`scripts/bench/idle_bots.js` (mineflayer 4.39.0 from npm, Node 26.5). Each
+connects `N` offline-mode bots one after another (each spawns, then 100 ms
+pass), keeps them idle for 60 s, and quits. Both ask for view distance 4;
+the Rust probe turns `packet_events` off and drains every bot's event
+receiver. The measurement is `/usr/bin/time -l` of the whole run (spawns
+and idle time), on Apple Silicon, against the fixture with
+`LIVE_MAX_PLAYERS=150`, `respawn_radius 32`, and `max_entity_cramming 0`:
+with all bots on one block the server fell 7.5 s behind and killed bots by
+cramming, which measured the server and not the clients.
+
+| Bots | Rust peak memory | Rust CPU (user + sys) | Node peak memory | Node CPU (user + sys) |
+|---|---|---|---|---|
+| 1 | 38 MB | 1.05 s | 200 MB | 1.32 s |
+| 10 | 170 MB | 6.67 s | 348 MB | 4.18 s |
+| 100 | 1,449 MB | 56.4 s | 1,611 MB | 25.4 s |
+
+What limits the numbers:
+
+1. Memory. The Rust process has no runtime to load (38 MB for one bot
+   against Node's 200 MB), and then costs about 14 MB for each bot, close
+   to Node's 14 MB: each bot keeps its own chunks, registries, and ECS
+   world in both.
+2. CPU. Each Rust bot steps its own ECS: `Update` 60 times a second and
+   `GameTick` 20 times, on its own thread. Node runs every bot's physics
+   at 20 Hz on one event loop. At 100 bots Rust used 0.63 of a core over
+   the run, 2.2 times Node.
+3. The first measurement used Bevy's multi-threaded executor: 10 bots
+   took 38.5 s of CPU a minute, mostly system time in thread wakeups
+   (`sample`: condvar waits and signals around bevy_tasks). Every
+   schedule now runs single-threaded (D-single-threaded): 5.6 s.
+4. `Bot::spawned` used to wait forever when the receiver lagged past the
+   spawn (100 bots queued > 8,192 events before the probe waited). It
+   now ends when the bot is in the world after a lag.
+
+Thread per bot is not the limit at 100 bots (0.63 core). The next CPU
+step for many bots is an `Update` rate that follows the game tick for
+headless bots; the work item is recorded in `docs/improvement_plan.md`.
