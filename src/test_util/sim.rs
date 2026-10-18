@@ -50,9 +50,12 @@ impl BotSim {
     /// origin.
     pub(crate) fn new() -> Self {
         let mut sim = Self::connected(BotBuilder::default());
+        // in separate passes, as a server's packets arrive
         sim.receive(default_login_packet());
+        sim.tick();
         sim.receive(make_basic_empty_chunk(ChunkPos::new(0, 0), 384 / 16));
         sim.tick();
+        // the engine marks the bot as in a loaded chunk one pass later
         sim.tick();
         sim
     }

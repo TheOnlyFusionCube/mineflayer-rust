@@ -1,0 +1,176 @@
+# login and the first chunk
+Init
+Packet(Login)
+GameStateChanged
+Connected
+Login
+Tick
+Packet(LevelChunkWithLight)
+ChunkColumnLoad(ChunkPos { x: 0, z: 0 })
+Tick
+Spawn
+EntitySpawn(EntityRef { client: 23v0, entity: 23v0 })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: 0.0, z: 0.0 } }
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -0.0784000015258789, z: 0.0 } }
+# a second chunk
+Packet(LevelChunkWithLight)
+ChunkColumnLoad(ChunkPos { x: 1, z: 0 })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -0.23363200604248052, z: 0.0 } }
+# a block update
+Packet(BlockUpdate)
+BlockUpdate { old: Some(Block { pos: BlockPos { x: 1, y: 2, z: 3 }, state: BlockState(id: 1, Stone), .. }), new: Block { pos: BlockPos { x: 1, y: 2, z: 3 }, state: BlockState(id: 1, Stone), .. } }
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -0.4641593749554445, z: 0.0 } }
+# a section update
+Packet(SectionBlocksUpdate)
+BlockUpdate { old: Some(Block { pos: BlockPos { x: 17, y: 1, z: 1 }, state: BlockState(id: 10, Dirt), .. }), new: Block { pos: BlockPos { x: 17, y: 1, z: 1 }, state: BlockState(id: 10, Dirt), .. } }
+BlockUpdate { old: Some(Block { pos: BlockPos { x: 18, y: 1, z: 1 }, state: BlockState(id: 15, OakPlanks), .. }), new: Block { pos: BlockPos { x: 18, y: 1, z: 1 }, state: BlockState(id: 15, OakPlanks), .. } }
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -0.7684762024129888, z: 0.0 } }
+# an entity spawn
+Packet(AddEntity)
+EntitySpawn(EntityRef { client: 23v0, entity: 25v0 })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -1.145106700651644, z: 0.0 } }
+# an entity move
+Packet(MoveEntityPos)
+EntityMoved(EntityRef { client: 23v0, entity: 25v0 })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -1.5926045976350616, z: 0.0 } }
+# entity metadata (crouch)
+Packet(SetEntityData)
+EntityUpdate(EntityRef { client: 23v0, entity: 25v0 })
+EntityCrouch(EntityRef { client: 23v0, entity: 25v0 })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -2.109552546740035, z: 0.0 } }
+# an entity removal
+Packet(RemoveEntities)
+EntityGone { entity: Some(EntityRef { client: 23v0, entity: 25v0 }), id: MinecraftEntityId(10) }
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -2.694561548248787, z: 0.0 } }
+# a window open
+Packet(OpenScreen)
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -3.3462703824114044, z: 0.0 } }
+# a window fill
+Packet(ContainerSetContent)
+WindowUpdateSlot { window_id: 3, slot: 0, old: None, new: Some(Item { stack: Present(ItemStackData { kind: Stone, count: 5, component_patch: {} }), slot: 0 }) }
+WindowUpdateSlot { window_id: 3, slot: 1, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 2, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 3, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 4, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 5, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 6, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 7, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 8, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 9, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 10, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 11, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 12, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 13, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 14, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 15, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 16, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 17, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 18, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 19, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 20, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 21, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 22, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 23, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 24, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 25, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 26, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 27, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 28, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 29, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 30, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 31, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 32, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 33, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 34, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 35, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 36, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 37, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 38, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 39, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 40, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 41, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 42, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 43, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 44, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 45, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 46, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 47, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 48, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 49, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 50, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 51, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 52, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 53, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 54, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 55, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 56, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 57, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 58, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 59, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 60, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 61, old: None, new: None }
+WindowUpdateSlot { window_id: 3, slot: 62, old: None, new: None }
+HeldItemChanged(None)
+SetWindowItems { window_id: 3 }
+WindowOpen(Window { id: 3, menu_kind: Some(Generic9x3), closed: false })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -4.063345053847008, z: 0.0 } }
+# a slot change
+Packet(ContainerSetSlot)
+WindowUpdateSlot { window_id: 3, slot: 1, old: None, new: Some(Item { stack: Present(ItemStackData { kind: Dirt, count: 3, component_patch: {} }), slot: 1 }) }
+HeldItemChanged(None)
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -4.844478247056892, z: 0.0 } }
+# a window close
+Packet(ContainerClose)
+WindowClose(Window { id: 3, menu_kind: Some(Generic9x3), closed: true })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -5.68838879282739, z: 0.0 } }
+# a scoreboard objective and a score
+Packet(SetObjective)
+ScoreboardCreated(ScoreBoard { name: "kills", title: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "Kills" }), items_map: {} })
+Packet(SetScore)
+ScoreUpdated { scoreboard: ScoreBoard { name: "kills", title: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "Kills" }), items_map: {"alice": ScoreItem { name: "alice", value: 3, display: None }} }, item: ScoreItem { name: "alice", value: 3, display: None } }
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -6.593821145304674, z: 0.0 } }
+# a team
+Packet(SetPlayerTeam)
+TeamCreated(Team { name: "red", display_name: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "Red" }), friendly_fire: true, see_friendly_invisibles: false, nametag_visibility: Always, collision_rule: Always, color: Red, prefix: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "" }), suffix: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "" }), members: {"alice"} })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -7.559544869528043, z: 0.0 } }
+# a boss bar
+Packet(BossEvent)
+BossBarCreated(BossBar { entity_uuid: "00000000-0000-0000-0000-000000000007", title: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "Boss" }), health: 0.5, dividers: 0, color: Red, darken_sky: false, dragon_bar: false, create_fog: false })
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -8.584354139212541, z: 0.0 } }
+# a title
+Packet(SetTitleText)
+Title { text: "Welcome", kind: Title }
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -9.667067244575914, z: 0.0 } }
+# a death
+Packet(SetHealth)
+Health
+Packet(PlayerCombatKill)
+Death
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -10.806526110009013, z: 0.0 } }
+# a respawn
+Packet(Respawn)
+Respawn
+GameStateChanged
+Packet(SetHealth)
+Health
+Spawn
+Tick
+Move { old_pos: Vec3 { x: 0.0, y: -12.001595821392781, z: 0.0 } }

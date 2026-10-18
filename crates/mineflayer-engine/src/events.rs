@@ -185,24 +185,29 @@ pub struct LocalPlayerEvents(pub mpsc::UnboundedSender<Event>);
 pub struct EventsPlugin;
 impl Plugin for EventsPlugin {
     fn build(&self, app: &mut App) {
+        // chained: listeners of one pass with no order would send their
+        // events in an order that changes from run to run. The raw packets
+        // go first, then what derives from them, the way a protocol client
+        // emits `packet` before the named packet event.
         app.add_systems(
             Update,
             (
-                chat_listener,
-                login_listener,
-                spawn_listener,
                 #[cfg(feature = "packet-event")]
                 packet_listener,
+                packet_decode_failed_listener,
+                login_listener,
+                receive_chunk_listener,
+                chat_listener,
                 add_player_listener,
                 update_player_listener,
                 remove_player_listener,
+                spawn_listener,
                 death_listener.after(mineflayer_client::packet::death_event_on_0_health),
                 disconnect_listener,
                 connection_failed_listener
                     .after(mineflayer_client::join::poll_create_connection_task),
-                receive_chunk_listener,
-                packet_decode_failed_listener,
-            ),
+            )
+                .chain(),
         )
         .add_systems(
             PreUpdate,

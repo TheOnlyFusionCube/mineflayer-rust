@@ -51,6 +51,11 @@
 
 ### Changed
 
+- The engine events of one ECS pass now reach the bot in a fixed order:
+  raw packets first, then login, chunk loads, chat, the player list,
+  spawn, death, and disconnect. Before, the order of these within one
+  pass changed from run to run, so for example `BotEvent::Packet` for a
+  login packet could come before or after `Connected` and `Login`.
 - Keybind, selector, score, nbt, and object chat components no longer
   fail the whole packet. They decode to `FormattedText::Unresolved`, which
   keeps the fields and renders vanilla's fallback text. Before, a chat

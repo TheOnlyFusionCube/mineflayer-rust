@@ -114,6 +114,12 @@ merge; plan item E2 keeps this list current):
     its `tracing` module still needs `log`. `Simulation::new_with_plugins`
     builds the app from any plugin group. The port turns `test-utils` on
     in its dev-dependencies for `BotSim` (`src/test_util/sim.rs`).
+22. (TS2) The `EventsPlugin` listeners run chained: `Packet`, then
+    `PacketDecodeFailed`, `Login`, `ReceiveChunk`, `Chat`, the player-list
+    events, `Spawn`, `Death`, `Disconnect`, `ConnectionFailed`. Upstream
+    registers them as one unordered tuple, so the events of one pass
+    went out in an order that changed from run to run (found by the
+    golden test, `tests/golden/bridge_events.txt`).
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

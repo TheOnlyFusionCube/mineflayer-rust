@@ -1,6 +1,7 @@
 //! Test scaffolds: clients with no systems, and the [`sim::BotSim`]
 //! harness that runs the real engine and bridge.
 
+mod golden;
 pub(crate) mod sim;
 
 use std::ops::Deref as _;

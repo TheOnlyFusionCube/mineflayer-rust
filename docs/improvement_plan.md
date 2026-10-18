@@ -1304,13 +1304,13 @@ the commit that completes the item.
 
 | ID | Status | Commit |
 |---|---|---|
-| DF1 | open | |
-| DF2 | open | |
-| DF3 | open | |
-| DF4 | open | |
-| DF5 | open | |
-| TS1 | open | |
-| TS2 | open | |
+| DF1 | done | `bae2f84` |
+| DF2 | done | `370344a` |
+| DF3 | done | `fe527b4` |
+| DF4 | done | `4455b4e` |
+| DF5 | done | `ee1afa8` |
+| TS1 | done | `eb342dc` |
+| TS2 | done | (this commit) |
 | TS3 | open | |
 | TS4 | open | |
 | TS5 | open | |
@@ -1327,7 +1327,7 @@ the commit that completes the item.
 | OP4 | open | |
 | OP5 | open | |
 | OP6 | open | |
-| EV1 | open | |
+| EV1 | done | `a8f77a5` |
 | EV2 | open | |
 | EV3 | open | |
 | EV4 | open | |
@@ -1341,7 +1341,7 @@ the commit that completes the item.
 | CL3 | open | |
 | CL4 | open | |
 | CL5 | open | |
-| CL6 | open | |
+| CL6 | done | `e67a4be` |
 | CL7 | open | |
 | CP1 | open | |
 | CP2 | open | |
@@ -1357,4 +1357,4 @@ the commit that completes the item.
 | AD3 | open | |
 | AD4 | open | |
 | AD5 | open | |
-| AD6 | open | |
+| AD6 | step 1 done (`.omo/` ignored) | `4659c99` |
