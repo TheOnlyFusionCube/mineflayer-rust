@@ -361,7 +361,7 @@ fn translate_disconnect_variants() {
             &client,
             Event::Disconnect(Some(mineflayer_engine::FormattedText::from("banned")))
         )[..],
-        [BotEvent::Kicked(k, false), BotEvent::End(r)] if k == "banned" && r == "banned"
+        [BotEvent::Kicked { reason: k, logged_in: false }, BotEvent::End(r)] if k == "banned" && r == "banned"
     ));
 
     // after a login, the in-game handler reports `loggedIn = true`
@@ -378,7 +378,7 @@ fn translate_disconnect_variants() {
             &client,
             Event::Disconnect(Some(mineflayer_engine::FormattedText::from("banned")))
         )[..],
-        [BotEvent::Kicked(k, true), BotEvent::End(r)] if k == "banned" && r == "banned"
+        [BotEvent::Kicked { reason: k, logged_in: true }, BotEvent::End(r)] if k == "banned" && r == "banned"
     ));
 }
 

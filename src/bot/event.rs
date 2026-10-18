@@ -9,7 +9,6 @@ use mineflayer_engine::{
     player::PlayerInfo,
     protocol::packets::game::{
         ClientboundGamePacket, c_block_entity_data::ClientboundBlockEntityData,
-        c_sound::SoundSource,
     },
 };
 
@@ -40,11 +39,15 @@ pub enum BotEvent {
     Respawn,
     /// `death` — the bot died.
     Death,
-    /// `kicked` — the server disconnected us with a reason. The bool is
-    /// upstream `kick.js`'s `loggedIn`: `true` for an in-game kick, `false`
-    /// for a kick during the login phase (see api-parity.md for the
-    /// login-phase caveat).
-    Kicked(String, bool),
+    /// `kicked` — the server disconnected us with a reason.
+    Kicked {
+        /// The kick reason as text.
+        reason: String,
+        /// Upstream `kick.js`'s `loggedIn`: `true` for an in-game kick,
+        /// `false` for a kick during the login phase (see api-parity.md
+        /// for the login-phase caveat).
+        logged_in: bool,
+    },
     /// `end` — the connection ended, with the reason (`socketClosed`,
     /// the `quit`/`end` argument, or a kick reason).
     End(String),
@@ -211,19 +214,6 @@ pub enum BotEvent {
         /// Playback pitch.
         pitch: f32,
     },
-    /// `hardcodedSoundEffectHeard` — see [`BotEvent::SoundHeard`].
-    HardcodedSound {
-        /// The sound's registry id.
-        id: u32,
-        /// The sound category (master, music, hostile, …).
-        category: SoundSource,
-        /// The source position.
-        pos: Vec3,
-        /// Playback volume.
-        volume: f32,
-        /// Playback pitch.
-        pitch: f32,
-    },
     /// `noteHeard` — a note block was played.
     NoteHeard {
         /// The note block's position (upstream passes a `Block`).
@@ -241,7 +231,7 @@ pub enum BotEvent {
     /// [`crate::Bot::deny_resource_pack`]/api-parity.md).
     ResourcePack {
         /// The pack's wire UUID.
-        uuid: String,
+        uuid: uuid::Uuid,
         /// The download URL.
         url: String,
         /// The expected SHA-1 hash.
@@ -281,12 +271,11 @@ pub enum BotEvent {
         is_front_text: bool,
     },
     /// `pistonMove` — a piston extended (`is_pulling: false`) or
-    /// retracted. `direction` is the raw protocol facing byte
-    /// (0=down, 1=up, 2=north, 3=south, 4=west, 5=east).
+    /// retracted, facing `direction`.
     PistonMove {
         block: Block,
         is_pulling: bool,
-        direction: u8,
+        direction: mineflayer_engine::core::direction::Direction,
     },
     /// `chestLidMove` — the open-count of a chest or other lidded
     /// container changed. `second` is the other half for double chests.
@@ -317,88 +306,88 @@ pub enum BotEvent {
     GameStateChanged,
     /// `entitySpawn` — an entity appeared in the world (also emitted for the
     /// bot itself right after `Spawn`, like upstream).
-    EntitySpawn(mineflayer_engine::EntityRef),
+    EntitySpawn(EntityRef),
     /// `entityGone` — an entity was removed from the world. `entity` is the
     /// last-seen handle (`None` if the entity was never resolved); `id`
     /// always carries the protocol id since the handle can no longer report it.
     EntityGone {
         /// Last-seen handle for the removed entity, if known.
-        entity: Option<mineflayer_engine::EntityRef>,
+        entity: Option<EntityRef>,
         /// The removed entity's protocol id.
         id: mineflayer_engine::core::entity_id::MinecraftEntityId,
     },
     /// `entityMoved` — an entity's position, look, or head rotation changed.
-    EntityMoved(mineflayer_engine::EntityRef),
+    EntityMoved(EntityRef),
     /// `entityUpdate` — an entity's metadata changed.
-    EntityUpdate(mineflayer_engine::EntityRef),
+    EntityUpdate(EntityRef),
     /// `entityAttributes` — an entity's attributes were updated.
-    EntityAttributes(mineflayer_engine::EntityRef),
+    EntityAttributes(EntityRef),
     /// `entitySwingArm` — an entity swung its (main-hand) arm.
-    EntitySwingArm(mineflayer_engine::EntityRef),
+    EntitySwingArm(EntityRef),
     /// `entityHurt` — an entity took damage (hurt animation, entity status,
     /// or `c_damage_event`; `source` names the responsible entity when the
     /// server sent one).
     EntityHurt {
         /// The entity that was hurt.
-        entity: mineflayer_engine::EntityRef,
+        entity: EntityRef,
         /// The entity that caused the damage, if the server identified one.
-        source: Option<mineflayer_engine::EntityRef>,
+        source: Option<EntityRef>,
     },
     /// `entityDead` — an entity died (entity-event status 3).
-    EntityDead(mineflayer_engine::EntityRef),
+    EntityDead(EntityRef),
     /// `entityTaming` — tameable entity is being tamed (status 6).
-    EntityTaming(mineflayer_engine::EntityRef),
+    EntityTaming(EntityRef),
     /// `entityTamed` — entity was tamed (status 7).
-    EntityTamed(mineflayer_engine::EntityRef),
+    EntityTamed(EntityRef),
     /// `entityShakingOffWater` — entity shook off water (status 8).
-    EntityShakingOffWater(mineflayer_engine::EntityRef),
+    EntityShakingOffWater(EntityRef),
     /// `entityEatingGrass` — entity ate grass (status 10).
-    EntityEatingGrass(mineflayer_engine::EntityRef),
+    EntityEatingGrass(EntityRef),
     /// `entityHandSwap` — entity swapped hands (status 55); tracked equipment
     /// is swapped too, like upstream.
-    EntityHandSwap(mineflayer_engine::EntityRef),
+    EntityHandSwap(EntityRef),
     /// `entityWake` — entity woke up (animation 2).
-    EntityWake(mineflayer_engine::EntityRef),
+    EntityWake(EntityRef),
     /// `entityEat` — upstream maps animation 3 to `entityEat`; see
     /// api-parity.md for the off-hand-swing caveat.
-    EntityEat(mineflayer_engine::EntityRef),
+    EntityEat(EntityRef),
     /// `entityCriticalEffect` — critical hit particles (animation 4).
-    EntityCriticalEffect(mineflayer_engine::EntityRef),
+    EntityCriticalEffect(EntityRef),
     /// `entityMagicCriticalEffect` — magic critical particles (animation 5).
-    EntityMagicCriticalEffect(mineflayer_engine::EntityRef),
+    EntityMagicCriticalEffect(EntityRef),
     /// `entityCrouch` — a metadata packet flagged the entity as sneaking
     /// (fires per packet carrying the flag, like upstream).
-    EntityCrouch(mineflayer_engine::EntityRef),
+    EntityCrouch(EntityRef),
     /// `entityUncrouch` — entity stopped sneaking (transition only).
-    EntityUncrouch(mineflayer_engine::EntityRef),
+    EntityUncrouch(EntityRef),
     /// `entitySleep` — a metadata packet flagged the entity as sleeping
     /// (fires per packet carrying the flag, like upstream).
-    EntitySleep(mineflayer_engine::EntityRef),
+    EntitySleep(EntityRef),
     /// `entityElytraFlew` — entity started elytra flight (metadata edge).
-    EntityElytraFlew(mineflayer_engine::EntityRef),
+    EntityElytraFlew(EntityRef),
     /// `entityEquip` — entity equipment changed (`c_set_equipment`); read the
     /// slots back via [`crate::entity::EntityExt`] / `Bot::equipment`.
-    EntityEquip(mineflayer_engine::EntityRef),
+    EntityEquip(EntityRef),
     /// `entityAttach` — entity was attached to a vehicle/holder
     /// (`c_set_entity_link`, e.g. leashes).
     EntityAttach {
         /// The attached entity.
-        entity: mineflayer_engine::EntityRef,
+        entity: EntityRef,
         /// The vehicle/holder entity, if resolvable.
-        vehicle: Option<mineflayer_engine::EntityRef>,
+        vehicle: Option<EntityRef>,
     },
     /// `entityDetach` — entity was detached (`vehicle` is the previous
     /// holder, like upstream).
     EntityDetach {
         /// The detached entity.
-        entity: mineflayer_engine::EntityRef,
+        entity: EntityRef,
         /// The vehicle/holder it was detached from, if known.
-        vehicle: Option<mineflayer_engine::EntityRef>,
+        vehicle: Option<EntityRef>,
     },
     /// `entityEffect` — a mob effect was applied (`c_update_mob_effect`).
     EntityEffect {
         /// The affected entity.
-        entity: mineflayer_engine::EntityRef,
+        entity: EntityRef,
         /// The effect kind.
         effect: mineflayer_engine::registry::builtin::MobEffect,
         /// Amplifier/duration/flags, mirroring upstream's
@@ -408,7 +397,7 @@ pub enum BotEvent {
     /// `entityEffectEnd` — a mob effect was removed (`c_remove_mob_effect`).
     EntityEffectEnd {
         /// The affected entity.
-        entity: mineflayer_engine::EntityRef,
+        entity: EntityRef,
         /// The effect kind that ended.
         effect: mineflayer_engine::registry::builtin::MobEffect,
         /// The effect's tracked parameters (upstream emits the stored
@@ -418,14 +407,14 @@ pub enum BotEvent {
     },
     /// `itemDrop` — an entity's metadata carried an item stack (fires for
     /// item entities when their stack metadata arrives).
-    ItemDrop(mineflayer_engine::EntityRef),
+    ItemDrop(EntityRef),
     /// `playerCollect` — an entity collected another (`c_take_item_entity`);
     /// `collected` is usually an item entity.
     PlayerCollect {
         /// The collecting entity (usually a player).
-        collector: Option<mineflayer_engine::EntityRef>,
+        collector: Option<EntityRef>,
         /// The collected entity.
-        collected: Option<mineflayer_engine::EntityRef>,
+        collected: Option<EntityRef>,
     },
     /// `usedFirework` — a firework rocket attached to us was registered
     /// (also feeds `bot.fireworkRocketDuration`).
@@ -433,13 +422,13 @@ pub enum BotEvent {
     /// `mount` — we started riding an entity (`c_set_passengers`).
     Mounted {
         /// The vehicle entity, if resolvable.
-        vehicle: Option<mineflayer_engine::EntityRef>,
+        vehicle: Option<EntityRef>,
     },
     /// `dismount` — we stopped riding (`vehicle` is the previous vehicle,
     /// like upstream; also emitted when the vehicle entity goes away).
     Dismounted {
         /// The vehicle we were riding.
-        vehicle: Option<mineflayer_engine::EntityRef>,
+        vehicle: Option<EntityRef>,
     },
     /// `diggingCompleted` — a [`crate::Bot::dig`] finished; the payload is the new
     /// (usually air) block at the dug position, like upstream's `newBlock`.
@@ -460,7 +449,7 @@ pub enum BotEvent {
     },
     /// `entityPlaced` (undocumented upstream) — the entity a
     /// [`crate::Bot::place_entity`] spawned.
-    EntityPlaced(mineflayer_engine::EntityRef),
+    EntityPlaced(EntityRef),
     /// `goal_updated` — `pathfinder.set_goal` installed a new goal
     /// (upstream emits `(goal, dynamic)`).
     GoalUpdated {
@@ -497,14 +486,13 @@ pub enum BotEvent {
         /// The abandoned goal, if one was set.
         goal: Option<crate::pathfinder::Goal>,
     },
-    /// `path_reset` — the path was restarted mid-flight. `reason` is
-    /// `goal_updated` or `movements_updated`, the two upstream call sites
-    /// the facade can observe. The engine's internal repaths (stuck, block
-    /// change, chunk load, …) surface as `path_update` instead — see
-    /// api-parity.md.
+    /// `path_reset` — the path was restarted mid-flight by one of the two
+    /// upstream call sites the facade can observe. The engine's internal
+    /// repaths (stuck, block change, chunk load, …) surface as
+    /// `path_update` instead — see api-parity.md.
     PathReset {
         /// Which `set_goal`/`set_movements` call caused the reset.
-        reason: &'static str,
+        reason: crate::pathfinder::PathResetReason,
     },
     // — inventory/windows domain —
     /// `windowOpen` — the server opened a non-inventory window and its

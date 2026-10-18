@@ -220,7 +220,7 @@ fn handle_packet_state(
         ClientboundGamePacket::ResourcePackPush(p) => {
             state.latest_resource_pack = Some(p.clone());
             vec![BotEvent::ResourcePack {
-                uuid: p.id.to_string(),
+                uuid: p.id,
                 url: p.url.clone(),
                 hash: p.hash.clone(),
                 required: p.required,

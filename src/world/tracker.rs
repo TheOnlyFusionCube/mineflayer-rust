@@ -373,11 +373,23 @@ pub(super) fn block_event(
         return vec![];
     };
     match p.block {
-        BlockKind::Piston | BlockKind::StickyPiston => vec![BotEvent::PistonMove {
-            block,
-            is_pulling: p.action_id != 0,
-            direction: p.action_parameter,
-        }],
+        BlockKind::Piston | BlockKind::StickyPiston => {
+            use mineflayer_engine::core::direction::Direction;
+            let direction = match p.action_parameter {
+                0 => Direction::Down,
+                1 => Direction::Up,
+                2 => Direction::North,
+                3 => Direction::South,
+                4 => Direction::West,
+                5 => Direction::East,
+                _ => return vec![],
+            };
+            vec![BotEvent::PistonMove {
+                block,
+                is_pulling: p.action_id != 0,
+                direction,
+            }]
+        }
         BlockKind::NoteBlock => vec![], // 'noteHeard' belongs to the misc domain.
         _ => {
             // 'left' halves of a double chest are swallowed upstream.

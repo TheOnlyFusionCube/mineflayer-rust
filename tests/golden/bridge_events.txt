@@ -150,7 +150,7 @@ Tick
 Move { old_pos: Vec3 { x: 0.0, y: -7.559544869528043, z: 0.0 } }
 # a boss bar
 Packet(BossEvent)
-BossBarCreated(BossBar { entity_uuid: "00000000-0000-0000-0000-000000000007", title: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "Boss" }), health: 0.5, dividers: 0, color: Red, darken_sky: false, dragon_bar: false, create_fog: false })
+BossBarCreated(BossBar { entity_uuid: 00000000-0000-0000-0000-000000000007, title: Text(TextComponent { base: BaseComponent { siblings: [], style: Style { color: None, shadow_color: None, bold: None, italic: None, underlined: None, strikethrough: None, obfuscated: None, click_event: None, hover_event: None, insertion: None, font: None } }, text: "Boss" }), health: 0.5, dividers: 0, color: Red, darken_sky: false, dragon_bar: false, create_fog: false })
 Tick
 Move { old_pos: Vec3 { x: 0.0, y: -8.584354139212541, z: 0.0 } }
 # a title

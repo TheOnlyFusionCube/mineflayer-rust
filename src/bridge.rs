@@ -395,7 +395,10 @@ fn lifecycle_events(
                     // the state that `connected` tracks.
                     let logged_in = state.connected;
                     vec![
-                        BotEvent::Kicked(reason.clone(), logged_in),
+                        BotEvent::Kicked {
+                            reason: reason.clone(),
+                            logged_in,
+                        },
                         BotEvent::End(reason),
                     ]
                 }

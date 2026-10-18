@@ -359,7 +359,7 @@ impl Bot {
     ///
     /// let reason = bot
     ///     .wait_map(Duration::from_secs(60), |e| match e {
-    ///         BotEvent::Kicked(reason, _) => Some(reason.clone()),
+    ///         BotEvent::Kicked { reason, .. } => Some(reason.clone()),
     ///         _ => None,
     ///     })
     ///     .await?;
@@ -567,12 +567,16 @@ mod tests {
         let mut rx2 = tx.subscribe();
 
         tx.send(BotEvent::Login).unwrap();
-        tx.send(BotEvent::Kicked("bye".to_string(), true)).unwrap();
+        tx.send(BotEvent::Kicked {
+            reason: "bye".to_string(),
+            logged_in: true,
+        })
+        .unwrap();
 
         assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Login));
         assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Login));
-        assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked(_, _)));
-        assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked(_, _)));
+        assert!(matches!(rx1.try_recv().unwrap(), BotEvent::Kicked { .. }));
+        assert!(matches!(rx2.try_recv().unwrap(), BotEvent::Kicked { .. }));
     }
 
     /// A background driver must not keep the connection open: its handle

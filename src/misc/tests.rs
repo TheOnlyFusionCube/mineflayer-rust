@@ -205,7 +205,7 @@ fn resource_pack_push_tracked() {
     };
     let events = handle_packet_state(&mut s, &ClientboundGamePacket::ResourcePackPush(push), None);
     assert!(
-        matches!(&events[..], [BotEvent::ResourcePack { uuid, url, hash, required }] if url == "https://packs.example/x.zip" && hash == "deadbeef" && *required && uuid == "00000000-0000-0000-0000-000000000000")
+        matches!(&events[..], [BotEvent::ResourcePack { uuid, url, hash, required }] if url == "https://packs.example/x.zip" && hash == "deadbeef" && *required && uuid.is_nil())
     );
     assert_eq!(s.latest_resource_pack.unwrap().hash, "deadbeef");
 }

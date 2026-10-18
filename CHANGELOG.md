@@ -21,6 +21,13 @@
 - `mineflayer::engine` no longer has `swarm`, `ClientBuilder`, `JoinOpts`,
   `auto_reconnect`, `NoState`, `HandleFn`, or `BoxHandleFn`. The bot never
   used them; join with `Client::join` or `StartClientOpts`.
+- Typed event payloads: `BotEvent::Kicked { reason, logged_in }` (was
+  `Kicked(String, bool)`), `PathReset { reason: PathResetReason }` (was a
+  `&'static str`; `as_str()` gives upstream's string),
+  `PistonMove { direction: Direction }` (was the raw byte),
+  `ResourcePack { uuid: Uuid }` and `BossBar::entity_uuid: Uuid` (were
+  strings; boss bars are keyed by `Uuid`). `BotEvent::HardcodedSound`,
+  which was never emitted, is removed.
 - `Auth::Microsoft` has an `on_msa_code` field (`None` keeps the old
   behavior). `engine::auth::interactive_get_ms_auth_token` takes the
   callback as a fifth argument, and `AuthOpts` and

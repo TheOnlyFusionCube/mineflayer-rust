@@ -111,6 +111,26 @@ pub enum PathStatus {
     Timeout,
 }
 
+/// Why `path_reset` fired: upstream's `reason` argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathResetReason {
+    /// `'goal_updated'` — a `set_goal` replaced the goal mid-path.
+    GoalUpdated,
+    /// `'movements_updated'` — a `set_movements` changed the movements
+    /// mid-path.
+    MovementsUpdated,
+}
+
+impl PathResetReason {
+    /// Upstream's string for the reason.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GoalUpdated => "goal_updated",
+            Self::MovementsUpdated => "movements_updated",
+        }
+    }
+}
+
 /// The named errors upstream's `goto` puts on `err.name` (`pf-goto.js`)
 /// — carried as variants so callers can discriminate instead of parsing
 /// a message. Reached via [`Error::Path`].
@@ -424,7 +444,7 @@ impl Pathfinder<'_> {
         });
         if client.is_executing_path() {
             self.bot.emit_event(BotEvent::PathReset {
-                reason: "goal_updated",
+                reason: PathResetReason::GoalUpdated,
             });
         }
         if satisfied {
@@ -583,7 +603,7 @@ impl Pathfinder<'_> {
         .flatten();
         if was_executing {
             self.bot.emit_event(BotEvent::PathReset {
-                reason: "movements_updated",
+                reason: PathResetReason::MovementsUpdated,
             });
         }
         if let Some((goal, dynamic)) = goal_and_dynamic {

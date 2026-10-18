@@ -332,11 +332,7 @@ fn team_lifecycle() {
 #[test]
 fn boss_bar_lifecycle() {
     let mut s = ScoreboardState::default();
-    // `uuid` isn't in our dep set: build the packet id by decoding one
-    // from the wire — McBuf gives us a `Uuid` without naming the type.
-    let id =
-        mineflayer_engine::buf::McBuf::mc_read(&mut std::io::Cursor::new(&[0u8; 16][..])).unwrap();
-    let id_string = "00000000-0000-0000-0000-000000000000".to_string();
+    let id = uuid::Uuid::nil();
     let packet = |operation| {
         ClientboundGamePacket::BossEvent(
             mineflayer_engine::protocol::packets::game::c_boss_event::ClientboundBossEvent {
@@ -364,7 +360,7 @@ fn boss_bar_lifecycle() {
     )
     .unwrap();
     assert!(
-        matches!(&events[..], [BotEvent::BossBarCreated(b)] if b.entity_uuid == id_string && b.dividers == 10 && b.color == BossBarColor::Purple && b.darken_sky && b.dragon_bar && !b.create_fog)
+        matches!(&events[..], [BotEvent::BossBarCreated(b)] if b.entity_uuid == id && b.dividers == 10 && b.color == BossBarColor::Purple && b.darken_sky && b.dragon_bar && !b.create_fog)
     );
 
     let events = handle(&mut s, &packet(Operation::UpdateProgress(0.4))).unwrap();
@@ -385,7 +381,7 @@ fn boss_bar_lifecycle() {
     );
 
     let events = handle(&mut s, &packet(Operation::Remove)).unwrap();
-    assert!(matches!(&events[..], [BotEvent::BossBarDeleted(b)] if b.entity_uuid == id_string));
+    assert!(matches!(&events[..], [BotEvent::BossBarDeleted(b)] if b.entity_uuid == id));
     assert!(s.boss_bars.is_empty());
 }
 /// Login/respawn clear objectives, teams, and the member map — but not
@@ -429,9 +425,9 @@ fn login_clears_the_domain_state_through_observe() {
         .into(),
         team_map: [("m".to_string(), "t".to_string())].into(),
         boss_bars: [(
-            "b".to_string(),
+            uuid::Uuid::from_u128(2),
             BossBar {
-                entity_uuid: "b".into(),
+                entity_uuid: uuid::Uuid::from_u128(2),
                 title: "t".into(),
                 health: 1.0,
                 dividers: 0,

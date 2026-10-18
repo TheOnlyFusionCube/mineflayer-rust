@@ -45,7 +45,7 @@ pub(crate) struct ScoreboardState {
     /// two views can't drift).
     pub team_map: HashMap<String, String>,
     /// Bar uuid string -> bar.
-    pub boss_bars: HashMap<String, BossBar>,
+    pub boss_bars: HashMap<uuid::Uuid, BossBar>,
 }
 
 impl ScoreboardState {
@@ -269,9 +269,9 @@ impl Team {
 /// A boss bar — the (undocumented) upstream `BossBar` class.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BossBar {
-    /// `bossBar.entityUUID` — the packet's bar id, as the hyphenated uuid
-    /// string upstream exposes.
-    pub entity_uuid: String,
+    /// `bossBar.entityUUID` — the packet's bar id (upstream exposes the
+    /// hyphenated string, which `to_string` gives).
+    pub entity_uuid: uuid::Uuid,
     pub title: FormattedText,
     /// `bossBar.health` — the fill progress, `0.0..=1.0`.
     pub health: f32,
@@ -288,7 +288,7 @@ pub struct BossBar {
 }
 
 impl BossBar {
-    fn from_add(id: String, add: c_boss_event::AddOperation) -> Self {
+    fn from_add(id: uuid::Uuid, add: c_boss_event::AddOperation) -> Self {
         Self {
             entity_uuid: id,
             title: add.name,
@@ -546,30 +546,30 @@ fn team(
 fn boss_bar(state: &mut ScoreboardState, p: &c_boss_event::ClientboundBossEvent) -> Vec<BotEvent> {
     match &p.operation {
         c_boss_event::Operation::Add(add) => {
-            let bar = BossBar::from_add(p.id.to_string(), add.clone());
-            state.boss_bars.insert(p.id.to_string(), bar.clone());
+            let bar = BossBar::from_add(p.id, add.clone());
+            state.boss_bars.insert(p.id, bar.clone());
             vec![BotEvent::BossBarCreated(bar)]
         }
-        c_boss_event::Operation::Remove => match state.boss_bars.remove(&p.id.to_string()) {
+        c_boss_event::Operation::Remove => match state.boss_bars.remove(&p.id) {
             Some(bar) => vec![BotEvent::BossBarDeleted(bar)],
             None => vec![],
         },
         c_boss_event::Operation::UpdateProgress(progress) => {
-            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+            let Some(bar) = state.boss_bars.get_mut(&p.id) else {
                 return vec![];
             };
             bar.health = *progress;
             vec![BotEvent::BossBarUpdated(bar.clone())]
         }
         c_boss_event::Operation::UpdateName(name) => {
-            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+            let Some(bar) = state.boss_bars.get_mut(&p.id) else {
                 return vec![];
             };
             bar.title = name.clone();
             vec![BotEvent::BossBarUpdated(bar.clone())]
         }
         c_boss_event::Operation::UpdateStyle(style) => {
-            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+            let Some(bar) = state.boss_bars.get_mut(&p.id) else {
                 return vec![];
             };
             bar.dividers = overlay_notches(style.overlay);
@@ -577,7 +577,7 @@ fn boss_bar(state: &mut ScoreboardState, p: &c_boss_event::ClientboundBossEvent)
             vec![BotEvent::BossBarUpdated(bar.clone())]
         }
         c_boss_event::Operation::UpdateProperties(props) => {
-            let Some(bar) = state.boss_bars.get_mut(&p.id.to_string()) else {
+            let Some(bar) = state.boss_bars.get_mut(&p.id) else {
                 return vec![];
             };
             bar.darken_sky = props.darken_screen;

@@ -1329,7 +1329,7 @@ the commit that completes the item.
 | OP6 | open | |
 | EV1 | done | `a8f77a5` |
 | EV2 | done | (this commit) |
-| EV3 | open | |
+| EV3 | done | (this commit) |
 | EV4 | open | |
 | PL1 | open | |
 | PL2 | open | |

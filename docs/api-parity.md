@@ -107,7 +107,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('spawn')` | lifecycle | `BotEvent::Spawn` | ported | initial `Event::Spawn`; post-respawn 'spawn' from the first `c_set_health` with health > 0 while dead — upstream's `isAlive` re-arm (The engine Spawn never refires in 0.16) |
 | `event('respawn')` | lifecycle | `BotEvent::Respawn` | ported | emitted per `c_respawn` packet — death respawn and dimension change alike, like upstream's `respawn` packet handler |
 | `event('connect') (undoc)` | lifecycle | `BotEvent::Connected` | diverges | upstream fires on raw socket connect (pre-login); the engine surfaces no socket-level event — emitted right before the first `Login` (earliest wire-up proof), once per connection (The engine Login is also once-only, so the edge is exactly once) |
-| `event('kicked')` | lifecycle | `BotEvent::Kicked(String, bool)` | diverges | the engine folds kick into `Disconnect(reason)`; we emit `Kicked(reason, logged_in)` then `End`; `logged_in` is the bridge's login state (`true` = in-game kick, `false` = login phase) |
+| `event('kicked')` | lifecycle | `BotEvent::Kicked { reason, logged_in }` | diverges | the engine folds kick into `Disconnect(reason)`; we emit `Kicked { reason, logged_in }` then `End`; `logged_in` is the bridge's login state (`true` = in-game kick, `false` = login phase) |
 | `event('end')` | lifecycle | `BotEvent::End(String)` | ported | exactly-once; reason = quit arg / kick / 'socketClosed' |
 | `event('error')` | lifecycle | `BotEvent::Error(String)` | ported | currently: connection failures only |
 
@@ -158,7 +158,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('signOpen')` | world | `BotEvent::SignOpen { block, is_front_text }` | ported | c_open_sign_editor decoded |
 | `event('chunkColumnLoad')` | world | `BotEvent::ChunkColumnLoad(ChunkPos)` | ported | the engine Event::ReceiveChunk |
 | `event('chunkColumnUnload')` | world | `BotEvent::ChunkUnload(ChunkPos)` | ported | c_forget_level_chunk decoded |
-| `event('pistonMove')` | world | `BotEvent::PistonMove { block, is_pulling, direction }` | ported | c_block_event; direction is the raw facing byte like upstream |
+| `event('pistonMove')` | world | `BotEvent::PistonMove { block, is_pulling, direction }` | ported | c_block_event; `direction` is the engine `Direction` (upstream passes the raw facing byte, 0 down to 5 east, in that order) |
 | `event('chestLidMove')` | world | `BotEvent::ChestLidMove { block, open_count, second }` | ported | c_block_event + openCountByPos dedup port |
 | `event('blockBreakProgressObserved')` | world | `BotEvent::BlockBreakProgress { block, stage, entity }` | ported | c_block_destruction stage<=9; entity via entity_by_minecraft_id |
 | `event('blockBreakProgressEnd')` | world | `BotEvent::BlockBreakEnd { block, entity }` | ported | c_block_destruction stage>9 |
@@ -408,7 +408,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Team.parseMessage` | misc | `n/a` | diverges | upstream internal helper; packet reducer decodes directly |
 | `Team.add / remove / update` | misc | `n/a` | diverges | upstream internal helpers; state mutates via packets only |
 | `Team.displayName(member)` | misc | `team.member_display_name(member) -> FormattedText` | ported | prefix + colored member + suffix |
-| `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog}` | ported | `entity_uuid` is the bar uuid string; `flags` folded into the three bools |
+| `BossBar fields` | misc | `bossbar.{entity_uuid,title,health,dividers,color,darken_sky,dragon_bar,create_fog}` | ported | `entity_uuid` is the bar's `Uuid` (`to_string()` gives upstream's hyphenated string); `flags` folded into the three bools |
 | `event('scoreboardCreated')` | misc | `BotEvent::ScoreboardCreated(sb)` | ported | — |
 | `event('scoreboardDeleted')` | misc | `BotEvent::ScoreboardDeleted(sb)` | diverges | skipped for objectives the client never saw — upstream emits unconditionally (payload may be `undefined`); same tradeoff as `teamRemoved` |
 | `event('scoreboardTitleChanged')` | misc | `BotEvent::ScoreboardTitleChanged(sb)` | ported | — |
@@ -435,7 +435,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `Particle.fromNetwork(packet)` | misc | `Particle::from_packet(&packet)` | ported | — |
 | `event('particle')` | misc | `BotEvent::ParticleSpawned(Particle)` | ported | — |
 | `event('soundEffectHeard')` | misc | `BotEvent::SoundHeard{name,pos,volume,pitch}` | ported | entity sounds resolve to entity position |
-| `event('hardcodedSoundEffectHeard')` | misc | `BotEvent::HardcodedSound{id,category,pos,volume,pitch}` | diverges | never emitted — the engine's registry Holder always resolves a name |
+| `event('hardcodedSoundEffectHeard')` | misc | `n/a` | wontfix | the engine's registry Holder always resolves a sound name, so every sound arrives as `soundEffectHeard` |
 | `event('noteHeard')` | misc | `BotEvent::NoteHeard{block,instrument,pitch}` | diverges | decoded from packet action id/param; upstream re-reads the block's metadata and skips when the block is unloaded — slight over-emission |
 
 ## Time / weather / game state
@@ -525,7 +525,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 |---|---|---|---|---|
 | `bot.acceptResourcePack()` | misc | `bot.accept_resource_pack()` | diverges | only game-phase pushes are tracked (config-phase pushes — server.properties/proxy packs — never emit the event or populate state); the engine also auto-accepts every push |
 | `bot.denyResourcePack()` | misc | `bot.deny_resource_pack()` | diverges | only game-phase pushes are tracked; the engine's built-in `AcceptResourcePacksPlugin` auto-accepts on arrival, so a later denial usually has no effect |
-| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid,url,hash,required}` | diverges | game-phase `resource_pack_push` only — config-phase pushes (server.properties/proxy packs, the dominant modern path) never reach `Event::Packet` |
+| `event('resourcePack')` | misc | `BotEvent::ResourcePack{uuid: Uuid,url,hash,required}` | diverges | game-phase `resource_pack_push` only — config-phase pushes (server.properties/proxy packs, the dominant modern path) never reach `Event::Packet` |
 
 ## Creative mode (bot.creative)
 
@@ -579,7 +579,7 @@ Upstream's 42 internal plugins (survey: `lib/plugins/*`) are tracked in aggregat
 | `event('path_update')` | pathfinder | `BotEvent::PathUpdate{path, is_partial, status}` | ported | per-tick diff of `Pathfinder`/`ExecutingPath` (The engine's `PathFoundEvent` never reaches `Event`); fires when a path installs, a repath result merges mid-run (path growth — consumption only shrinks), or a calculation finishes while a facade goal owned it — an aborted search (`stop()`/replacement mid-calc) emits nothing, matching upstream's nulled `astarContext`. `status` mirrors upstream's `results.status` — `Success`/`Partial`/`NoPath`/`Timeout`; failures are detected two ways since the engine's goto chain runs per-Update (~17 ms) inside the 50 ms tick gap: the observed drop edge, and a steady-state wedge (facade goal set, ECS idle, goal unmet) that persists through install/calc flicker for searches that install+drop between snapshots. `Timeout` also fires — once per goal batch, latched — when searches total `think_timeout` without completing; it does not clear the goal. Hidden searches (install+drop inside the gap) aren't metered toward the budget — the wedge bounds them |
 | `event('goal_updated')` | pathfinder | `BotEvent::GoalUpdated{goal, dynamic}` | ported | emitted synchronously by `set_goal`, payload like upstream's `(goal, dynamic)` |
 | `event('path_stop')` | pathfinder | `BotEvent::PathStop{goal}` | ported | `stop()`, a follow goal going invalid, or the engine clearing the goal without reaching (world change, internal stop); `goal` carries the abandoned facade goal (`Some`) — upstream emits no payload |
-| `event('path_reset')` | pathfinder | `BotEvent::PathReset{reason}` | diverges | only `goal_updated`/`movements_updated` reasons are observable; the engine's internal repaths (stuck, block change, chunk load, dig error, …) surface as `path_update` and can't be told apart |
+| `event('path_reset')` | pathfinder | `BotEvent::PathReset{reason: PathResetReason}` | diverges | only `goal_updated`/`movements_updated` reasons are observable; the engine's internal repaths (stuck, block change, chunk load, dig error, …) surface as `path_update` and can't be told apart |
 | `collectBlock.collect(block)` | pathfinder | `bot.collect_block().collect(target)` / `.collect_opts(target, CollectOpts)` | diverges | `CollectTarget` accepts Block/BlockPos/BlockKind/kind-list/predicate + `.count()/.max_distance()/.point()` — upstream's item-drop-entity targets are out of scope (blocks only; the drop vacuum covers pickups); find→`Goal::LookAtBlock`→equip→dig loop re-searches per iteration (upstream's `mineBlock` paths with `GoalLookAtBlock` too) + bounded drop vacuum (additive); equips the best harvest tool before each dig like upstream's `mineBlock` (`requireHarvest` + `getFromChest`) and skips candidates that stay unharvestable; partial hauls resolve `Ok` — compare `collected.blocks.len()` to the asked count; `append` runs calls side-by-side instead of merging into one target list (a cancel still ends them together, like upstream's shared task) |
 | `collectBlock.targets` | pathfinder | `n/a` | diverges | upstream's live `Targets` queue (shared across `collect` calls, fed by item-drop entities via `itemDrop`/`entityGone`); ours is per-call — `CollectTarget` matchers re-search the world each iteration instead, and drop entities aren't collectable at all |
 | `collectBlock.emptyInventoryIfFull(chests, filter)` | pathfinder | `.empty_inventory_if_full(&[BlockPos], &ItemFilter)` | ported | same contract: no-op while a slot is free, else deposit filter-passing stacks nearest-chest-first until one takes them or `NoChests` errors; `collect` calls it internally with the configured (or per-call) chest list/filter |
