@@ -40,6 +40,9 @@
   ordered against the start messages.
 - `engine::Event::Pathfinder` carries pathfinder results.
 - `engine::registry::tags::item_tag_by_name`.
+- `Bot::event_stream()`, a `Stream` of `BotEvent`s that yields
+  `BotEvent::Lagged(n)` when the receiver lost `n` events, instead of
+  hiding the loss. The examples use it.
 - `Bot::wait_for` and `Bot::wait_map`, the analog of `once(bot, 'event')`
   with a time limit, and the public `WaitEnd` for why a wait ended.
 - `Auth::Microsoft { on_msa_code }` (upstream `options.onMsaCode`): the

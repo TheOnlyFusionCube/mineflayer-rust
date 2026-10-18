@@ -5,6 +5,7 @@
 //! cargo run --example echo -- <host> <port> [<name>] [online]
 //! ```
 
+use futures::StreamExt;
 use mineflayer::prelude::*;
 
 #[tokio::main]
@@ -44,17 +45,17 @@ async fn main() {
         .await
         .expect("connect failed");
 
-    let mut events = bot.events();
-    loop {
-        match events.recv().await {
+    let mut events = bot.event_stream();
+    while let Some(event) = events.next().await {
+        match event {
             // `username()` resolves once the profile lands — pre-spawn
             // it's empty.
-            Ok(BotEvent::Spawn) => println!("spawned as {}", bot.username()),
+            BotEvent::Spawn => println!("spawned as {}", bot.username()),
             // Upstream's `chat` event carries (username, message); the raw
             // ChatPacket's split_sender_and_content is the same pair.
             // `None` sender = system message, which upstream never emits
             // on `chat`.
-            Ok(BotEvent::Chat(packet)) => {
+            BotEvent::Chat(packet) => {
                 let (Some(sender), content) = packet.split_sender_and_content() else {
                     continue;
                 };
@@ -66,16 +67,14 @@ async fn main() {
                     eprintln!("echo failed: {err}");
                 }
             }
-            Ok(BotEvent::Kicked(reason, _)) => {
+            BotEvent::Kicked(reason, _) => {
                 println!("I was kicked from the server: {reason}")
             }
-            Ok(BotEvent::End(reason)) => {
+            BotEvent::End(reason) => {
                 println!("disconnected: {reason}");
                 break;
             }
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            _ => {}
         }
     }
 }

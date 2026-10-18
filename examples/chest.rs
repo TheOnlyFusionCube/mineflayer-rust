@@ -9,6 +9,7 @@
 //! cargo run --example chest -- <host> <port> [<name>]
 //! ```
 
+use futures::StreamExt;
 use mineflayer::prelude::*;
 
 #[tokio::main]
@@ -33,10 +34,10 @@ async fn main() {
     // become state in the single event loop.
     let mut chest: Option<Window> = None;
 
-    let mut events = bot.events();
-    loop {
-        match events.recv().await {
-            Ok(BotEvent::Chat(packet)) => {
+    let mut events = bot.event_stream();
+    while let Some(event) = events.next().await {
+        match event {
+            BotEvent::Chat(packet) => {
                 let (Some(sender), message) = packet.split_sender_and_content() else {
                     continue;
                 };
@@ -74,36 +75,34 @@ async fn main() {
                     _ => {}
                 }
             }
-            Ok(BotEvent::Experience) => {
+            BotEvent::Experience => {
                 let _ = bot.chat(&format!("I am level {}", bot.experience().level));
             }
             // Upstream's `chest.on('updateSlot')`/`('close')` — window events
             // are bot-level here, filtered by the window's protocol id.
-            Ok(BotEvent::WindowUpdateSlot {
+            BotEvent::WindowUpdateSlot {
                 window_id,
                 slot,
                 old,
                 new,
-            }) if chest.as_ref().is_some_and(|open| open.id() == window_id) => {
+            } if chest.as_ref().is_some_and(|open| open.id() == window_id) => {
                 let _ = bot.chat(&format!(
                     "chest update: {} -> {} (slot: {slot})",
                     item_to_string(old.as_ref()),
                     item_to_string(new.as_ref())
                 ));
             }
-            Ok(BotEvent::WindowClose(window))
+            BotEvent::WindowClose(window)
                 if chest.as_ref().is_some_and(|open| open.id() == window.id()) =>
             {
                 let _ = bot.chat("chest closed");
                 chest = None;
             }
-            Ok(BotEvent::End(reason)) => {
+            BotEvent::End(reason) => {
                 println!("disconnected: {reason}");
                 break;
             }
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            _ => {}
         }
     }
 }

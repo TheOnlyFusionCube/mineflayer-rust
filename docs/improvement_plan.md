@@ -1328,7 +1328,7 @@ the commit that completes the item.
 | OP5 | open | |
 | OP6 | open | |
 | EV1 | done | `a8f77a5` |
-| EV2 | open | |
+| EV2 | done | (this commit) |
 | EV3 | open | |
 | EV4 | open | |
 | PL1 | open | |

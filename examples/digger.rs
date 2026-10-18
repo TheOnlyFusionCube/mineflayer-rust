@@ -6,6 +6,7 @@
 //! cargo run --example digger -- <host> <port> [<name>]
 //! ```
 
+use futures::StreamExt;
 use mineflayer::prelude::*;
 
 #[tokio::main]
@@ -26,10 +27,10 @@ async fn main() {
         .await
         .expect("connect failed");
 
-    let mut events = bot.events();
-    loop {
-        match events.recv().await {
-            Ok(BotEvent::Chat(packet)) => {
+    let mut events = bot.event_stream();
+    while let Some(event) = events.next().await {
+        match event {
+            BotEvent::Chat(packet) => {
                 let (Some(sender), message) = packet.split_sender_and_content() else {
                     continue;
                 };
@@ -54,13 +55,11 @@ async fn main() {
                     }
                 });
             }
-            Ok(BotEvent::End(reason)) => {
+            BotEvent::End(reason) => {
                 println!("disconnected: {reason}");
                 break;
             }
-            Ok(_) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            _ => {}
         }
     }
 }
@@ -127,11 +126,11 @@ async fn build(bot: &Bot) {
     let jump_y = bot.position().y.floor() + 1.0;
     bot.set_control_state(Control::Jump, true);
 
-    let mut events = bot.events();
+    let mut events = bot.event_stream();
     let mut try_count = 0;
-    loop {
-        match events.recv().await {
-            Ok(BotEvent::Move { .. }) if bot.position().y > jump_y => {
+    while let Some(event) = events.next().await {
+        match event {
+            BotEvent::Move { .. } if bot.position().y > jump_y => {
                 match bot.place_block(&reference, Vec3::new(0.0, 1.0, 0.0)).await {
                     Ok(_) => {
                         bot.set_control_state(Control::Jump, false);
@@ -148,13 +147,11 @@ async fn build(bot: &Bot) {
                     }
                 }
             }
-            Ok(BotEvent::End(_)) | Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                bot.set_control_state(Control::Jump, false);
-                return;
-            }
-            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+            BotEvent::End(_) => break,
+            _ => {}
         }
     }
+    bot.set_control_state(Control::Jump, false);
 }
 
 async fn equip_dirt(bot: &Bot) {

@@ -279,6 +279,41 @@ impl Bot {
         self.shared.events.subscribe()
     }
 
+    /// Every event as a [`Stream`](futures::Stream), from the same
+    /// receiver [`Bot::events`] would hand out. A receiver that falls
+    /// behind loses events; the stream then yields
+    /// [`BotEvent::Lagged`] with the count, so the loss is visible. The
+    /// stream ends when the bot's event channel closes.
+    ///
+    /// ```no_run
+    /// # async fn demo(bot: mineflayer::Bot) {
+    /// use futures::StreamExt;
+    /// use mineflayer::BotEvent;
+    ///
+    /// let mut events = bot.event_stream();
+    /// while let Some(event) = events.next().await {
+    ///     match event {
+    ///         BotEvent::Spawn => println!("spawned"),
+    ///         BotEvent::Lagged(n) => eprintln!("lost {n} events"),
+    ///         BotEvent::End(_) => break,
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn event_stream(&self) -> impl futures::Stream<Item = BotEvent> + Send + Unpin + 'static {
+        Box::pin(futures::stream::unfold(
+            self.events(),
+            |mut rx| async move {
+                match rx.recv().await {
+                    Ok(event) => Some((event, rx)),
+                    Err(broadcast::error::RecvError::Lagged(n)) => Some((BotEvent::Lagged(n), rx)),
+                    Err(broadcast::error::RecvError::Closed) => None,
+                }
+            },
+        ))
+    }
+
     /// Wait for the first event that `pred` accepts: upstream's
     /// `once(bot, name)`, with a time limit so a lost packet cannot hang
     /// the caller. The wait also ends on [`BotEvent::End`], after `pred`
@@ -588,6 +623,26 @@ mod tests {
             .await
             .expect("alive channel stayed open with only a driver handle left")
             .expect_err("alive channel reported a value instead of closing");
+    }
+
+    /// A receiver that falls behind yields `Lagged(n)` with the number of
+    /// lost events, then the events that are still on the ring.
+    #[tokio::test]
+    async fn the_event_stream_reports_lost_events() {
+        use futures::StreamExt;
+
+        let bot = crate::test_util::bot(crate::test_util::despawned_client());
+        let mut stream = bot.event_stream();
+        let extra = 5;
+        for _ in 0..EVENT_CHANNEL_CAPACITY + extra {
+            bot.emit_event(BotEvent::Tick);
+        }
+        bot.emit_event(BotEvent::Spawn);
+        assert!(matches!(
+            stream.next().await,
+            Some(BotEvent::Lagged(n)) if n == extra as u64 + 1
+        ));
+        assert!(matches!(stream.next().await, Some(BotEvent::Tick)));
     }
 
     /// `wait_for` subscribes when called, so an event sent before the

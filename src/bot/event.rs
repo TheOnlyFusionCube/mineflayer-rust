@@ -58,6 +58,10 @@ pub enum BotEvent {
     Chat(mineflayer_engine::client_chat::ChatPacket),
     /// `physicsTick` — a game tick elapsed while the world was loaded.
     Tick,
+    /// The receiver fell behind and lost this many events. Only
+    /// [`Bot::event_stream`](crate::Bot::event_stream) yields it, in place
+    /// of the lost events; the bot never emits it.
+    Lagged(u64),
     /// Raw clientbound packet escape hatch for APIs the engine doesn't lift
     /// (scoreboards, boss bars, titles, particles, …). Emitted under the engine's
     /// `packet-event` feature, which is on by default.
