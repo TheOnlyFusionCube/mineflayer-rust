@@ -117,8 +117,9 @@ nightly at pin time ICEs compiling the entity crate, and
 solver can't infer `mineflayer-core`'s const generics. Both pins are
 workspace-local — don't override with `cargo +nightly` or `RUSTFLAGS`.
 
-After large changes, run `cargo clean`: the gate builds the engine crates
-with two feature sets, so `target/` grows past 30 GB.
+The gate builds the engine crates with two feature sets: the `log` steps
+build into `target/engine-log`, everything else into `target/`. Remove
+either directory on its own when it grows large; the other stays built.
 
 ## Layout
 

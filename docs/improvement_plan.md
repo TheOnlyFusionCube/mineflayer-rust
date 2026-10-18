@@ -1312,7 +1312,7 @@ the commit that completes the item.
 | TS1 | done | `eb342dc` |
 | TS2 | done | (this commit) |
 | TS3 | open | |
-| TS4 | open | |
+| TS4 | done; the job's first push run is not observed yet (no remote) | (this commit) |
 | TS5 | open | |
 | ST1 | replaced by D-port-plugins: the bridge stays, `BotPlugins` added | (ST3 commit) |
 | ST2 | done | (this commit) |
@@ -1357,4 +1357,4 @@ the commit that completes the item.
 | AD3 | open | |
 | AD4 | open | |
 | AD5 | open | |
-| AD6 | step 1 done (`.omo/` ignored) | `4659c99` |
+| AD6 | done | `4659c99`, (this commit) |

@@ -1,6 +1,7 @@
 # The verify gate (scripts/verify.sh: fmt, clippy, clippy with `live`,
-# port and engine unit tests and doctests, build, docs) on every push and
-# pull request, and the live suite on a schedule and by hand.
+# port and engine unit tests and doctests, build, docs) and a live smoke
+# subset on every push and pull request, and the whole live suite on a
+# schedule and by hand.
 name: verify
 
 on:
@@ -30,6 +31,45 @@ jobs:
 
       - name: Verify
         run: bash scripts/verify.sh
+
+  # Three live tests (lifecycle, chat, movement) on every push, so that a
+  # wire regression fails the commit that caused it; same fixture and jar
+  # cache as the live job below.
+  live-smoke:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .live/server.jar
+            .live/jar-version.txt
+          key: live-server-${{ hashFiles('Cargo.lock') }}
+
+      - name: Start the fixture on a reset world
+        run: bash scripts/live-server.sh reset
+
+      - name: Live smoke tests
+        run: >-
+          cargo test --features live --test live --no-fail-fast --
+          --ignored --test-threads=1 lifecycle:: chat:: movement::
+
+      - name: Stop the fixture
+        if: always()
+        run: bash scripts/live-server.sh stop
 
   # The live suite against the local fixture server (scripts/live-server.sh):
   # the only test of the port and the engine together on the wire. The
