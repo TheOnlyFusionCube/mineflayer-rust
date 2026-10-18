@@ -5,7 +5,9 @@ use super::*;
 
 /// A `bot.pathfinder` goal — upstream's `goals.Goal*` family as one sum
 /// type. Each variant names the engine goal it maps to.
-#[derive(Clone, Debug)]
+/// Two goals are equal when they have the same fields; a
+/// [`Goal::Follow`] compares its target by entity.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Goal {
     /// `goals.GoalNear(x, y, z, range)` → [`goals::RadiusGoal`].
     /// Distance is measured to block *centers* (the engine semantics — a
@@ -20,7 +22,7 @@ pub enum Goal {
     Block(BlockPos),
     /// `goals.GoalGetToBlock(x, y, z)` — stand directly adjacent to the
     /// block (upstream `isEnd`: `|dx| + |dz| + |dy<0?dy+1:dy| == 1`).
-    /// Custom `GetToBlockGoal` — the engine's `ReachBlockPosGoal` is the
+    /// → [`goals::GetToBlockGoal`]; the engine's `ReachBlockPosGoal` is the
     /// *LookAtBlock* analog (reach/LOS, not adjacency).
     GetToBlock(BlockPos),
     /// `goals.GoalXZ(x, z)` → [`goals::XZGoal`].
@@ -30,9 +32,8 @@ pub enum Goal {
         /// Target z coordinate.
         z: i32,
     },
-    /// `goals.GoalNearXZ(x, z, range)` → `NearXZGoal` (the engine has no
-    /// xz-radius goal; ours mirrors upstream's octagonal heuristic and
-    /// squared-range `isEnd`).
+    /// `goals.GoalNearXZ(x, z, range)` → [`goals::NearXZGoal`] (upstream's
+    /// octagonal heuristic and squared-range `isEnd`).
     NearXZ {
         /// Target x coordinate.
         x: i32,
@@ -93,30 +94,33 @@ impl Goal {
         match self {
             Goal::Near { pos, radius } => Some(Arc::new(goals::RadiusGoal::new(*pos, *radius))),
             Goal::Block(pos) => Some(Arc::new(goals::BlockPosGoal(*pos))),
-            Goal::GetToBlock(pos) => Some(Arc::new(GetToBlockGoal(*pos))),
+            Goal::GetToBlock(pos) => Some(Arc::new(goals::GetToBlockGoal(*pos))),
             Goal::LookAtBlock(pos) | Goal::BreakBlock(pos) => Some(Arc::new(
                 goals::ReachBlockPosGoal::new(*pos, chunks.clone()),
             )),
             Goal::XZ { x, z } => Some(Arc::new(goals::XZGoal { x: *x, z: *z })),
-            Goal::NearXZ { x, z, range } => Some(Arc::new(NearXZGoal {
+            Goal::NearXZ { x, z, range } => Some(Arc::new(goals::NearXZGoal {
                 x: *x,
                 z: *z,
-                range_sq: range * range,
+                range: *range,
             })),
             Goal::Y { y } => Some(Arc::new(goals::YGoal { y: *y })),
+            // upstream's `GoalInvert` is the engine's deprecated
+            // `InverseGoal`, with the same weak heuristic
+            #[allow(deprecated)]
             Goal::Invert(inner) => inner
                 .to_engine(chunks)
-                .map(|goal| Arc::new(InvertedGoal(goal)) as Arc<dyn EngineGoal>),
+                .map(|goal| Arc::new(goals::InverseGoal(goal)) as Arc<dyn EngineGoal>),
             Goal::Any(children) => children
                 .iter()
                 .map(|child| child.to_engine(chunks))
                 .collect::<Option<Vec<_>>>()
-                .map(|goals| Arc::new(AnyGoal(goals)) as Arc<dyn EngineGoal>),
+                .map(|goals| Arc::new(goals::OrGoals(goals)) as Arc<dyn EngineGoal>),
             Goal::All(children) => children
                 .iter()
                 .map(|child| child.to_engine(chunks))
                 .collect::<Option<Vec<_>>>()
-                .map(|goals| Arc::new(AllGoal(goals)) as Arc<dyn EngineGoal>),
+                .map(|goals| Arc::new(goals::AndGoals(goals)) as Arc<dyn EngineGoal>),
             Goal::Follow { entity, range } => entity
                 .get_component::<Position>()
                 .map(|p| Arc::new(goals::RadiusGoal::new(**p, *range)) as Arc<dyn EngineGoal>),
@@ -168,167 +172,6 @@ impl Goal {
             ChunkStorage::default()
         };
         self.to_engine(&chunks)
-    }
-}
-
-/// Structural identity for the `newGoal !== goal` check upstream's
-/// `goto` runs on `goal_updated` — a re-issued goal equal to the pending
-/// one doesn't count as a replacement (upstream compares by object
-/// identity; a value type's closest honest analog is equality, so this
-/// errs toward *not* rejecting where upstream's identity check
-/// wouldn't — including a freshly-constructed equal goal, which
-/// upstream's `!==` WOULD reject; a real residual for callers like
-/// collectBlock that rebuild goals per iteration). `dynamic` is not
-/// part of the identity — upstream compares only the goal object.
-/// [`Goal::Follow`] compares the target's ECS id — the `Client` inside
-/// an `EntityRef` isn't part of the goal's meaning.
-pub(super) fn same_goal(a: &Goal, b: &Goal) -> bool {
-    match (a, b) {
-        (
-            Goal::Near {
-                pos: p1,
-                radius: r1,
-            },
-            Goal::Near {
-                pos: p2,
-                radius: r2,
-            },
-        ) => p1 == p2 && r1 == r2,
-        (Goal::Block(a), Goal::Block(b)) => a == b,
-        (Goal::GetToBlock(a), Goal::GetToBlock(b)) => a == b,
-        (Goal::LookAtBlock(a), Goal::LookAtBlock(b)) => a == b,
-        (Goal::BreakBlock(a), Goal::BreakBlock(b)) => a == b,
-        (Goal::XZ { x: x1, z: z1 }, Goal::XZ { x: x2, z: z2 }) => x1 == x2 && z1 == z2,
-        (
-            Goal::NearXZ {
-                x: x1,
-                z: z1,
-                range: r1,
-            },
-            Goal::NearXZ {
-                x: x2,
-                z: z2,
-                range: r2,
-            },
-        ) => x1 == x2 && z1 == z2 && r1 == r2,
-        (Goal::Y { y: y1 }, Goal::Y { y: y2 }) => y1 == y2,
-        (Goal::Invert(a), Goal::Invert(b)) => same_goal(a, b),
-        (
-            Goal::Follow {
-                entity: e1,
-                range: r1,
-            },
-            Goal::Follow {
-                entity: e2,
-                range: r2,
-            },
-        ) => e1.id() == e2.id() && r1 == r2,
-        (Goal::Any(a), Goal::Any(b)) | (Goal::All(a), Goal::All(b)) => {
-            a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| same_goal(x, y))
-        }
-        _ => false,
-    }
-}
-
-/// `GoalCompositeAny` — the engine's `OrGoals` needs homogeneous children;
-/// ours are boxed trait objects.
-#[derive(Debug)]
-pub(super) struct AnyGoal(pub(super) Vec<Arc<dyn EngineGoal>>);
-impl EngineGoal for AnyGoal {
-    fn heuristic(&self, n: BlockPos) -> f32 {
-        self.0
-            .iter()
-            .map(|goal| goal.heuristic(n))
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(f32::INFINITY)
-    }
-    fn success(&self, n: BlockPos) -> bool {
-        self.0.iter().any(|goal| goal.success(n))
-    }
-}
-
-/// `GoalCompositeAll` — the `AndGoals` analog.
-#[derive(Debug)]
-pub(super) struct AllGoal(pub(super) Vec<Arc<dyn EngineGoal>>);
-impl EngineGoal for AllGoal {
-    fn heuristic(&self, n: BlockPos) -> f32 {
-        self.0
-            .iter()
-            .map(|goal| goal.heuristic(n))
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or(f32::INFINITY)
-    }
-    fn success(&self, n: BlockPos) -> bool {
-        self.0.iter().all(|goal| goal.success(n))
-    }
-}
-
-/// `GoalInvert` — the semantics of the engine's deprecated `InverseGoal`:
-/// negated heuristic, negated success.
-#[derive(Debug)]
-pub(super) struct InvertedGoal(pub(super) Arc<dyn EngineGoal>);
-impl EngineGoal for InvertedGoal {
-    fn heuristic(&self, n: BlockPos) -> f32 {
-        -self.0.heuristic(n)
-    }
-    fn success(&self, n: BlockPos) -> bool {
-        !self.0.success(n)
-    }
-}
-
-/// `GoalGetToBlock` — upstream's strict-adjacency goal:
-/// `|dx| + |dz| + |dy<0?dy+1:dy| == 1` (a block below counts one step
-/// less because the feet block is inside it). The engine's
-/// `ReachBlockPosGoal` answers a different question (can a face be
-/// seen within reach), so this one is implemented by hand.
-#[derive(Debug)]
-pub(super) struct GetToBlockGoal(pub(super) BlockPos);
-impl EngineGoal for GetToBlockGoal {
-    fn heuristic(&self, n: BlockPos) -> f32 {
-        let dx = (n.x - self.0.x).abs() as f32;
-        let dy = (n.y - self.0.y) as f32;
-        let dz = (n.z - self.0.z).abs() as f32;
-        // upstream: distanceXZ(dx, dz) + Math.abs(dy < 0 ? dy + 1 : dy),
-        // with distanceXZ the octagonal form and the whole thing scaled
-        // by the engine's COST_HEURISTIC like every engine goal
-        let (straight, diagonal) = if dx < dz {
-            (dz - dx, dx)
-        } else {
-            (dx - dz, dz)
-        };
-        (diagonal * std::f32::consts::SQRT_2 + straight + if dy < 0. { dy + 1. } else { dy }.abs())
-            * pathfinder::costs::COST_HEURISTIC
-    }
-    fn success(&self, n: BlockPos) -> bool {
-        let dx = (n.x - self.0.x).abs();
-        let dy_raw = n.y - self.0.y;
-        let dy = if dy_raw < 0 { dy_raw + 1 } else { dy_raw }.abs();
-        let dz = (n.z - self.0.z).abs();
-        dx + dz + dy == 1
-    }
-}
-
-/// `GoalNearXZ` — the engine has no xz-radius goal. Heuristic is upstream's
-/// `distanceXZ` (octagonal: `|dx-dz| + min(dx,dz)·√2`), scaled by the engine's
-/// `COST_HEURISTIC` like `XZGoal`; `isEnd` is upstream's `dx²+dz² ≤
-/// range²`.
-#[derive(Debug)]
-pub(super) struct NearXZGoal {
-    x: i32,
-    z: i32,
-    range_sq: f32,
-}
-impl EngineGoal for NearXZGoal {
-    fn heuristic(&self, n: BlockPos) -> f32 {
-        let x = (self.x - n.x).unsigned_abs() as f32;
-        let z = (self.z - n.z).unsigned_abs() as f32;
-        let (straight, diagonal) = if x < z { (z - x, x) } else { (x - z, z) };
-        (diagonal * std::f32::consts::SQRT_2 + straight) * pathfinder::costs::COST_HEURISTIC
-    }
-    fn success(&self, n: BlockPos) -> bool {
-        let dx = (self.x - n.x) as f32;
-        let dz = (self.z - n.z) as f32;
-        dx * dx + dz * dz <= self.range_sq
     }
 }
 
@@ -428,17 +271,18 @@ mod tests {
         // dx=dz=10 → straight 0, diagonal 10 → 10·√2·COST_HEURISTIC
         assert_eq!(
             g.heuristic(BlockPos::new(0, 64, 0)),
-            10. * std::f32::consts::SQRT_2 * pathfinder::costs::COST_HEURISTIC
+            10. * std::f32::consts::SQRT_2 * mineflayer_engine::pathfinder::costs::COST_HEURISTIC
         );
         // dx=6, dz=0 → straight 6, diagonal 0 → 6·COST_HEURISTIC
         assert_eq!(
             g.heuristic(BlockPos::new(4, 64, 10)),
-            6. * pathfinder::costs::COST_HEURISTIC
+            6. * mineflayer_engine::pathfinder::costs::COST_HEURISTIC
         );
         // dx=6, dz=8 → diagonal 6, straight 2 → (6√2+2)·COST_HEURISTIC
         assert_eq!(
             g.heuristic(BlockPos::new(4, 64, 2)),
-            (6. * std::f32::consts::SQRT_2 + 2.) * pathfinder::costs::COST_HEURISTIC
+            (6. * std::f32::consts::SQRT_2 + 2.)
+                * mineflayer_engine::pathfinder::costs::COST_HEURISTIC
         );
         assert!(g.success(BlockPos::new(13, 64, 14))); // dx²+dz² = 9+16 = 25 ≤ 25
         assert!(g.success(BlockPos::new(13, 300, 14))); // y ignored
@@ -464,24 +308,24 @@ mod tests {
     /// same parameters. `Follow` compares the target's ECS id; a
     /// different entity is a different goal.
     #[test]
-    fn same_goal_identity() {
+    fn goal_equality() {
         let a = Goal::Near {
             pos: Vec3::new(1., 2., 3.),
             radius: 4.,
         };
-        assert!(same_goal(&a, &a.clone()));
-        assert!(!same_goal(
-            &a,
-            &Goal::Near {
+        assert_eq!(a, a.clone());
+        assert_ne!(
+            a,
+            Goal::Near {
                 pos: Vec3::new(1., 2., 3.),
                 radius: 5.
             }
-        ));
-        assert!(!same_goal(&a, &Goal::Block(BlockPos::new(1, 2, 3))));
-        assert!(!same_goal(
-            &Goal::LookAtBlock(BlockPos::new(1, 2, 3)),
-            &Goal::BreakBlock(BlockPos::new(1, 2, 3))
-        ));
+        );
+        assert_ne!(a, Goal::Block(BlockPos::new(1, 2, 3)));
+        assert_ne!(
+            Goal::LookAtBlock(BlockPos::new(1, 2, 3)),
+            Goal::BreakBlock(BlockPos::new(1, 2, 3))
+        );
 
         let client = pathfinder_client(Position::new(Vec3::new(0., 64., 0.)));
         let e1 = client.ecs.write().spawn(()).id();
@@ -490,20 +334,20 @@ mod tests {
             entity: client.entity_ref_for(e1),
             range: 2.,
         };
-        assert!(same_goal(
-            &f1,
-            &Goal::Follow {
+        assert_eq!(
+            f1,
+            Goal::Follow {
                 entity: client.entity_ref_for(e1),
                 range: 2.
             }
-        ));
-        assert!(!same_goal(
-            &f1,
-            &Goal::Follow {
+        );
+        assert_ne!(
+            f1,
+            Goal::Follow {
                 entity: client.entity_ref_for(e2),
                 range: 2.
             }
-        ));
+        );
     }
 
     /// `Goal::Follow`'s `is_end` must answer with the same

@@ -1,4 +1,5 @@
 use super::*;
+use mineflayer_engine::pathfinder;
 
 /// A client whose ECS carries the pathfinder message resources, so a
 /// goto lands in `Messages<GotoEvent>` where the test can count it. No

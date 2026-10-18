@@ -45,8 +45,7 @@ use mineflayer_engine::{
     ecs::prelude::Component,
     entity::{ActiveEffects, Attributes, FluidOnEyes, Physics, Position, inventory::Inventory},
     pathfinder::{
-        self, CalculatePathCtx, GotoEvent, GotoId, PathfinderClientExt, PathfinderOpts,
-        calculate_path,
+        CalculatePathCtx, GotoEvent, GotoId, PathfinderClientExt, PathfinderOpts, calculate_path,
         custom_state::CustomPathfinderState,
         goals::{self, Goal as EngineGoal},
         mining::MiningCache,
@@ -63,7 +62,6 @@ mod movements;
 mod tracking;
 
 pub use goal::Goal;
-use goal::*;
 pub use movements::Movements;
 use movements::*;
 pub(crate) use tracking::bridge_events;
@@ -352,7 +350,7 @@ impl Pathfinder<'_> {
             // a goto when the identical goal is re-issued, so an equal goal
             // keeps the waiting gotos. `dynamic` isn't part of the
             // identity — upstream compares only the goal object.
-            if !f.goal.as_ref().is_some_and(|g| same_goal(g, &goal)) {
+            if !f.goal.as_ref().is_some_and(|g| g == &goal) {
                 f.settle(Err(PathError::GoalChanged));
             }
             f.dynamic = dynamic;
@@ -466,7 +464,7 @@ impl Pathfinder<'_> {
             // `set_goal` since then already sent its own goto
             let goto = match engine_goal {
                 Some((engine_goal, goal))
-                    if f.goto.is_some() && f.goal.as_ref().is_some_and(|g| same_goal(g, &goal)) =>
+                    if f.goto.is_some() && f.goal.as_ref().is_some_and(|g| g == &goal) =>
                 {
                     Some(f.goto_event(client.entity, engine_goal))
                 }

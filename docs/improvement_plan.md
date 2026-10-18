@@ -1339,7 +1339,7 @@ the commit that completes the item.
 | CL1 | done | (this commit) |
 | CL2 | done | (this commit) |
 | CL3 | done | (this commit) |
-| CL4 | open | |
+| CL4 | done; `AnyGoal`, `AllGoal`, and `InvertedGoal` are the engine's `OrGoals`, `AndGoals`, and `InverseGoal` over `Arc<dyn Goal>`, not moved copies | (this commit) |
 | CL5 | done | `3a39167`, (this commit) |
 | CL6 | done | `e67a4be` |
 | CL7 | done | (this commit) |

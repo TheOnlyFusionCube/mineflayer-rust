@@ -144,9 +144,8 @@ fn step(client: &mineflayer_engine::Client) -> Vec<BotEvent> {
     else {
         return Vec::new();
     };
-    let still_ours = |f: &PathfinderFacade| {
-        f.goto == goto && f.goal.as_ref().is_some_and(|g| same_goal(g, &goal))
-    };
+    let still_ours =
+        |f: &PathfinderFacade| f.goto == goto && f.goal.as_ref().is_some_and(|g| g == &goal);
     let idle_unmet = || goto.is_none() && !goal.is_end(client, client.position());
     let next: Option<(Arc<dyn EngineGoal>, Option<BlockPos>)> = match &goal {
         Goal::Follow { entity, range } => {

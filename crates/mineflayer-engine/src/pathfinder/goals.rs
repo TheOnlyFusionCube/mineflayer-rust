@@ -3,6 +3,7 @@
 use std::{
     f32::consts::SQRT_2,
     fmt::{self, Debug},
+    sync::Arc,
 };
 
 use mineflayer_core::position::{BlockPos, Vec3};
@@ -21,6 +22,17 @@ pub trait Goal: Debug + Send + Sync {
     fn heuristic(&self, n: BlockPos) -> f32;
     #[must_use]
     fn success(&self, n: BlockPos) -> bool;
+}
+
+/// A shared goal is the goal it holds, so `Arc<dyn Goal>` can go into
+/// [`OrGoals`] and the other combinators.
+impl<G: Goal + ?Sized> Goal for Arc<G> {
+    fn heuristic(&self, n: BlockPos) -> f32 {
+        (**self).heuristic(n)
+    }
+    fn success(&self, n: BlockPos) -> bool {
+        (**self).success(n)
+    }
 }
 
 /// Move to the given block position.
@@ -58,6 +70,43 @@ fn xz_heuristic(dx: f32, dz: f32) -> f32 {
     let (straight, diagonal) = if x < z { (z - x, x) } else { (x - z, z) };
 
     (diagonal * SQRT_2 + straight) * COST_HEURISTIC
+}
+
+/// Stand next to the given block: one step away on one axis, measured
+/// from the feet, or from the head when the block is above
+/// (mineflayer-pathfinder's `GoalGetToBlock`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GetToBlockGoal(pub BlockPos);
+impl Goal for GetToBlockGoal {
+    fn heuristic(&self, n: BlockPos) -> f32 {
+        let dy = (n.y - self.0.y) as f32;
+        let dy = if dy < 0. { dy + 1. } else { dy };
+        xz_heuristic((n.x - self.0.x) as f32, (n.z - self.0.z) as f32) + dy.abs() * COST_HEURISTIC
+    }
+    fn success(&self, n: BlockPos) -> bool {
+        let dy = n.y - self.0.y;
+        let dy = if dy < 0 { dy + 1 } else { dy };
+        (n.x - self.0.x).abs() + (n.z - self.0.z).abs() + dy.abs() == 1
+    }
+}
+
+/// Get within `range` of the given column, ignoring the y-axis
+/// (mineflayer-pathfinder's `GoalNearXZ`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct NearXZGoal {
+    pub x: i32,
+    pub z: i32,
+    pub range: f32,
+}
+impl Goal for NearXZGoal {
+    fn heuristic(&self, n: BlockPos) -> f32 {
+        xz_heuristic((self.x - n.x) as f32, (self.z - n.z) as f32)
+    }
+    fn success(&self, n: BlockPos) -> bool {
+        let dx = (self.x - n.x) as f32;
+        let dz = (self.z - n.z) as f32;
+        dx * dx + dz * dz <= self.range * self.range
+    }
 }
 
 /// Move to the given block position, ignoring the y-axis.
@@ -295,5 +344,47 @@ impl Debug for ReachBlockPosGoal {
             .field("distance", &self.distance)
             .field("max_check_distance", &self.max_check_distance)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod port_goal_tests {
+    use super::*;
+
+    #[test]
+    fn get_to_block_is_one_step_away_counting_the_head() {
+        let goal = GetToBlockGoal(BlockPos::new(0, 64, 0));
+        assert!(goal.success(BlockPos::new(1, 64, 0)));
+        // standing on it
+        assert!(goal.success(BlockPos::new(0, 65, 0)));
+        // under it: the head is next to it
+        assert!(goal.success(BlockPos::new(0, 62, 0)));
+        // the head inside it
+        assert!(!goal.success(BlockPos::new(0, 63, 0)));
+        assert!(!goal.success(BlockPos::new(0, 64, 0)));
+        assert!(!goal.success(BlockPos::new(1, 64, 1)));
+    }
+
+    #[test]
+    fn near_xz_ignores_y() {
+        let goal = NearXZGoal {
+            x: 0,
+            z: 0,
+            range: 2.,
+        };
+        assert!(goal.success(BlockPos::new(2, 100, 0)));
+        assert!(!goal.success(BlockPos::new(2, 0, 1)));
+        assert_eq!(goal.heuristic(BlockPos::new(0, 7, 0)), 0.);
+    }
+
+    #[test]
+    fn shared_goals_combine() {
+        let goals: Vec<Arc<dyn Goal>> = vec![
+            Arc::new(BlockPosGoal(BlockPos::new(0, 0, 0))),
+            Arc::new(BlockPosGoal(BlockPos::new(5, 0, 0))),
+        ];
+        let any = OrGoals(goals.clone());
+        assert!(any.success(BlockPos::new(5, 0, 0)));
+        assert!(!AndGoals(goals).success(BlockPos::new(5, 0, 0)));
     }
 }

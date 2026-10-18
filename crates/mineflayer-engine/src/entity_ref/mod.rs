@@ -32,6 +32,14 @@ pub struct EntityRef {
     entity: Entity,
 }
 
+/// Two handles are equal when they name the same entity.
+impl PartialEq for EntityRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.entity == other.entity
+    }
+}
+impl Eq for EntityRef {}
+
 impl EntityRef {
     pub fn new(client: Client, entity: Entity) -> Self {
         Self { client, entity }

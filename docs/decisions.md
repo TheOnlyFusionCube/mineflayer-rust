@@ -162,6 +162,12 @@ merge; plan item E2 keeps this list current):
     newer start, and `Interrupted` for the other exits (a restricted
     interaction, a lost look, a block that was already gone). Tests:
     `mineflayer-client/tests/simulation/mining_finished.rs`.
+30. (CL4) `pathfinder::goals` has `GetToBlockGoal` and `NearXZGoal`
+    (mineflayer-pathfinder goals the port used to define), and
+    `impl<G: Goal + ?Sized> Goal for Arc<G>`, so `Arc<dyn Goal>` goes into
+    `OrGoals`, `AndGoals`, and `InverseGoal`. `EntityRef` is `PartialEq`
+    and `Eq` by entity. Tests: `port_goal_tests` in
+    `mineflayer-engine/src/pathfinder/goals.rs`.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

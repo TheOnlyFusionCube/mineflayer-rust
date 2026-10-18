@@ -43,6 +43,10 @@
 
 ### Added
 
+- `Goal` is `PartialEq` (a `Follow` compares its target entity).
+  `engine::EntityRef` is `PartialEq` and `Eq` by entity.
+- `engine::pathfinder::goals::{GetToBlockGoal, NearXZGoal}`, and the
+  engine goal trait for `Arc<G>`.
 - `engine::ClientPlugins` and `StartClientOpts::new_with_plugins`: build
   the client app with plugins added or disabled.
 - `engine::mining::CancelMiningEvent`: cancel queued and live mining,

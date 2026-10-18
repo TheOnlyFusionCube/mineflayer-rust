@@ -1,5 +1,6 @@
 use super::*;
 use crate::pathfinder::tests::*;
+use mineflayer_engine::pathfinder;
 
 const GOTO: GotoId = GotoId(41);
 const STALE: GotoId = GotoId(40);
