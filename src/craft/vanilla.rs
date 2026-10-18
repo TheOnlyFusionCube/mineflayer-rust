@@ -115,4 +115,23 @@ mod tests {
             .unwrap();
         assert!(chest.requires_table);
     }
+
+    /// The book lists a tag's items in another order than the table; the
+    /// merge in `recipes_for` must still see one recipe.
+    #[test]
+    fn a_reordered_recipe_is_the_same_recipe() {
+        let stick = RECIPES
+            .iter()
+            .find(|r| r.result.kind == ItemKind::Stick)
+            .unwrap();
+        let mut shape = stick.in_shape.clone().unwrap();
+        for row in &mut shape {
+            for cell in row.iter_mut().flatten() {
+                cell.any_of.reverse();
+            }
+        }
+        let reordered = Recipe::new(stick.result, Some(shape), None);
+        assert_ne!(&reordered, stick);
+        assert_eq!(reordered.normalized(), stick.normalized());
+    }
 }

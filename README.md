@@ -91,7 +91,8 @@ Runnable ports of 23 upstream examples live in `examples/`: `echo`,
 `trader`, `book`, `anvil`, `scoreboard`, `titles`, `tab_complete`,
 `blockfinder`, `raycast`, `sound`, `multiple`, `reconnector`, `pathfinder`
 (upstream's `pathfinder/gps.js`), `collectblock`, `auto_eat`, and
-`attack`; `event_rate` measures the event throughput. Run one against a
+`attack`; `event_rate` measures the event throughput and `idle_bots`
+the memory and CPU of many idle bots (`docs/performance.md`). Run one against a
 local offline-mode server:
 
 ```sh
@@ -174,7 +175,7 @@ this API only.
 public mineflayer API is a row marked `ported`, `diverges` (intentional
 semantic difference, with a note), `wontfix`, or `additive` (Rust surface
 beyond upstream). Current counts:
-**348 ported · 124 diverges · 41 wontfix · 11 additive — zero pending**.
+**350 ported · 122 diverges · 41 wontfix · 11 additive — zero pending**.
 
 ## Live testing
 

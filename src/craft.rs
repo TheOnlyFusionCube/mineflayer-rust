@@ -193,6 +193,29 @@ impl Recipe {
         }
     }
 
+    /// The recipe with each ingredient's alternatives sorted: the book and
+    /// the vanilla table list a tag's items in different orders.
+    fn normalized(&self) -> Recipe {
+        let sort = |ingredient: &Ingredient| {
+            let mut any_of = ingredient.any_of.clone();
+            any_of.sort_by_key(|i| (i.kind as u32, i.metadata));
+            any_of.dedup();
+            Ingredient { any_of }
+        };
+        Recipe::new(
+            self.result,
+            self.in_shape.as_ref().map(|shape| {
+                shape
+                    .iter()
+                    .map(|row| row.iter().map(|cell| cell.as_ref().map(sort)).collect())
+                    .collect()
+            }),
+            self.ingredients
+                .as_ref()
+                .map(|list| list.iter().map(sort).collect()),
+        )
+    }
+
     /// Every ingredient slot one craft consumes — occupied shape cells
     /// plus loose ingredients (upstream's delta-negative side).
     fn demands(&self) -> impl Iterator<Item = &Ingredient> {
@@ -571,12 +594,12 @@ impl Bot {
             .book_recipes()
             .filter(|r| result_matches(r, kind, metadata))
             .collect();
-        let book = recipes.len();
+        let book: Vec<Recipe> = recipes.iter().map(Recipe::normalized).collect();
         for recipe in vanilla::RECIPES
             .iter()
             .filter(|r| result_matches(r, kind, metadata))
         {
-            if !recipes[..book].contains(recipe) {
+            if !book.contains(&recipe.normalized()) {
                 recipes.push(recipe.clone());
             }
         }

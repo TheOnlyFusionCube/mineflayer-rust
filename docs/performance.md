@@ -137,7 +137,9 @@ suite gets faster, so the profile stays at the default. The pathfinder's
 ## Many idle bots against upstream (third plan AD5, 2026-10-18)
 
 Probes: `examples/idle_bots.rs` (release build) and
-`scripts/bench/idle_bots.js` (mineflayer 4.39.0 from npm, Node 26.5). Each
+`scripts/bench/idle_bots.js` (mineflayer 4.39.0 from npm, Node 26.5:
+`npm install mineflayer@4.39.0` in a scratch directory, then run the
+script with `NODE_PATH=<that directory>/node_modules`). Each
 connects `N` offline-mode bots one after another (each spawns, then 100 ms
 pass), keeps them idle for 60 s, and quits. Both ask for view distance 4;
 the Rust probe turns `packet_events` off and drains every bot's event

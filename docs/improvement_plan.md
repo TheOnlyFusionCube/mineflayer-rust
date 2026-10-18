@@ -1311,7 +1311,7 @@ the commit that completes the item.
 | DF5 | done | `ee1afa8` |
 | TS1 | done | `eb342dc` |
 | TS2 | done | (this commit) |
-| TS3 | done; `src/window_types/` 86% line coverage, the crate 74% (the 80% crate target of section 2 is not met) | (this commit) |
+| TS3 | done; `src/window_types/` 86% line coverage, the crate 74% (the 80% crate target of section 2 is not met) | `d46b255` |
 | TS4 | done; the job's first push run is not observed yet (no remote) | (this commit) |
 | TS5 | done: `tests/plugin.rs` uses `BotSim`, and `mineflayer-plugins` uses the exported scaffolds, through the feature | (this commit) |
 | ST1 | replaced by D-port-plugins: the bridge stays, `BotPlugins` added | (ST3 commit) |
@@ -1323,38 +1323,38 @@ the commit that completes the item.
 | ST7 | done; `OBSERVERS` stays as the emission order (D-port-plugins) | (this commit) |
 | OP1 | done | (this commit) |
 | OP2 | done | (this commit) |
-| OP3 | done | (this commit) |
-| OP4 | done; follow and dynamic goals step in the bridge on each `Tick`, not in an ECS system (D-port-plugins: the bridge is the one sender, and a goal step must read the facade between passes) | (this commit) |
-| OP5 | done; a non-`Broken` outcome counts as a break when the block is air | (this commit) |
-| OP6 | done; the eat stays beside `using_held_item` in the window tracker (the held-item packets end it); `creative().set_inventory_slot` keeps its per-slot in-flight set, which rejects a second call for the slot, because the supersede rule of `OpSlot` would change that | (this commit) |
+| OP3 | done | `37a12b2` |
+| OP4 | done; follow and dynamic goals step in the bridge on each `Tick`, not in an ECS system (D-port-plugins: the bridge is the one sender, and a goal step must read the facade between passes) | `37a12b2` |
+| OP5 | done; a non-`Broken` outcome counts as a break when the block is air | `cedca48` |
+| OP6 | done; the eat stays beside `using_held_item` in the window tracker (the held-item packets end it); `creative().set_inventory_slot` keeps its per-slot in-flight set, which rejects a second call for the slot, because the supersede rule of `OpSlot` would change that | `40a02a2` |
 | EV1 | done | `a8f77a5` |
 | EV2 | done | (this commit) |
 | EV3 | done | (this commit) |
 | EV4 | done | (this commit) |
 | PL1 | done | (this commit) |
 | PL2 | done | (this commit) |
-| PL3 | done; DEC-3 decided: no re-export from the core (dependency cycle) | (this commit) |
+| PL3 | done; DEC-3 decided: no re-export from the core (dependency cycle) | `dad3568` |
 | PL4 | not done, by decision: the pathfinder translates engine path events and steps its goals inside the bridge, and a plugin crate has no hook into the engine event stream; a public hook only for this move would be surface with one user (DEC-3) | |
-| PL5 | done | (this commit) |
+| PL5 | done | `40954f3` |
 | CL1 | done | (this commit) |
 | CL2 | done | (this commit) |
 | CL3 | done | (this commit) |
-| CL4 | done; `AnyGoal`, `AllGoal`, and `InvertedGoal` are the engine's `OrGoals`, `AndGoals`, and `InverseGoal` over `Arc<dyn Goal>`, not moved copies | (this commit) |
+| CL4 | done; `AnyGoal`, `AllGoal`, and `InvertedGoal` are the engine's `OrGoals`, `AndGoals`, and `InverseGoal` over `Arc<dyn Goal>`, not moved copies | `6e89230` |
 | CL5 | done | `3a39167`, (this commit) |
 | CL6 | done | `e67a4be` |
 | CL7 | done | (this commit) |
 | CP1 | done; the port keeps the block entities (D-redecode), not the engine | (this commit) |
-| CP2 | done; `dont_create_flow` and `allow_free_motion` are removed (the engine always refuses to break next to a liquid and has no free motion); `MovementConstraints` stays, because `SuccessorsFn` is a plain `fn` | (this commit) |
+| CP2 | done; `dont_create_flow` and `allow_free_motion` are removed (the engine always refuses to break next to a liquid and has no free motion); `MovementConstraints` stays, because `SuccessorsFn` is a plain `fn` | `4666ad8` |
 | CP3 | not done: placing blocks needs a placed-block overlay in the engine's A* world (later moves must stand on the new block) and a stateful placement executor (equip, sneak to the edge, look at the face, use, wait for the block); both are engine changes with no upstream counterpart, and a half version would make a bot step into gaps | |
-| CP4 | done; three constants are settable (gravity, air drag, airborne inertia), the others are refused with `Unsupported`; the physics switch works (BotSim test) | (this commit) |
+| CP4 | done; three constants are settable (gravity, air drag, airborne inertia), the others are refused with `Unsupported`; the physics switch works (BotSim test) | `ab67a4b` |
 | CP5 | done; the configuration-phase reply has no `BotSim` test (the harness runs the game state) | (this commit) |
-| CP6 | done; no source parameter: the book comes first and the table adds what it lacks, which upstream's static table covers | (this commit) |
+| CP6 | done; no source parameter: the book comes first and the table adds what it lacks, which upstream's static table covers | `ef8b6be` |
 | CP7 | done | (this commit) |
-| CP8 | done | (this commit) |
+| CP8 | done | `0e13eec` |
 | AD0 | done; DEC-1 decided: no (see AD1) | (this commit) |
 | AD1 | not done, by decision DEC-1: the inventory crate's specialization is in upstream-generated code; see `docs/decisions.md` | |
 | AD2 | not done: publishing needs a public repository and a crates.io account (D-publish), and DEC-2 waits on that; an irreversible step for the owner | |
-| AD3 | done; 24 examples build; no per-example live test (the examples wait for a player's chat), `titles` checked by hand on the fixture | (this commit) |
-| AD4 | done; the CI artifact is not observed yet (no remote) | (this commit) |
-| AD5 | done; follow-up: run `Update` at the game-tick rate for headless bots (CPU is 2.2x Node at 100 bots; see `docs/performance.md`) | (this commit) |
+| AD3 | done; 24 examples build; no per-example live test (the examples wait for a player's chat), `titles` checked by hand on the fixture | `a7365c6` |
+| AD4 | done; the CI artifact is not observed yet (no remote) | `3d7cdf9` |
+| AD5 | done; follow-up: run `Update` at the game-tick rate for headless bots (CPU is 2.2x Node at 100 bots; see `docs/performance.md`) | `c8d9675` |
 | AD6 | done | `4659c99`, (this commit) |
