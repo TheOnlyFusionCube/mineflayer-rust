@@ -504,3 +504,42 @@ fn pathfinder_reports_stop_as_an_event() {
     }
     assert!(stopped, "Stopped never arrived on the event channel");
 }
+
+#[test]
+fn a_partial_search_returns_without_a_pause() {
+    use bevy_ecs::entity::Entity;
+    use parking_lot::RwLock;
+
+    use super::{CalculatePathCtx, calculate_path, custom_state::CustomPathfinderState};
+    use crate::pathfinder::mining::MiningCache;
+
+    let mut partial_chunks = PartialChunkStorage::default();
+    let mut chunks = ChunkStorage::default();
+    let chunk_pos = ChunkPos::new(0, 0);
+    partial_chunks.set(&chunk_pos, Some(Chunk::default()), &mut chunks);
+    let start = BlockPos::new(0, 71, 0);
+    chunks.set_block_state(start.down(1), BlockKind::Stone.into());
+
+    let started = Instant::now();
+    let found = calculate_path(CalculatePathCtx {
+        entity: Entity::PLACEHOLDER,
+        start,
+        goal: Arc::new(BlockPosGoal(BlockPos::new(0, 71, 1_000))),
+        world_lock: Arc::new(RwLock::new(chunks.into())),
+        goto_id_atomic: Default::default(),
+        mining_cache: MiningCache::new(None),
+        custom_state: CustomPathfinderState::default(),
+        opts: PathfinderOpts::new()
+            .allow_mining(false)
+            .min_timeout(PathfinderTimeout::Nodes(100))
+            .max_timeout(PathfinderTimeout::Nodes(100)),
+    })
+    .expect("nothing superseded the search");
+
+    assert!(found.is_partial, "the goal is out of reach");
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "took {:?}",
+        started.elapsed()
+    );
+}

@@ -89,6 +89,11 @@ merge; plan item E2 keeps this list current):
     engine is not published, so the attribute only hid new variants from
     the port's matches; now a new variant fails to compile in the bridge.
     An upstream merge that adds the attribute back must drop it again.
+17. (DF5) `calculate_path` does not sleep after a partial result; the
+    goto task sleeps 100 ms instead, so the instant-path try, the
+    obstruction patch, and the port's `get_path_from_to` do not stall
+    their caller. A path that cannot be replayed over the search's world
+    cache logs an error and returns `None` instead of panicking.
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

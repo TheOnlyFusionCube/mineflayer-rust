@@ -146,9 +146,10 @@ pub enum Event {
 /// every tick).
 #[derive(Clone, Debug)]
 pub enum PathEvent {
-    /// A search finished. An empty `path` with `is_partial == false`
-    /// means no route exists; `is_partial == true` means the search hit
-    /// its budget.
+    /// A search finished. A non-empty `path` with `is_partial == true`
+    /// leads toward the goal but not to it. An empty `path` with
+    /// `is_partial == true` means that no route exists or that the search
+    /// used its whole budget.
     PathFound {
         /// The path nodes the bot will walk, from its own position.
         path: Vec<BlockPos>,

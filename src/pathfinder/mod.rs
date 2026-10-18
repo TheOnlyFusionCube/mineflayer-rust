@@ -49,7 +49,7 @@ use std::{
         Arc,
         atomic::{self, AtomicBool},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use mineflayer_engine::{
@@ -739,7 +739,6 @@ impl Pathfinder<'_> {
             .0
             .write()
             .insert(MovementConstraints::from(movements));
-        let started = Instant::now();
         // a fresh goto counter: the preview is never superseded, and it
         // can't disturb a real goto's id
         let event = calculate_path(CalculatePathCtx {
@@ -753,12 +752,12 @@ impl Pathfinder<'_> {
             opts,
         })
         .ok_or_else(|| Error::Cancelled("path calculation superseded mid-search".to_string()))?;
-        let elapsed = started.elapsed();
         let path: Vec<BlockPos> = event
             .path
             .map(|edges| edges.iter().map(|e| e.movement.target).collect())
             .unwrap_or_default();
-        let status = classify_search_result(event.is_partial, path.is_empty(), elapsed, timeout);
+        let status =
+            classify_search_result(event.is_partial, path.is_empty(), event.elapsed, timeout);
         Ok(PathResult { status, path })
     }
 }

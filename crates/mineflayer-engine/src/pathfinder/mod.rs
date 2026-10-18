@@ -475,7 +475,7 @@ pub fn goto_listener(
 
         let mining_cache = MiningCache::new(inventory_menu);
         let task = thread_pool.spawn(async move {
-            calculate_path(CalculatePathCtx {
+            let found = calculate_path(CalculatePathCtx {
                 entity,
                 start,
                 goal,
@@ -484,7 +484,13 @@ pub fn goto_listener(
                 mining_cache,
                 custom_state,
                 opts,
-            })
+            });
+            // a partial result makes the goal repath at once, so hold the
+            // result back a little to keep that retry from spinning
+            if found.as_ref().is_some_and(|e| e.is_partial) {
+                thread::sleep(Duration::from_millis(100));
+            }
+            found
         });
 
         commands.entity(event.entity).insert(ComputePath(task));
@@ -521,7 +527,8 @@ pub struct CalculatePathCtx {
 ///
 /// You are expected to immediately send the `PathFoundEvent` you received after
 /// calling this function. `None` will be returned if the pathfinding was
-/// interrupted by another path calculation.
+/// interrupted by another path calculation. A partial result returns at
+/// once; this function does not sleep.
 pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
     debug!("start: {}", ctx.start);
 
@@ -562,8 +569,6 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
         } else {
             info!("Pathfinder took {duration:?} (incomplete path)");
         }
-        // wait a bit so it's not a busy loop
-        thread::sleep(Duration::from_millis(100));
     } else {
         info!("Pathfinder took {duration:?}");
     }
@@ -598,9 +603,16 @@ pub fn calculate_path(ctx: CalculatePathCtx) -> Option<PathFoundEvent> {
             }
         }
 
-        let found_edge = found_edge.expect(
-            "path should always still be possible because we're using the same world cache",
-        );
+        let Some(found_edge) = found_edge else {
+            // the search and this replay share one world cache, so they
+            // should agree; if they do not, report no path, not a panic
+            error!(
+                "a path node from {} to {} is no longer a successor",
+                current_position.apply(origin),
+                movement.target.apply(origin)
+            );
+            return None;
+        };
         current_position = found_edge.movement.target;
 
         // we don't just clone the found_edge because we're using BlockPos
