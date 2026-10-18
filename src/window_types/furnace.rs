@@ -88,11 +88,7 @@ impl Furnace {
     }
 
     pub(super) fn data(&self, property: u16) -> Option<i16> {
-        self.bot
-            .shared
-            .window_data
-            .lock()
-            .data(self.window.id(), property)
+        self.bot.window_property(self.window.id(), property)
     }
 
     pub(super) fn data_map(&self) -> Option<HashMap<u16, i16>> {

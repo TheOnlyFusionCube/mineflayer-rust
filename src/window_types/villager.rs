@@ -140,6 +140,13 @@ impl Villager {
 }
 
 impl Bot {
+    /// Change the typed-window state; `NotConnected` when the client
+    /// entity is gone.
+    fn window_data_mut<R>(&self, f: impl FnOnce(&mut WindowDataTracker) -> Result<R>) -> Result<R> {
+        crate::bot::with_component_mut::<WindowDataTracker, _>(&self.client, f)
+            .unwrap_or(Err(Error::NotConnected))
+    }
+
     /// `bot.openVillager(entity)` — right-click a villager entity,
     /// verify the `merchant` menu kind (upstream accepts `villager` or
     /// `merchant`), and wait for `merchant_offers` to arrive (upstream's
@@ -198,8 +205,7 @@ impl Bot {
         let id = window.id();
         let mut rx = self.subscribe();
 
-        let (trade, count) = {
-            let mut t = self.shared.window_data.lock();
+        let (trade, count) = self.window_data_mut(|t| {
             let record = t
                 .windows
                 .get_mut(&id)
@@ -223,8 +229,8 @@ impl Bot {
                 )));
             }
             record.selected_trade = Some(index);
-            (trade, count)
-        };
+            Ok((trade, count))
+        })?;
 
         let have_1 = count_inventory_items(
             window,
@@ -254,8 +260,7 @@ impl Bot {
         for _ in 0..count {
             self.put_requirements(&villager.window, &trade).await?;
             // upstream updates the local offer copy after each trade
-            {
-                let mut t = self.shared.window_data.lock();
+            let _ = self.window_data_mut(|t| {
                 if let Some(t) = t
                     .windows
                     .get_mut(&id)
@@ -267,7 +272,8 @@ impl Bot {
                         t.disabled = true;
                     }
                 }
-            }
+                Ok(())
+            });
             self.put_away(TRADE_RESULT).await?;
         }
         // leftover input stacks go back to the inventory

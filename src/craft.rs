@@ -26,9 +26,9 @@
 //! (`c_update_tags` arrives in the config phase, which `Event::Packet`
 //! never sees — the statics are the same data).
 
-use std::{collections::HashMap, str::FromStr, sync::Arc};
+use std::{collections::HashMap, str::FromStr};
 
-use parking_lot::Mutex;
+use mineflayer_engine::ecs::{self as bevy_ecs, prelude::Component};
 
 use crate::{
     Bot, Error, Result,
@@ -274,8 +274,9 @@ pub(crate) struct BookEntry {
 
 /// The recipes this server has told us we know — upstream's static
 /// `Recipe.find` source, kept in lockstep with `c_recipe_book_add`/
-/// `c_recipe_book_remove` by [`observe_event`]. Shared `Bot` ↔ bridge.
-#[derive(Default)]
+/// `c_recipe_book_remove` by [`observe_event`]. A component on the client
+/// entity.
+#[derive(Component, Default)]
 pub(crate) struct RecipeBook {
     /// Entries in arrival order (deduplicated by id).
     pub entries: Vec<BookEntry>,
@@ -283,13 +284,12 @@ pub(crate) struct RecipeBook {
 
 /// Record recipe-book packets from one engine event — no `BotEvent`s
 /// (craft emits none upstream either). Called from the bridge loop.
-pub(crate) fn observe_event(book: &Arc<Mutex<RecipeBook>>, event: &Event) {
+pub(crate) fn observe_event(book: &mut RecipeBook, event: &Event) {
     let Event::Packet(packet) = event else {
         return;
     };
     match &**packet {
         ClientboundGamePacket::RecipeBookAdd(p) => {
-            let mut book = book.lock();
             if p.replace {
                 book.entries.clear();
             }
@@ -303,7 +303,7 @@ pub(crate) fn observe_event(book: &Arc<Mutex<RecipeBook>>, event: &Event) {
             }
         }
         ClientboundGamePacket::RecipeBookRemove(p) => {
-            book.lock().entries.retain(|e| !p.recipes.contains(&e.id));
+            book.entries.retain(|e| !p.recipes.contains(&e.id));
         }
         _ => {}
     }
@@ -565,20 +565,21 @@ impl Bot {
     /// Diagnostics — upstream has no book at all.
     #[doc(hidden)]
     pub fn known_recipe_count(&self) -> usize {
-        self.shared.recipes.lock().entries.len()
+        crate::bot::with_component::<RecipeBook, _>(&self.client, |b| b.entries.len())
+            .unwrap_or_default()
     }
 
     /// Convert the recipe book into [`Recipe`]s (skipping
     /// furnace/smithing/stonecutter displays).
     fn book_recipes(&self) -> impl Iterator<Item = Recipe> {
-        self.shared
-            .recipes
-            .lock()
-            .entries
-            .iter()
-            .filter_map(recipe_from_entry)
-            .collect::<Vec<_>>()
-            .into_iter()
+        crate::bot::with_component::<RecipeBook, _>(&self.client, |b| {
+            b.entries
+                .iter()
+                .filter_map(recipe_from_entry)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+        .into_iter()
     }
 
     /// `bot.craft(recipe, count, craftingTable)` — craft `count` (null

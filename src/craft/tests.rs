@@ -368,28 +368,28 @@ fn recipe_from_shapeless_entry_uses_requirements() {
 
 #[test]
 fn book_add_replace_remove() {
-    let book = Arc::new(Mutex::new(RecipeBook::default()));
-    let add = Event::Packet(Arc::new(ClientboundGamePacket::RecipeBookAdd(
+    let mut book = RecipeBook::default();
+    let add = Event::Packet(std::sync::Arc::new(ClientboundGamePacket::RecipeBookAdd(
         ClientboundRecipeBookAdd {
             entries: vec![crafting_table_entry()],
             replace: true,
         },
     )));
-    observe_event(&book, &add);
-    assert_eq!(book.lock().entries.len(), 1);
+    observe_event(&mut book, &add);
+    assert_eq!(book.entries.len(), 1);
     // same id again without replace dedupes
-    let add_again = Event::Packet(Arc::new(ClientboundGamePacket::RecipeBookAdd(
+    let add_again = Event::Packet(std::sync::Arc::new(ClientboundGamePacket::RecipeBookAdd(
         ClientboundRecipeBookAdd {
             entries: vec![crafting_table_entry()],
             replace: false,
         },
     )));
-    observe_event(&book, &add_again);
-    assert_eq!(book.lock().entries.len(), 1);
+    observe_event(&mut book, &add_again);
+    assert_eq!(book.entries.len(), 1);
     // remove drops it
-    let remove = Event::Packet(Arc::new(ClientboundGamePacket::RecipeBookRemove(
-        ClientboundRecipeBookRemove { recipes: vec![293] },
-    )));
-    observe_event(&book, &remove);
-    assert!(book.lock().entries.is_empty());
+    let remove = Event::Packet(std::sync::Arc::new(
+        ClientboundGamePacket::RecipeBookRemove(ClientboundRecipeBookRemove { recipes: vec![293] }),
+    ));
+    observe_event(&mut book, &remove);
+    assert!(book.entries.is_empty());
 }

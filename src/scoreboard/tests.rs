@@ -396,7 +396,7 @@ fn login_clears_the_domain_state_through_observe() {
     };
 
     // seed the state the domain owns
-    let state = Mutex::new(ScoreboardState {
+    let mut state = ScoreboardState {
         scoreboards: [(
             "o".to_string(),
             ScoreBoard {
@@ -438,7 +438,7 @@ fn login_clears_the_domain_state_through_observe() {
             },
         )]
         .into(),
-    });
+    };
 
     let login = ClientboundGamePacket::Login(ClientboundLogin {
         player_id: mineflayer_engine::core::entity_id::MinecraftEntityId(0),
@@ -464,9 +464,8 @@ fn login_clears_the_domain_state_through_observe() {
         },
         enforces_secure_chat: false,
     });
-    let events = observe(&state, &Event::Packet(std::sync::Arc::new(login)));
+    let events = observe(&mut state, &Event::Packet(std::sync::Arc::new(login)));
     assert!(events.is_empty());
-    let state = state.lock();
     assert!(state.scoreboards.is_empty() && state.display_slots.is_empty());
     assert!(state.teams.is_empty() && state.team_map.is_empty());
     assert_eq!(state.boss_bars.len(), 1, "boss bars survive login");

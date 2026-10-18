@@ -21,19 +21,18 @@ use mineflayer_engine::{
     },
 };
 
-use parking_lot::Mutex;
+use mineflayer_engine::ecs::{self as bevy_ecs, prelude::Component};
 
 use crate::{Bot, BotEvent};
 
 /// Scoreboard/team/boss-bar state — `bot.scoreboards`, `bot.displaySlots`
 /// (`bot.scoreboard(slot)`), `bot.teams`, `bot.teamMap`, `bot.bossBars`.
 ///
-/// Upstream keeps these in JS objects owned by the scoreboard plugin. Only
-/// the bridge writes this state and `Bot` reads it without any the engine
-/// component, so it lives in `BotShared` (the storage rule there), not on
-/// the client entity; the domain still owns its whole lifecycle: packet
-/// decode and the login/respawn clear.
-#[derive(Default)]
+/// Upstream keeps these in JS objects owned by the scoreboard plugin. Here
+/// it is a component on the client entity that the bridge writes and `Bot`
+/// reads; the domain owns its whole lifecycle: packet decode and the
+/// login/respawn clear.
+#[derive(Component, Default)]
 pub(crate) struct ScoreboardState {
     /// Objective name -> scoreboard.
     pub scoreboards: HashMap<String, ScoreBoard>,
@@ -62,7 +61,7 @@ impl ScoreboardState {
 
 /// The bridge observer: decode a packet into scoreboard state and events.
 /// Login and respawn clear the state and emit nothing.
-pub(crate) fn observe(state: &Mutex<ScoreboardState>, event: &Event) -> Vec<BotEvent> {
+pub(crate) fn observe(state: &mut ScoreboardState, event: &Event) -> Vec<BotEvent> {
     let Event::Packet(packet) = event else {
         return Vec::new();
     };
@@ -70,10 +69,10 @@ pub(crate) fn observe(state: &Mutex<ScoreboardState>, event: &Event) -> Vec<BotE
         &**packet,
         ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_)
     ) {
-        state.lock().reset_on_login();
+        state.reset_on_login();
         return Vec::new();
     }
-    handle(&mut state.lock(), packet).unwrap_or_default()
+    handle(state, packet).unwrap_or_default()
 }
 
 /// One entry on a [`ScoreBoard`] — the `itemsMap` values (`{name, value}`,
@@ -317,44 +316,46 @@ impl Bot {
     /// `bot.scoreboards` — every known objective, keyed by name. A snapshot;
     /// upstream returns a live view.
     pub fn scoreboards(&self) -> HashMap<String, ScoreBoard> {
-        {
-            let m = self.shared.scoreboard.lock();
-            m.scoreboards.clone()
-        }
+        self.scoreboard_state(|m| m.scoreboards.clone())
+            .unwrap_or_default()
     }
 
     /// `bot.scoreboard` — the objective currently bound to a display slot
     /// (`ScoreBoard.positions` upstream; `bot.scoreboard('sidebar')` is
     /// `bot.scoreboard(ScoreboardSlot::Sidebar)` here).
     pub fn scoreboard(&self, slot: ScoreboardSlot) -> Option<ScoreBoard> {
-        let m = self.shared.scoreboard.lock();
-        let name = m.display_slots.get(&slot)?;
-        m.scoreboards.get(name).cloned()
+        self.scoreboard_state(|m| {
+            let name = m.display_slots.get(&slot)?;
+            m.scoreboards.get(name).cloned()
+        })
+        .flatten()
     }
 
     /// `bot.teams` — every known team, keyed by name. A snapshot.
     pub fn teams(&self) -> HashMap<String, Team> {
-        {
-            let m = self.shared.scoreboard.lock();
-            m.teams.clone()
-        }
+        self.scoreboard_state(|m| m.teams.clone())
+            .unwrap_or_default()
     }
 
     /// `bot.teamMap` — member name → team, keyed like upstream. A snapshot.
     pub fn team_map(&self) -> HashMap<String, Team> {
-        let m = self.shared.scoreboard.lock();
-        m.team_map
-            .iter()
-            .filter_map(|(member, team)| m.teams.get(team).map(|t| (member.clone(), t.clone())))
-            .collect()
+        self.scoreboard_state(|m| {
+            m.team_map
+                .iter()
+                .filter_map(|(member, team)| m.teams.get(team).map(|t| (member.clone(), t.clone())))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// `bot.bossBars` — every active boss bar. A snapshot.
     pub fn boss_bars(&self) -> Vec<BossBar> {
-        {
-            let m = self.shared.scoreboard.lock();
-            m.boss_bars.values().cloned().collect()
-        }
+        self.scoreboard_state(|m| m.boss_bars.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn scoreboard_state<R>(&self, f: impl FnOnce(&ScoreboardState) -> R) -> Option<R> {
+        crate::bot::with_component(&self.client, f)
     }
 }
 

@@ -83,10 +83,7 @@ impl EnchantmentTable {
     /// `enchantmentTable.xpseed` — `-1` until the server sends it.
     pub fn xp_seed(&self) -> i32 {
         self.bot
-            .shared
-            .window_data
-            .lock()
-            .data(self.window.id(), ENCHANT_XP_SEED)
+            .window_property(self.window.id(), ENCHANT_XP_SEED)
             .unwrap_or(-1) as i32
     }
 

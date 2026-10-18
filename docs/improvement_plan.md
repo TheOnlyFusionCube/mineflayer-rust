@@ -1319,7 +1319,7 @@ the commit that completes the item.
 | ST3 | done | (this commit) |
 | ST4 | open | |
 | ST5 | open | |
-| ST6 | open | |
+| ST6 | in progress: scoreboard, recipes, window data done | (this commit) |
 | ST7 | open | |
 | OP1 | done | (this commit) |
 | OP2 | open | |

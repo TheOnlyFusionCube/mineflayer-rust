@@ -35,11 +35,10 @@
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
-    sync::Arc,
     time::Duration,
 };
 
-use parking_lot::Mutex;
+use mineflayer_engine::ecs::{self as bevy_ecs, prelude::Component};
 
 use mineflayer_engine::{
     BlockPos, EntityRef, Event,
@@ -124,7 +123,7 @@ const ANVIL_COST_WAIT: Duration = Duration::from_millis(1500);
 /// data is readable by every clone of a [`Window`] and dies with the
 /// window (cleared on close/replace/login, like upstream removing its
 /// packet listeners on `close`).
-#[derive(Default)]
+#[derive(Component, Default)]
 pub(crate) struct WindowDataTracker {
     /// One record per open window id; a record is created on first touch
     /// (packets can race ahead of `open_screen`) and dies whole.
@@ -156,10 +155,6 @@ struct WindowRecord {
 }
 
 impl WindowDataTracker {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
     /// Everything stored for a closed or displaced window dies with it.
     fn clear_window(&mut self, id: i32) {
         self.windows.remove(&id);
@@ -174,8 +169,18 @@ impl WindowDataTracker {
 impl Bot {
     /// Read one typed window's record under the `window_data` lock —
     /// `None` when the server sent nothing for that window id.
+    fn window_property(&self, window_id: i32, property: u16) -> Option<i16> {
+        crate::bot::with_component::<WindowDataTracker, _>(&self.client, |t| {
+            t.data(window_id, property)
+        })
+        .flatten()
+    }
+
     fn with_window_record<R>(&self, id: i32, f: impl FnOnce(&WindowRecord) -> R) -> Option<R> {
-        self.shared.window_data.lock().windows.get(&id).map(f)
+        crate::bot::with_component::<WindowDataTracker, _>(&self.client, |t| {
+            t.windows.get(&id).map(f)
+        })
+        .flatten()
     }
 }
 
@@ -183,10 +188,7 @@ impl Bot {
 /// Needs no ECS access: everything it writes comes straight off the
 /// packets. Emitted events run through the same bridge arm as
 /// `windows::observe_event`'s.
-pub(crate) fn observe_event(
-    tracker: &Arc<Mutex<WindowDataTracker>>,
-    event: &Event,
-) -> Vec<BotEvent> {
+pub(crate) fn observe_event(t: &mut WindowDataTracker, event: &Event) -> Vec<BotEvent> {
     let Event::Packet(packet) = event else {
         return Vec::new();
     };
@@ -194,13 +196,11 @@ pub(crate) fn observe_event(
         ClientboundGamePacket::OpenScreen(p) => {
             // a fresh screen under a reused id starts clean — upstream's
             // per-window listeners attach to the new window object.
-            let mut t = tracker.lock();
             t.clear_window(p.container_id);
             t.windows.entry(p.container_id).or_default().kind = Some(p.menu_type);
             Vec::new()
         }
         ClientboundGamePacket::ContainerSetData(p) => {
-            let mut t = tracker.lock();
             // the wire field is a signed short read as u16 — recover the
             // sign so `-1` enchant clues compare correctly
             let value = p.value as i16;
@@ -235,7 +235,6 @@ pub(crate) fn observe_event(
             out
         }
         ClientboundGamePacket::MerchantOffers(p) => {
-            let mut t = tracker.lock();
             let record = t.windows.entry(p.container_id).or_default();
             record.offers = Some(decode_offers(&p.offers));
             if !record.ready {
@@ -248,11 +247,11 @@ pub(crate) fn observe_event(
             }
         }
         ClientboundGamePacket::ContainerClose(p) => {
-            tracker.lock().clear_window(p.container_id);
+            t.clear_window(p.container_id);
             Vec::new()
         }
         ClientboundGamePacket::Login(_) | ClientboundGamePacket::Respawn(_) => {
-            tracker.lock().windows.clear();
+            t.windows.clear();
             Vec::new()
         }
         _ => Vec::new(),
@@ -299,7 +298,7 @@ mod tests {
     };
 
     fn packet_event(p: ClientboundGamePacket) -> Event {
-        Event::Packet(Arc::new(p))
+        Event::Packet(std::sync::Arc::new(p))
     }
 
     fn open_screen(id: i32, kind: MenuKind) -> Event {
@@ -326,10 +325,10 @@ mod tests {
 
     #[test]
     fn set_data_emits_generic_and_furnace_events() {
-        let tracker = Arc::new(Mutex::new(WindowDataTracker::new()));
+        let mut tracker = WindowDataTracker::default();
         // a furnace-kind window must be registered for FurnaceUpdate
-        assert!(observe_event(&tracker, &open_screen(3, MenuKind::Furnace)).is_empty());
-        let out = observe_event(&tracker, &set_data(3, FUEL_LEFT, 40));
+        assert!(observe_event(&mut tracker, &open_screen(3, MenuKind::Furnace)).is_empty());
+        let out = observe_event(&mut tracker, &set_data(3, FUEL_LEFT, 40));
         assert!(has_event(&out, |e| matches!(
             e,
             BotEvent::WindowDataUpdate {
@@ -343,8 +342,8 @@ mod tests {
             BotEvent::FurnaceUpdate { window_id: 3 }
         )));
         // a non-furnace kind only gets the generic event
-        observe_event(&tracker, &open_screen(4, MenuKind::Anvil));
-        let out = observe_event(&tracker, &set_data(4, ANVIL_COST, 9));
+        observe_event(&mut tracker, &open_screen(4, MenuKind::Anvil));
+        let out = observe_event(&mut tracker, &set_data(4, ANVIL_COST, 9));
         assert!(has_event(&out, |e| matches!(
             e,
             BotEvent::WindowDataUpdate {
@@ -358,12 +357,12 @@ mod tests {
             BotEvent::FurnaceUpdate { .. }
         )));
         // the value is readable through the tracker
-        assert_eq!(tracker.lock().data(4, ANVIL_COST), Some(9));
+        assert_eq!(tracker.data(4, ANVIL_COST), Some(9));
         // the totals (`furnace.totalFuel`/`totalProgress`) ride the same
         // retention — a total-only update leaves the current value alone
-        observe_event(&tracker, &set_data(3, FUEL_TOTAL, 1600));
-        observe_event(&tracker, &set_data(3, COOK_TOTAL, 200));
-        let t = tracker.lock();
+        observe_event(&mut tracker, &set_data(3, FUEL_TOTAL, 1600));
+        observe_event(&mut tracker, &set_data(3, COOK_TOTAL, 200));
+        let t = &tracker;
         assert_eq!(t.data(3, FUEL_TOTAL), Some(1600));
         assert_eq!(t.data(3, COOK_TOTAL), Some(200));
         assert_eq!(t.data(3, FUEL_LEFT), Some(40));
@@ -371,37 +370,37 @@ mod tests {
 
     #[test]
     fn enchant_ready_is_an_edge_latch() {
-        let tracker = Arc::new(Mutex::new(WindowDataTracker::new()));
-        observe_event(&tracker, &open_screen(1, MenuKind::Enchantment));
-        observe_event(&tracker, &set_data(1, 0, 3));
-        observe_event(&tracker, &set_data(1, 1, 15));
+        let mut tracker = WindowDataTracker::default();
+        observe_event(&mut tracker, &open_screen(1, MenuKind::Enchantment));
+        observe_event(&mut tracker, &set_data(1, 0, 3));
+        observe_event(&mut tracker, &set_data(1, 1, 15));
         // third level cost lands → one ready event
-        let out = observe_event(&tracker, &set_data(1, 2, 30));
+        let out = observe_event(&mut tracker, &set_data(1, 2, 30));
         assert!(has_event(&out, |e| matches!(
             e,
             BotEvent::EnchantmentTableReady { window_id: 1 }
         )));
         // a later property update doesn't re-fire
-        let out = observe_event(&tracker, &set_data(1, ENCHANT_XP_SEED, 1234));
+        let out = observe_event(&mut tracker, &set_data(1, ENCHANT_XP_SEED, 1234));
         assert!(!has_event(&out, |e| matches!(
             e,
             BotEvent::EnchantmentTableReady { .. }
         )));
         // a level cost dropping to -1 (wire 0xFFFF) unlatches — the next
         // full set re-fires 'ready' like upstream
-        observe_event(&tracker, &set_data(1, 2, 0xFFFF));
-        let out = observe_event(&tracker, &set_data(1, 2, 22));
+        observe_event(&mut tracker, &set_data(1, 2, 0xFFFF));
+        let out = observe_event(&mut tracker, &set_data(1, 2, 22));
         assert!(has_event(&out, |e| matches!(
             e,
             BotEvent::EnchantmentTableReady { window_id: 1 }
         )));
         // close drops all state for the id
         observe_event(
-            &tracker,
+            &mut tracker,
             &packet_event(ClientboundGamePacket::ContainerClose(
                 ClientboundContainerClose { container_id: 1 },
             )),
         );
-        assert!(!tracker.lock().windows.contains_key(&1));
+        assert!(!tracker.windows.contains_key(&1));
     }
 }

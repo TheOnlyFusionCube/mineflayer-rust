@@ -97,14 +97,6 @@ pub(crate) struct BotShared {
     /// Inventory/window-domain state (current window, slot snapshots,
     /// eat/use bookkeeping) — see `windows::WindowTracker`.
     pub windows: Arc<Mutex<crate::windows::WindowTracker>>,
-    /// Typed-window server state (container data, merchant offers,
-    /// readiness) — see `window_types::WindowDataTracker`.
-    pub window_data: Arc<Mutex<crate::window_types::WindowDataTracker>>,
-    /// Recipe-book state (unlocked recipes from `c_recipe_book_add`/
-    /// `c_recipe_book_remove`) — see `craft::RecipeBook`.
-    pub recipes: Arc<Mutex<crate::craft::RecipeBook>>,
-    /// Scoreboard/team/boss-bar state — see `scoreboard::ScoreboardState`.
-    pub scoreboard: Arc<Mutex<crate::scoreboard::ScoreboardState>>,
 }
 
 /// The game ticks a driver task loops on, until `token` is cancelled.
@@ -187,9 +179,6 @@ impl BotShared {
             windows: Arc::new(Mutex::new(crate::windows::WindowTracker::new(
                 events.clone(),
             ))),
-            window_data: Arc::new(Mutex::new(crate::window_types::WindowDataTracker::new())),
-            recipes: Arc::new(Mutex::new(crate::craft::RecipeBook::default())),
-            scoreboard: Arc::new(Mutex::new(crate::scoreboard::ScoreboardState::default())),
             events,
         }
     }

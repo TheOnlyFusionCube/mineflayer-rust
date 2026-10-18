@@ -36,10 +36,7 @@ impl Anvil {
     /// preview has no engine equivalent, so the checks below read this.
     pub fn repair_cost(&self) -> Option<i32> {
         self.bot
-            .shared
-            .window_data
-            .lock()
-            .data(self.window.id(), ANVIL_COST)
+            .window_property(self.window.id(), ANVIL_COST)
             .map(|v| v as i32)
     }
 

@@ -20,6 +20,7 @@ use parking_lot::Mutex;
 
 use crate::{
     BotEvent,
+    bot::with_component_mut,
     chat::{ChatShared, TabList},
     entity,
 };
@@ -249,15 +250,27 @@ type Observer = fn(&mut Observe<'_>, &Event) -> Vec<BotEvent>;
 const OBSERVERS: &[Observer] = &[
     |cx, e| translate(cx.local, &cx.shared.quit_reason, cx.client, e.clone()),
     |cx, e| crate::misc::observe(cx.client, e),
-    |cx, e| crate::scoreboard::observe(&cx.shared.scoreboard, e),
+    |cx, e| {
+        with_component_mut::<crate::scoreboard::ScoreboardState, _>(cx.client, |s| {
+            crate::scoreboard::observe(s, e)
+        })
+        .unwrap_or_default()
+    },
     |cx, e| packet_events(cx.local, e),
     |cx, e| crate::movement::bridge_events(cx.client, &mut cx.local.movement, e),
     |cx, e| crate::pathfinder::bridge_events(cx.client, &mut cx.local.pathfinder, e),
     |cx, e| entity::observe_event(&cx.shared.entities, cx.client, e),
     |cx, e| crate::windows::observe_event(&cx.shared.windows, cx.client, e),
-    |cx, e| crate::window_types::observe_event(&cx.shared.window_data, e),
     |cx, e| {
-        crate::craft::observe_event(&cx.shared.recipes, e);
+        with_component_mut::<crate::window_types::WindowDataTracker, _>(cx.client, |t| {
+            crate::window_types::observe_event(t, e)
+        })
+        .unwrap_or_default()
+    },
+    |cx, e| {
+        with_component_mut::<crate::craft::RecipeBook, _>(cx.client, |b| {
+            crate::craft::observe_event(b, e)
+        });
         Vec::new()
     },
     |cx, e| crate::world::observe_event(cx.client, &mut cx.local.lids, e),
