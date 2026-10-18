@@ -109,6 +109,11 @@ merge; plan item E2 keeps this list current):
     `MicrosoftAccountOpts::on_device_code`, and a fifth argument of
     `interactive_get_ms_auth_token` carry it; `None` keeps upstream's
     `println!`.
+21. (TS1) `test_utils` builds with the new `test-utils` feature of
+    `mineflayer-client` (and `mineflayer-engine`), not only with `log`;
+    its `tracing` module still needs `log`. `Simulation::new_with_plugins`
+    builds the app from any plugin group. The port turns `test-utils` on
+    in its dev-dependencies for `BotSim` (`src/test_util/sim.rs`).
 
 **D-codegen. The code generator stays upstream-only** (plan item E1,
 2026-10-16). The repository does not contain `codegen/`. The generated

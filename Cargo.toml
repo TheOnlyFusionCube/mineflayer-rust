@@ -40,6 +40,8 @@ parking_lot = "0.12"
 tracing = "0.1"
 
 [dev-dependencies]
+# the engine's `Simulation`, for the `BotSim` harness
+mineflayer-engine = { path = "crates/mineflayer-engine", version = "0.16.0", features = ["test-utils"] }
 # for the examples' RUST_LOG-driven subscriber (the crate itself only
 # emits; it never installs a subscriber)
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

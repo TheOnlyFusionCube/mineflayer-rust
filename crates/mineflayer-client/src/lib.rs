@@ -8,7 +8,7 @@ pub mod ping;
 pub mod player;
 mod plugins;
 
-#[cfg(feature = "log")]
+#[cfg(any(feature = "log", feature = "test-utils"))]
 #[doc(hidden)]
 pub mod test_utils;
 

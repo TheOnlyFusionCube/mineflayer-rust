@@ -49,6 +49,8 @@ bevy_log.workspace = true
 default = ["serde", "packet-event", "online-mode"]
 # adds bevy_log::LogPlugin, which installs a global subscriber (off by default)
 log = ["mineflayer-client/log"]
+# the `Simulation` test harness (`test_utils`), without the log plugin
+test-utils = ["mineflayer-client/test-utils"]
 serde = ["dep:serde", "mineflayer-registry/serde", "mineflayer-world/serde"]
 packet-event = ["mineflayer-client/packet-event"]
 online-mode = ["mineflayer-client/online-mode"]

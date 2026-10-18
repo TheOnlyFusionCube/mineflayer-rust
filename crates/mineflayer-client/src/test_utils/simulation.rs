@@ -59,7 +59,16 @@ pub struct Simulation {
 
 impl Simulation {
     pub fn new(conn_protocol: ConnectionProtocol) -> Self {
-        let mut app = create_simulation_app();
+        Self::new_with_plugins(conn_protocol, crate::DefaultPlugins)
+    }
+
+    /// Like [`Self::new`], with the app built from `plugins` instead of
+    /// this crate's [`DefaultPlugins`](crate::DefaultPlugins).
+    pub fn new_with_plugins(
+        conn_protocol: ConnectionProtocol,
+        plugins: impl bevy_app::PluginGroup,
+    ) -> Self {
+        let mut app = create_simulation_app(plugins);
 
         let mut entity = app.world_mut().spawn_empty();
         let (player, rt) =
@@ -310,10 +319,11 @@ fn create_local_player_bundle(
     (local_player_bundle, rt)
 }
 
-fn create_simulation_app() -> App {
+fn create_simulation_app(plugins: impl bevy_app::PluginGroup) -> App {
     let mut app = App::new();
 
-    let mut plugins = bevy_app::PluginGroup::build(crate::DefaultPlugins);
+    #[cfg_attr(not(feature = "log"), allow(unused_mut))]
+    let mut plugins = plugins.build();
     #[cfg(feature = "log")]
     {
         plugins = plugins.disable::<bevy_log::LogPlugin>();

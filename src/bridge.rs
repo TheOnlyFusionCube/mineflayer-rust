@@ -36,10 +36,6 @@ pub(crate) struct BridgeOptions {
     /// `Event::Login`; overwrites the `"vanilla"` the engine already sent during
     /// the config phase (the server keeps the last brand received).
     pub brand: Option<String>,
-    /// `options.checkTimeoutInterval` — the server keepalive watchdog
-    /// interval, armed on every `Event::KeepAlive` like upstream's per-
-    /// keepalive `setTimeout` re-arm.
-    pub check_timeout_interval: std::time::Duration,
     /// `BotBuilder::packet_events` — `false` keeps `BotEvent::Packet` off
     /// the broadcast; the misc decode still sees every packet.
     pub packet_events: bool,
@@ -51,28 +47,21 @@ pub(crate) struct BridgeOptions {
 /// `shutdown` is held for its drop: the task's end resolves `changed()`
 /// on every `Bot::shutdown` receiver, retiring the tick-driven driver
 /// tasks whose `TickBroadcast` sender outlives the connection.
+///
+/// `check_timeout_interval` is `options.checkTimeoutInterval`: the server
+/// keepalive watchdog, armed on every `Event::KeepAlive` like upstream's
+/// per-keepalive `setTimeout` re-arm.
 pub(crate) fn spawn(
-    client: mineflayer_engine::Client,
+    mut bridge: Bridge,
     mut rx: UnboundedReceiver<Event>,
-    shared: crate::bot::BotShared,
-    options: BridgeOptions,
+    check_timeout_interval: std::time::Duration,
     mut alive: watch::Receiver<()>,
     shutdown: watch::Sender<()>,
 ) {
     tokio::spawn(async move {
-        let BridgeOptions {
-            client_information,
-            brand,
-            check_timeout_interval,
-            packet_events,
-        } = options;
         // Mark the initial watch value as seen so `changed()` below only
         // resolves when the channel closes (all `Bot`s dropped).
         let _ = alive.borrow_and_update();
-        let mut state = BridgeState {
-            chat: shared.chat.clone(),
-            ..Default::default()
-        };
         // Keepalive watchdog deadline (`options.checkTimeoutInterval`) —
         // `None` until the first keepalive arms it, like upstream's
         // per-keepalive `setTimeout`.
@@ -83,59 +72,11 @@ pub(crate) fn spawn(
                     let Some(event) = event else {
                         break "engine event channel closed";
                     };
-                    // Client information must be set on Init so the login
-                    // packet already carries it (the engine docs).
-                    if let Event::Init = &event
-                        && let Some(info) = &client_information
-                    {
-                        client.set_client_information(info.clone());
-                    }
-                    // `options.brand` — upstream writes it on the login
-                    // packet; ours overwrites the engine's config-phase
-                    // "vanilla".
-                    if let (Event::Login, Some(brand)) = (&event, &brand) {
-                        use mineflayer_engine::buf::McBuf;
-                        let mut data = Vec::new();
-                        if let Err(error) = brand.clone().mc_write(&mut data) {
-                            debug!(?error, "brand payload failed to encode — sending none");
-                        }
-                        client.write_packet(
-                            mineflayer_engine::protocol::packets::game::s_custom_payload::ServerboundCustomPayload {
-                                identifier: "brand".into(),
-                                data: data.into(),
-                            },
-                        );
-                    }
-                    let keepalive_seen = matches!(&event, Event::KeepAlive(_));
-                    // every observer sees the event before any of its
-                    // events go out, so a subscriber that reacts to one
-                    // reads domain state that already reflects the event
-                    let mut cx = Observe {
-                        client: &client,
-                        shared: &shared,
-                        local: &mut state,
-                    };
-                    let derived: Vec<BotEvent> = OBSERVERS
-                        .iter()
-                        .flat_map(|observe| observe(&mut cx, &event))
-                        .collect();
-                    for bot_event in derived {
-                        // upstream chat.js keeps `endReason` for the
-                        // pre-play error message — record it before the
-                        // event goes out so a racing `chat()` sees it.
-                        if let BotEvent::End(reason) = &bot_event {
-                            *shared.end_reason.lock() = Some(reason.clone());
-                        }
-                        // SendError = no subscribers right now; that's fine,
-                        // receivers may subscribe later.
-                        if packet_events || !matches!(bot_event, BotEvent::Packet(_)) {
-                            let _ = shared.events.send(bot_event);
-                        }
-                    }
-                    if keepalive_seen {
+                    if matches!(event, Event::KeepAlive(_)) {
                         keepalive_deadline =
                             Some(tokio::time::Instant::now() + check_timeout_interval);
                     }
+                    bridge.handle(event);
                 }
                 // Server keepalive watchdog (`options.checkTimeoutInterval`):
                 // upstream's keepalive.js emits 'error' then ends the client
@@ -152,25 +93,111 @@ pub(crate) fn spawn(
                         timeout_ms = check_timeout_interval.as_millis(),
                         "server keepalive timed out — ending with keepAliveError"
                     );
-                    let _ = shared.events.send(BotEvent::Error(format!(
+                    let _ = bridge.shared.events.send(BotEvent::Error(format!(
                         "client timed out after {} milliseconds",
                         check_timeout_interval.as_millis()
                     )));
-                    *shared.quit_reason.lock() = Some("keepAliveError".to_string());
-                    client.disconnect();
+                    *bridge.shared.quit_reason.lock() = Some("keepAliveError".to_string());
+                    bridge.client.disconnect();
                 }
                 _ = alive.changed() => break "all Bot handles dropped",
             }
         };
-        debug!(reason = exit_reason, ended = state.ended, "bridge exit");
+        debug!(
+            reason = exit_reason,
+            ended = bridge.state.ended,
+            "bridge exit"
+        );
         exit(
-            &mut state,
-            &shared.quit_reason,
-            &shared.events,
+            &mut bridge.state,
+            &bridge.shared.quit_reason,
+            &bridge.shared.events,
             shutdown,
-            &client,
+            &bridge.client,
         );
     });
+}
+
+/// The bridge's state and the per-event work: run every observer on an
+/// engine event and send the `BotEvent`s they derive.
+pub(crate) struct Bridge {
+    client: mineflayer_engine::Client,
+    shared: crate::bot::BotShared,
+    client_information: Option<ClientInformation>,
+    brand: Option<String>,
+    packet_events: bool,
+    state: BridgeState,
+}
+
+impl Bridge {
+    pub(crate) fn new(
+        client: mineflayer_engine::Client,
+        shared: crate::bot::BotShared,
+        options: BridgeOptions,
+    ) -> Self {
+        let state = BridgeState {
+            chat: shared.chat.clone(),
+            ..Default::default()
+        };
+        Self {
+            client,
+            shared,
+            client_information: options.client_information,
+            brand: options.brand,
+            packet_events: options.packet_events,
+            state,
+        }
+    }
+
+    pub(crate) fn handle(&mut self, event: Event) {
+        // Client information must be set on Init so the login packet
+        // already carries it (the engine docs).
+        if let Event::Init = &event
+            && let Some(info) = &self.client_information
+        {
+            self.client.set_client_information(info.clone());
+        }
+        // `options.brand` — upstream writes it on the login packet; ours
+        // overwrites the engine's config-phase "vanilla".
+        if let (Event::Login, Some(brand)) = (&event, &self.brand) {
+            use mineflayer_engine::buf::McBuf;
+            let mut data = Vec::new();
+            if let Err(error) = brand.clone().mc_write(&mut data) {
+                debug!(?error, "brand payload failed to encode — sending none");
+            }
+            self.client.write_packet(
+                mineflayer_engine::protocol::packets::game::s_custom_payload::ServerboundCustomPayload {
+                    identifier: "brand".into(),
+                    data: data.into(),
+                },
+            );
+        }
+        // every observer sees the event before any of its events go out,
+        // so a subscriber that reacts to one reads domain state that
+        // already reflects the event
+        let mut cx = Observe {
+            client: &self.client,
+            shared: &self.shared,
+            local: &mut self.state,
+        };
+        let derived: Vec<BotEvent> = OBSERVERS
+            .iter()
+            .flat_map(|observe| observe(&mut cx, &event))
+            .collect();
+        for bot_event in derived {
+            // upstream chat.js keeps `endReason` for the pre-play error
+            // message — record it before the event goes out so a racing
+            // `chat()` sees it.
+            if let BotEvent::End(reason) = &bot_event {
+                *self.shared.end_reason.lock() = Some(reason.clone());
+            }
+            // SendError = no subscribers right now; that's fine, receivers
+            // may subscribe later.
+            if self.packet_events || !matches!(bot_event, BotEvent::Packet(_)) {
+                let _ = self.shared.events.send(bot_event);
+            }
+        }
+    }
 }
 
 /// The engine stopped feeding events or all `Bot` handles are gone — shut
@@ -1055,15 +1082,17 @@ mod tests {
         let (_alive_tx, alive_rx) = watch::channel(());
         let (shutdown_tx, _shutdown_rx) = watch::channel(());
         spawn(
-            despawned(),
+            Bridge::new(
+                despawned(),
+                shared,
+                BridgeOptions {
+                    client_information: None,
+                    brand: None,
+                    packet_events: false,
+                },
+            ),
             input_rx,
-            shared,
-            BridgeOptions {
-                client_information: None,
-                brand: None,
-                check_timeout_interval: std::time::Duration::from_secs(30),
-                packet_events: false,
-            },
+            std::time::Duration::from_secs(30),
             alive_rx,
             shutdown_tx,
         );
@@ -1103,15 +1132,17 @@ mod tests {
         let (_alive_tx, alive_rx) = watch::channel(());
         let (shutdown_tx, mut shutdown_rx) = watch::channel(());
         spawn(
-            despawned(),
+            Bridge::new(
+                despawned(),
+                shared,
+                BridgeOptions {
+                    client_information: None,
+                    brand: None,
+                    packet_events: true,
+                },
+            ),
             input_rx,
-            shared,
-            BridgeOptions {
-                client_information: None,
-                brand: None,
-                check_timeout_interval: std::time::Duration::from_secs(30),
-                packet_events: true,
-            },
+            std::time::Duration::from_secs(30),
             alive_rx,
             shutdown_tx,
         );
@@ -1209,15 +1240,17 @@ mod tests {
         let (_alive_tx, alive_rx) = watch::channel(());
         let (shutdown_tx, _shutdown_rx) = watch::channel(());
         spawn(
-            client,
+            Bridge::new(
+                client,
+                shared,
+                BridgeOptions {
+                    client_information: None,
+                    brand: None,
+                    packet_events: true,
+                },
+            ),
             input_rx,
-            shared,
-            BridgeOptions {
-                client_information: None,
-                brand: None,
-                check_timeout_interval: std::time::Duration::from_secs(30),
-                packet_events: true,
-            },
+            std::time::Duration::from_secs(30),
             alive_rx,
             shutdown_tx,
         );

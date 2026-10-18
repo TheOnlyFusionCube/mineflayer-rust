@@ -321,8 +321,8 @@ impl BotBuilder {
     /// Join the server through the engine's bootstrap, and wire up the
     /// event bridge. Runs inside the bot
     /// thread's `LocalSet` (the engine requires it for `Client::join`).
-    async fn connect_engine(builder: BotBuilder) -> Result<Bot> {
-        let account = match builder.auth {
+    async fn connect_engine(mut builder: BotBuilder) -> Result<Bot> {
+        let account = match builder.auth.take() {
             Some(Auth::Offline { username }) => {
                 mineflayer_engine::account::Account::offline(&username)
             }
@@ -351,7 +351,20 @@ impl BotBuilder {
             None => opts,
         };
         let client = mineflayer_engine::Client::start_client(opts).await;
+        let check_timeout_interval = builder.check_timeout_interval;
+        let (bot, bridge, alive_rx, shutdown_tx) = builder.attach(client);
+        bridge::spawn(bridge, rx, check_timeout_interval, alive_rx, shutdown_tx);
+        Ok(bot)
+    }
 
+    /// Insert the port's components on a joined client, and build the
+    /// [`Bot`] and the bridge that feeds its events. The bridge does not
+    /// run yet; [`bridge::spawn`] runs it.
+    pub(crate) fn attach(
+        self,
+        client: mineflayer_engine::Client,
+    ) -> (Bot, bridge::Bridge, watch::Receiver<()>, watch::Sender<()>) {
+        let builder = self;
         // the misc state (difficulty comes from `options.difficulty`; it's
         // client-side only like upstream) and the dig bookkeeping exist
         // before the first packet, inserted together in one lock
@@ -372,28 +385,25 @@ impl BotBuilder {
         // The engine queues before `join` returns — and everything since is on
         // the receiver the first `Bot::events()` call hands out.
         let bootstrap_events = shared.events.subscribe();
-        bridge::spawn(
+        let bridge = bridge::Bridge::new(
             client.clone(),
-            rx,
             shared.clone(),
             bridge::BridgeOptions {
                 client_information: builder.client_information,
                 brand: builder.brand,
-                check_timeout_interval: builder.check_timeout_interval,
                 packet_events: builder.packet_events,
             },
-            alive_rx,
-            shutdown_tx,
         );
 
-        Ok(Bot {
+        let bot = Bot {
             client,
             bootstrap_events: Arc::new(Mutex::new(Some(bootstrap_events))),
             _alive: Some(alive),
             shutdown: shutdown_rx,
             shared: Arc::new(shared),
             chat_length_limit: builder.chat_length_limit,
-        })
+        };
+        (bot, bridge, alive_rx, shutdown_tx)
     }
 }
 

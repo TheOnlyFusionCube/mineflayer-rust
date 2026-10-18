@@ -48,6 +48,8 @@ eyre.workspace = true
 default = ["packet-event", "online-mode"]
 # adds bevy_log::LogPlugin, which installs a global subscriber (off by default)
 log = ["bevy_log"]
+# the `Simulation` test harness, for tests in this crate and its dependents
+test-utils = []
 packet-event = []
 online-mode = [
     "mineflayer-auth/online-mode",
