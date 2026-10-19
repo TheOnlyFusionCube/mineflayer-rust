@@ -76,6 +76,8 @@ pub enum FrameSplitterError {
     },
     #[error("Packet is longer than {max} bytes (is {size})")]
     BadLength { max: usize, size: usize },
+    #[error("Frame of {0} bytes is longer than the protocol's {MAXIMUM_FRAME_LENGTH}")]
+    TooLong(usize),
     #[error("Connection reset by peer")]
     ConnectionReset,
     #[error("Connection closed")]
@@ -97,6 +99,9 @@ fn parse_frame(buffer: &mut Cursor<Vec<u8>>) -> Result<Box<[u8]>, FrameSplitterE
         },
     };
 
+    if length > MAXIMUM_FRAME_LENGTH {
+        return Err(FrameSplitterError::TooLong(length));
+    }
     if length > buffer_copy.remaining() {
         return Err(FrameSplitterError::BadLength {
             max: buffer_copy.remaining(),
@@ -115,7 +120,8 @@ fn parse_frame(buffer: &mut Cursor<Vec<u8>>) -> Result<Box<[u8]>, FrameSplitterE
         buffer.get_ref()[buffer.position() as usize..buffer.position() as usize + length].to_vec();
     buffer.advance(length);
 
-    if buffer.position() == buffer.get_ref().len() as u64 {
+    let consumed = buffer.position() as usize;
+    if consumed == buffer.get_ref().len() {
         // reset the inner vec once we've reached the end of the buffer so we
         // don't keep leaking memory
         buffer.get_mut().clear();
@@ -126,6 +132,11 @@ fn parse_frame(buffer: &mut Cursor<Vec<u8>>) -> Result<Box<[u8]>, FrameSplitterE
         // if we get a big packet once and then never again.
         buffer.get_mut().shrink_to(1024 * 64);
 
+        buffer.set_position(0);
+    } else if consumed >= 1024 * 64 {
+        // Under steady traffic the buffer may always end in a partial frame,
+        // so it never empties; drop the consumed prefix instead.
+        buffer.get_mut().drain(..consumed);
         buffer.set_position(0);
     }
 
@@ -162,6 +173,10 @@ static VALIDATE_DECOMPRESSED: bool = true;
 
 pub static MAXIMUM_UNCOMPRESSED_LENGTH: u32 = 8_388_608;
 
+/// The longest frame the protocol allows: its length is a varint of at most
+/// three bytes (vanilla `Varint21FrameDecoder`).
+pub const MAXIMUM_FRAME_LENGTH: usize = (1 << 21) - 1;
+
 #[derive(Debug, Error)]
 pub enum DecompressionError {
     #[error("Couldn't read VarInt length for data")]
@@ -175,6 +190,8 @@ pub enum DecompressionError {
         #[backtrace]
         source: io::Error,
     },
+    #[error("Compressed packet declared {declared} bytes and inflated to {actual}")]
+    WrongSize { declared: u32, actual: usize },
     #[error("Badly compressed packet - size of {size} is below server threshold of {threshold}")]
     BelowCompressionThreshold { size: u32, threshold: u32 },
     #[error(
@@ -218,11 +235,16 @@ pub fn compression_decoder(
     }
 
     // VALIDATE_DECOMPRESSED should always be true, so the max they can make us
-    // allocate here is 2mb
+    // allocate here is 8mb
     let mut decoded_buf = Vec::with_capacity(n as usize);
 
-    let mut decoder = ZlibDecoder::new(stream);
+    // Inflate at most one byte past the declared size: the declared size
+    // bounds the allocation only if the stream cannot run past it.
+    let mut decoder = ZlibDecoder::new(stream).take(u64::from(n) + 1);
     decoder.read_to_end(&mut decoded_buf)?;
+    if decoded_buf.len() != n as usize {
+        return Err(DecompressionError::WrongSize { declared: n, actual: decoded_buf.len() });
+    }
 
     Ok(decoded_buf.into_boxed_slice())
 }
@@ -409,6 +431,43 @@ mod tests {
     use mineflayer_buf::McBuf as _;
 
     use crate::{packets::game::ClientboundGamePacket, read::deserialize_packet};
+
+    #[test]
+    fn a_frame_longer_than_the_protocol_allows_is_an_error_not_a_wait() {
+        // a 4-byte varint length (2^21) followed by nothing
+        let mut buf = std::io::Cursor::new(vec![0x80, 0x80, 0x80, 0x01]);
+        assert!(matches!(super::frame_splitter(&mut buf), Err(super::FrameSplitterError::TooLong(_))));
+    }
+
+    #[test]
+    fn a_buffer_that_never_empties_still_drops_what_it_consumed() {
+        let mut data = Vec::new();
+        for _ in 0..2000 {
+            data.extend([100u8]);
+            data.extend([7u8; 100]);
+        }
+        // a partial frame at the end, so the buffer is never fully consumed
+        data.extend([100u8, 7, 7]);
+        let mut buf = std::io::Cursor::new(data);
+        for _ in 0..2000 {
+            super::frame_splitter(&mut buf).unwrap().unwrap();
+        }
+        assert!(buf.get_ref().len() < 64 * 1024 + 202, "buffer kept {} bytes", buf.get_ref().len());
+    }
+
+    #[test]
+    fn a_compressed_packet_cannot_inflate_past_its_declared_size() {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        z.write_all(&vec![0u8; 4 * 1024 * 1024]).unwrap();
+        let compressed = z.finish().unwrap();
+        let mut frame = Vec::new();
+        // declares 300 bytes
+        mineflayer_buf::McBufVar::mc_write_var(&300u32, &mut frame).unwrap();
+        frame.extend(compressed);
+        let r = super::compression_decoder(&mut std::io::Cursor::new(&frame[..]), 256);
+        assert!(matches!(r, Err(super::DecompressionError::WrongSize { declared: 300, .. })), "{r:?}");
+    }
 
     #[test]
     fn fuzzed_1() {

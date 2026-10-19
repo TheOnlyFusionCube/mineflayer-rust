@@ -1,0 +1,9 @@
+{
+  "name": "presence-diff",
+  "private": true,
+  "description": "Differential check of mineflayer-presence against node-minecraft-protocol",
+  "dependencies": {
+    "minecraft-data": "3.117.0",
+    "minecraft-protocol": "1.68.0"
+  }
+}

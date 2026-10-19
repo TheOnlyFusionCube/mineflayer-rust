@@ -11,17 +11,31 @@ pub enum FetchCertificatesError {
     Http(#[from] reqwest::Error),
     #[error("Couldn't parse pkcs8 private key: {0}")]
     Pkcs8(#[from] rsa::pkcs8::Error),
+    #[error("Couldn't decode base64: {0}")]
+    Base64(#[from] base64::DecodeError),
 }
+
+/// Mojang's Minecraft services API.
+pub const MOJANG_SERVICES: &str = "https://api.minecraftservices.com";
 
 /// Fetch the Mojang-provided key-pair for your player, which is used for
 /// cryptographically signing chat messages.
 pub async fn fetch_certificates(
     minecraft_access_token: &str,
 ) -> Result<Certificates, FetchCertificatesError> {
+    fetch_certificates_from(MOJANG_SERVICES, minecraft_access_token).await
+}
+
+/// [`fetch_certificates`] from another services API, such as the
+/// `/minecraftservices` path of an authlib-injector Yggdrasil server.
+pub async fn fetch_certificates_from(
+    services: &str,
+    minecraft_access_token: &str,
+) -> Result<Certificates, FetchCertificatesError> {
     let client = reqwest::Client::new();
 
     let res = client
-        .post("https://api.minecraftservices.com/player/certificates")
+        .post(format!("{}/player/certificates", services.trim_end_matches('/')))
         .header("Authorization", format!("Bearer {minecraft_access_token}"))
         .send()
         .await?
@@ -40,9 +54,7 @@ pub async fn fetch_certificates(
         .skip(1)
         .take_while(|line| !line.starts_with('-'))
         .collect::<String>();
-    let private_key_der = base64::engine::general_purpose::STANDARD
-        .decode(private_key_pem_base64)
-        .unwrap();
+    let private_key_der = base64::engine::general_purpose::STANDARD.decode(private_key_pem_base64)?;
 
     let public_key_pem_base64 = res
         .key_pair
@@ -51,23 +63,17 @@ pub async fn fetch_certificates(
         .skip(1)
         .take_while(|line| !line.starts_with('-'))
         .collect::<String>();
-    let public_key_der = base64::engine::general_purpose::STANDARD
-        .decode(public_key_pem_base64)
-        .unwrap();
+    let public_key_der = base64::engine::general_purpose::STANDARD.decode(public_key_pem_base64)?;
 
     // the private key also contains the public key so it's basically a keypair
-    let private_key = RsaPrivateKey::from_pkcs8_der(&private_key_der).unwrap();
+    let private_key = RsaPrivateKey::from_pkcs8_der(&private_key_der)?;
 
     let certificates = Certificates {
         private_key,
         public_key_der,
 
-        signature_v1: base64::engine::general_purpose::STANDARD
-            .decode(&res.public_key_signature)
-            .unwrap(),
-        signature_v2: base64::engine::general_purpose::STANDARD
-            .decode(&res.public_key_signature_v2)
-            .unwrap(),
+        signature_v1: base64::engine::general_purpose::STANDARD.decode(&res.public_key_signature)?,
+        signature_v2: base64::engine::general_purpose::STANDARD.decode(&res.public_key_signature_v2)?,
 
         expires_at: res.expires_at,
         refresh_after: res.refreshed_after,

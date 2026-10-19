@@ -477,6 +477,7 @@ impl Connection<ClientboundLoginPacket, ServerboundLoginPacket> {
         use mineflayer_auth::sessionserver::{self, SessionServerJoinOpts};
 
         sessionserver::join(SessionServerJoinOpts {
+            session_server: sessionserver::MOJANG_SESSION_SERVER,
             access_token,
             public_key: &packet.public_key,
             private_key: &private_key,

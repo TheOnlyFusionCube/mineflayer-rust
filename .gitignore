@@ -5,3 +5,9 @@ target/
 .worktrees/
 server.pid
 .omo/
+scripts/presence-diff/node_modules/
+scripts/presence-diff/package-lock.json
+.audit/
+.superpowers/
+__pycache__/
+*.pyc

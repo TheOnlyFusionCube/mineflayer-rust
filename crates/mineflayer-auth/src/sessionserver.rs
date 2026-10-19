@@ -51,7 +51,13 @@ pub struct ForbiddenError {
     pub path: String,
 }
 
+/// Mojang's session server. An authlib-injector network or another
+/// Yggdrasil implementation has its own.
+pub const MOJANG_SESSION_SERVER: &str = "https://sessionserver.mojang.com";
+
 pub struct SessionServerJoinOpts<'a> {
+    /// The session server's base URL, such as [`MOJANG_SESSION_SERVER`].
+    pub session_server: &'a str,
     pub access_token: &'a str,
     /// Given to us by the
     pub public_key: &'a [u8],
@@ -86,11 +92,21 @@ pub async fn join(opts: SessionServerJoinOpts<'_>) -> Result<(), ClientSessionSe
         opts.private_key,
     ));
 
-    join_with_server_id_hash(&client, opts.access_token, opts.uuid, &server_hash).await
+    join_at(&client, opts.session_server, opts.access_token, opts.uuid, &server_hash).await
 }
 
 pub async fn join_with_server_id_hash(
     client: &reqwest::Client,
+    access_token: &str,
+    uuid: &Uuid,
+    server_hash: &str,
+) -> Result<(), ClientSessionServerError> {
+    join_at(client, MOJANG_SESSION_SERVER, access_token, uuid, server_hash).await
+}
+
+async fn join_at(
+    client: &reqwest::Client,
+    session_server: &str,
     access_token: &str,
     uuid: &Uuid,
     server_hash: &str,
@@ -104,7 +120,7 @@ pub async fn join_with_server_id_hash(
         "serverId": server_hash
     });
     let res = client
-        .post("https://sessionserver.mojang.com/session/minecraft/join")
+        .post(format!("{}/session/minecraft/join", session_server.trim_end_matches('/')))
         .json(&data)
         .send()
         .await?;

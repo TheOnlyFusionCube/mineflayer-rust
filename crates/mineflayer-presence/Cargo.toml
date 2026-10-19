@@ -1,0 +1,22 @@
+[package]
+name = "mineflayer-presence"
+description = "A keep-online Minecraft client for every protocol from 1.8 to 26.1, driven by minecraft-data packet schemas."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+base64.workspace = true
+mineflayer-auth = { workspace = true, features = ["online-mode"] }
+mineflayer-language.workspace = true
+mineflayer-crypto = { workspace = true, features = ["signing"] }
+mineflayer-protocol = { workspace = true, features = ["connecting", "online-mode"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -139,6 +139,7 @@ impl AccountTrait for MicrosoftAccount {
         Box::pin(async move {
             let access_token = self.access_token.lock().clone();
             sessionserver::join(SessionServerJoinOpts {
+            session_server: sessionserver::MOJANG_SESSION_SERVER,
                 access_token: &access_token,
                 public_key,
                 private_key,
@@ -244,6 +245,7 @@ impl AccountTrait for MicrosoftWithAccessTokenAccount {
         Box::pin(async move {
             let access_token = self.access_token.lock().clone();
             sessionserver::join(SessionServerJoinOpts {
+            session_server: sessionserver::MOJANG_SESSION_SERVER,
                 access_token: &access_token,
                 public_key,
                 private_key,
