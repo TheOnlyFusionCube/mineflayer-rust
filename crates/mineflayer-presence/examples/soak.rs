@@ -11,7 +11,7 @@
 
 use std::time::{Duration, Instant};
 
-use mineflayer_presence::{Auth, Command, Handle, Options, Status, spawn};
+use mineflayer_presence::{Command, Handle, Options, Status, spawn};
 
 fn proc_status() -> (u64, u64, u64) {
     let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
@@ -31,15 +31,7 @@ struct Bot {
 }
 
 fn start(host: &str, port: u16, protocol: i32, i: usize) -> Bot {
-    let (handle, mut events) = spawn(Options {
-        host: host.to_owned(),
-        port,
-        username: format!("soak{i:03}"),
-        auth: Auth::Offline,
-        proxy: None,
-        protocol: Some(protocol),
-        view_distance: 2,
-    });
+    let (handle, mut events) = spawn(Options { protocol: Some(protocol), ..Options::new(host, port, format!("soak{i:03}")) });
     // an owner that reads its events, as a runner relaying chat would
     tokio::spawn(async move { while events.recv().await.is_some() {} });
     Bot { handle, quitting: false }

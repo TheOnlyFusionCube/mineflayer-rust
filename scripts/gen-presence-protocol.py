@@ -27,7 +27,7 @@ SUBSET = {
     "login.toClient": ["disconnect", "encryption_begin", "success", "compress", "login_plugin_request", "cookie_request"],
     "configuration.toServer": ["custom_payload", "settings", "finish_configuration", "keep_alive", "pong", "select_known_packs", "cookie_response", "resource_pack_receive", "accept_code_of_conduct"],
     "configuration.toClient": ["transfer", "store_cookie", "disconnect", "finish_configuration", "keep_alive", "ping", "select_known_packs", "cookie_request", "add_resource_pack", "resource_pack_send", "code_of_conduct"],
-    "play.toServer": ["custom_payload", "look", "entity_action", "player_input", "chat_session_update", "chat_command_signed", "keep_alive", "pong", "teleport_confirm", "chunk_batch_received", "configuration_acknowledged", "client_command", "chat", "chat_message", "chat_command", "message_acknowledgement", "arm_animation", "player_loaded", "settings", "resource_pack_receive", "position_look", "cookie_response"],
+    "play.toServer": ["custom_payload", "look", "entity_action", "player_input", "chat_session_update", "chat_command_signed", "keep_alive", "pong", "teleport_confirm", "chunk_batch_received", "configuration_acknowledged", "client_command", "chat", "chat_message", "chat_command", "message_acknowledgement", "arm_animation", "player_loaded", "settings", "resource_pack_receive", "position_look", "cookie_response", "tick_end"],
     "play.toClient": ["login", "respawn", "transfer", "store_cookie", "keep_alive", "ping", "kick_disconnect", "position", "chunk_batch_finished", "start_configuration", "update_health", "chat", "system_chat", "player_chat", "profileless_chat", "resource_pack_send", "add_resource_pack", "cookie_request", "set_compression"],
 }
 

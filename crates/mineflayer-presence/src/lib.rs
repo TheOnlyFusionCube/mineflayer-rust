@@ -13,6 +13,8 @@ pub mod session;
 pub mod table;
 pub mod text;
 
-pub use session::{Auth, AuthServers, Command, End, Event, Handle, Options, Status, ping, spawn};
+pub use session::{
+    Auth, AuthServers, ChatKind, ChatLine, ClientInfo, Command, End, Event, Handle, Options, PackPolicy, Status, ping, spawn,
+};
 pub use proxy::{Proxy, ProxyKind};
 pub use table::{Dialect, dialect, dialects};

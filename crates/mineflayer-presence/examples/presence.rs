@@ -59,15 +59,8 @@ async fn main() {
                 servers: AuthServers::yggdrasil(root),
             },
         };
-        let (handle, events) = spawn(Options {
-            host: a[1].clone(),
-            port,
-            username,
-            auth,
-            proxy: proxy.clone(),
-            protocol: Some(protocol),
-            view_distance: 2,
-        });
+        let (handle, events) =
+            spawn(Options { auth, proxy: proxy.clone(), protocol: Some(protocol), ..Options::new(a[1].clone(), port, username) });
         let status = handle.status();
         bots.push((handle, events, status));
         tokio::time::sleep(Duration::from_millis(100)).await;

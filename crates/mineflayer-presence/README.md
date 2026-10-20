@@ -11,13 +11,8 @@ use mineflayer_presence::{Auth, Command, Options, Status, spawn};
 
 # async fn demo() {
 let (handle, mut chat) = spawn(Options {
-    host: "play.example.net".into(),
-    port: 25565,
-    username: "afkbot".into(),
     auth: Auth::Offline,
-    proxy: None,
-    protocol: None, // ask the server
-    view_distance: 2,
+    ..Options::new("play.example.net", 25565, "afkbot")
 });
 let mut status = handle.status();
 while status.changed().await.is_ok() {

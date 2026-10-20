@@ -14,7 +14,12 @@
 //! channel and chat through a bounded queue that drops when full, so an owner
 //! that stops reading never stalls the connection.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
+    net::SocketAddr,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use mineflayer_auth::{
     certs::{Certificates, fetch_certificates_from},
@@ -54,6 +59,80 @@ pub struct Options {
     /// The protocol to speak; `None` asks the server first ([`ping`]).
     pub protocol: Option<i32>,
     pub view_distance: u8,
+    /// Connect here instead of resolving `host` (the handshake still names
+    /// `host`), for an owner that vets and pins the address itself.
+    pub address: Option<SocketAddr>,
+    pub client: ClientInfo,
+    pub resource_packs: PackPolicy,
+    /// `false` ends the session with [`End::Transfer`] when the server
+    /// transfers the player, so the owner can vet the target first.
+    pub follow_transfers: bool,
+    /// From 1.19 (protocol 759) drop public chat the session cannot sign,
+    /// reporting it as an [`Event::Notice`]: unsigned chat from an online
+    /// account is a detection signal on servers that verify signatures.
+    pub signed_chat_only: bool,
+}
+
+impl Options {
+    /// An offline session with the defaults: ask the server its protocol,
+    /// view distance 2, load resource packs, follow transfers.
+    pub fn new(host: impl Into<String>, port: u16, username: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            port,
+            username: username.into(),
+            auth: Auth::Offline,
+            proxy: None,
+            protocol: None,
+            view_distance: 2,
+            address: None,
+            client: ClientInfo::default(),
+            resource_packs: PackPolicy::Load,
+            follow_transfers: true,
+            signed_chat_only: false,
+        }
+    }
+}
+
+/// What the client tells the server about itself: its settings and brand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientInfo {
+    pub locale: String,
+    /// 0 full chat, 1 system messages only, 2 hidden.
+    pub chat_mode: u8,
+    pub chat_colors: bool,
+    /// The displayed skin layers, one bit each (vanilla's order).
+    pub skin_parts: u8,
+    pub right_handed: bool,
+    pub text_filtering: bool,
+    pub server_listing: bool,
+    /// 0 all, 1 decreased, 2 minimal.
+    pub particles: u8,
+    pub brand: String,
+}
+
+impl Default for ClientInfo {
+    fn default() -> Self {
+        Self {
+            locale: "en_us".into(),
+            chat_mode: 0,
+            chat_colors: true,
+            skin_parts: 0,
+            right_handed: true,
+            text_filtering: false,
+            server_listing: true,
+            particles: 2,
+            brand: "vanilla".into(),
+        }
+    }
+}
+
+/// What a session answers to a resource pack: report it loaded without
+/// downloading it, or decline it as a client without packs would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackPolicy {
+    Load,
+    Decline,
 }
 
 pub enum Auth {
@@ -110,12 +189,29 @@ pub enum Status {
     Ended(End),
 }
 
+/// Events are dropped when the receiver lags rather than stalling the
+/// connection.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
-    /// A chat or system message, as plain text. Dropped when the receiver
-    /// lags rather than stalling the connection.
-    Chat(String),
+    Chat(ChatLine),
     Health(f32),
+    /// Something the session chose not to do, as plain text.
+    Notice(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatLine {
+    pub kind: ChatKind,
+    /// The sender's display name; empty when the server sends a whole line.
+    pub sender: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatKind {
+    Player,
+    System,
+    ActionBar,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +220,9 @@ pub enum End {
     Failed(String),
     /// The handle asked to quit, or every handle was dropped.
     Quit,
+    /// The server transferred the player and the session was told not to
+    /// follow transfers ([`Options::follow_transfers`]).
+    Transfer { host: String, port: u16 },
 }
 
 #[derive(Debug)]
@@ -236,7 +335,12 @@ fn handshake(protocol: i32, host: &str, port: u16, next_state: i32) -> Vec<u8> {
 /// Ask the server which protocol it speaks (the server list ping).
 pub async fn ping(host: &str, port: u16, proxy: Option<&Proxy>) -> Result<i32, Error> {
     let addr = ResolvedAddr::new(ServerAddr { host: host.to_owned(), port }).await?;
-    let (mut r, mut w) = open(&addr, proxy).await?;
+    ping_at(&addr, proxy).await
+}
+
+async fn ping_at(addr: &ResolvedAddr, proxy: Option<&Proxy>) -> Result<i32, Error> {
+    let (host, port) = (addr.server.host.as_str(), addr.server.port);
+    let (mut r, mut w) = open(addr, proxy).await?;
     write(&mut w, &handshake(-1, host, port, 1)).await?;
     write(&mut w, &[0]).await?;
     let raw = timeout(READ_TIMEOUT, r.read()).await.map_err(|_| Error::Timeout("status"))??;
@@ -262,11 +366,11 @@ fn bytes(v: &Value, name: &str) -> Vec<u8> {
 
 /// The client brand plugin message the vanilla client sends on join; some
 /// proxies and anti-bot plugins kick a client that never sends one.
-fn brand(d: &Dialect) -> Value {
+fn brand(d: &Dialect, brand: &str) -> Value {
     let channel = if d.protocol <= 340 { "MC|Brand" } else { "minecraft:brand" };
     let mut data = Vec::new();
-    protodef::write_varint(&mut data, 7);
-    data.extend(b"vanilla");
+    protodef::write_varint(&mut data, brand.len() as i32);
+    data.extend(brand.as_bytes());
     Value::Map(vec![("channel".into(), Value::Str(channel.into())), ("data".into(), Value::Bytes(data))])
 }
 
@@ -284,23 +388,33 @@ fn chat_text(text: &str, limit: usize) -> String {
         .collect()
 }
 
-fn settings(view_distance: u8) -> Value {
+fn settings(view_distance: u8, c: &ClientInfo) -> Value {
+    const PARTICLES: [&str; 3] = ["all", "decreased", "minimal"];
     fields! {
-        "locale" => "en_us",
+        "locale" => c.locale.as_str(),
         "viewDistance" => i64::from(view_distance),
-        "chatFlags" => 0i64,
-        "chatColors" => true,
-        "skinParts" => 0i64,
-        "mainHand" => 1i64,
-        "enableTextFiltering" => false,
-        "enableServerListing" => true,
-        "particleStatus" => "minimal",
+        "chatFlags" => i64::from(c.chat_mode),
+        "chatColors" => c.chat_colors,
+        "skinParts" => i64::from(c.skin_parts),
+        "mainHand" => i64::from(c.right_handed),
+        "enableTextFiltering" => c.text_filtering,
+        "disableTextFiltering" => !c.text_filtering,
+        "enableServerListing" => c.server_listing,
+        "particleStatus" => PARTICLES[usize::from(c.particles.min(2))],
     }
+}
+
+/// A random delay in `lo..=hi` milliseconds: the time a person's client
+/// would take, where the vanilla client's own answer is not instant either.
+fn human_delay(lo: u64, hi: u64) -> Duration {
+    Duration::from_millis(lo + signing::make_salt() % (hi - lo + 1))
 }
 
 /// A server may move the player on with a transfer (1.20.5+); a chain of
 /// transfers that never reaches the world ends the session.
 const MAX_TRANSFERS_WITHOUT_JOIN: u32 = 5;
+/// 20 ticks: the vanilla client sends its position at least this often while it moves or turns.
+const POSITION_REMINDER: Duration = Duration::from_secs(1);
 
 /// Cookies a server stored with store_cookie, offered back to the next server
 /// after a transfer. Vanilla caps a cookie at 5 KiB.
@@ -400,9 +514,13 @@ async fn run(
     events: &mpsc::Sender<Event>,
     status: &watch::Sender<Status>,
 ) -> Result<End, Error> {
-    let protocol = match opts.protocol {
-        Some(p) => p,
-        None => ping(&opts.host, opts.port, opts.proxy.as_ref()).await?,
+    let protocol = match (opts.protocol, opts.address) {
+        (Some(p), _) => p,
+        (None, Some(socket)) => {
+            ping_at(&ResolvedAddr { server: ServerAddr { host: opts.host.clone(), port: opts.port }, socket }, opts.proxy.as_ref())
+                .await?
+        }
+        (None, None) => ping(&opts.host, opts.port, opts.proxy.as_ref()).await?,
     };
     let d = table::dialect(protocol).ok_or(Error::Unsupported(protocol))?;
     let mut target = ServerAddr { host: opts.host.clone(), port: opts.port };
@@ -416,6 +534,7 @@ async fn run(
             connection(d, &opts, &target, transferred, &mut cookies, &mut certs, &mut cmd_rx, events, status, &mut joined).await?;
         match next {
             Next::End(end) => return Ok(end),
+            Next::Transfer { host, port } if !opts.follow_transfers => return Ok(End::Transfer { host, port }),
             Next::Transfer { host, port } => {
                 transfers_without_join = if joined { 1 } else { transfers_without_join + 1 };
                 if transfers_without_join > MAX_TRANSFERS_WITHOUT_JOIN {
@@ -442,7 +561,10 @@ async fn connection(
     status: &watch::Sender<Status>,
     joined: &mut bool,
 ) -> Result<Next, Error> {
-    let addr = ResolvedAddr::new(target.clone()).await?;
+    let addr = match opts.address {
+        Some(socket) if !transferred => ResolvedAddr { server: target.clone(), socket },
+        _ => ResolvedAddr::new(target.clone()).await?,
+    };
     let (mut r, mut w) = open(&addr, opts.proxy.as_ref()).await?;
     let join_deadline = Instant::now() + JOIN_TIMEOUT;
 
@@ -457,6 +579,13 @@ async fn connection(
         w,
         state,
         view_distance: opts.view_distance,
+        client: opts.client.clone(),
+        resource_packs: opts.resource_packs,
+        signed_chat_only: opts.signed_chat_only,
+        delayed: BinaryHeap::new(),
+        delayed_seq: 0,
+        last_keepalive: Instant::now(),
+        respawn_pending: false,
         online: false,
         unacked: 0,
         settings_sent: false,
@@ -464,6 +593,8 @@ async fn connection(
         position: None,
         entity_id: 0,
         on_ground: true,
+        position_sent: Instant::now(),
+        ticks_since_position: 0,
         signer: None,
         session_sent: false,
     };
@@ -482,8 +613,8 @@ async fn connection(
         _ => None,
     };
     if s.state == State::Configuration {
-        s.send(State::Configuration, "custom_payload", &brand(d)).await?;
-        s.send(State::Configuration, "settings", &settings(s.view_distance)).await?;
+        s.send(State::Configuration, "custom_payload", &brand(d, &s.client.brand)).await?;
+        s.send(State::Configuration, "settings", &settings(s.view_distance, &s.client)).await?;
         s.settings_sent = true;
     }
 
@@ -495,8 +626,12 @@ async fn connection(
         if Instant::now() >= deadline {
             break Err(Error::Timeout(if s.online { "read" } else { "join" }));
         }
+        let next_due = s.delayed.peek().map(|Reverse((due, _, _))| *due);
         tokio::select! {
             biased;
+            () = tokio::time::sleep_until(next_due.unwrap_or(deadline)), if next_due.is_some() => {
+                s.send_due(false).await?;
+            },
             fetched = async { fetch.as_mut().expect("guarded").await }, if fetch.is_some() => {
                 fetch = None;
                 match fetched {
@@ -513,7 +648,7 @@ async fn connection(
             },
             cmd = cmd_rx.recv() => match cmd {
                 None | Some(Command::Quit) => break Ok(Next::End(End::Quit)),
-                Some(c) => s.command(c).await?,
+                Some(c) => s.command(c, events).await?,
             },
             frame = frames.recv() => match frame {
                 Some(Ok(raw)) => {
@@ -652,6 +787,16 @@ struct Session {
     w: RawWriteConnection,
     state: State,
     view_distance: u8,
+    client: ClientInfo,
+    resource_packs: PackPolicy,
+    signed_chat_only: bool,
+    /// Packets that go out after a human delay, by due time then order.
+    delayed: BinaryHeap<Reverse<(Instant, u64, Vec<u8>)>>,
+    delayed_seq: u64,
+    /// When the last keepalive reply is due: replies must reach the server
+    /// in the order the requests came, or it kicks the client.
+    last_keepalive: Instant,
+    respawn_pending: bool,
     online: bool,
     /// Signed player messages seen since the last acknowledgement.
     unacked: i64,
@@ -667,6 +812,11 @@ struct Session {
     /// The player's entity id, from the play login packet.
     entity_id: i32,
     on_ground: bool,
+    /// When a movement packet with the position last went out, and the ticks
+    /// closed since: like the vanilla client's position reminder, a turn 20
+    /// ticks after it, idle or not, carries the position too.
+    position_sent: Instant,
+    ticks_since_position: u32,
     signer: Option<Signer>,
     /// chat_session_update went out on this connection.
     session_sent: bool,
@@ -678,43 +828,101 @@ impl Session {
         write(&mut self.w, &packet).await
     }
 
-    async fn command(&mut self, c: Command) -> Result<(), Error> {
+    fn send_later(&mut self, due: Instant, state: State, name: &str, v: &Value) -> Result<(), Error> {
+        let packet = self.d.encode(state, name, v)?;
+        self.delayed_seq += 1;
+        self.delayed.push(Reverse((due, self.delayed_seq, packet)));
+        Ok(())
+    }
+
+    /// Send the delayed packets that are due, or with `all` every one of
+    /// them, as before a change of state that would make them invalid.
+    async fn send_due(&mut self, all: bool) -> Result<(), Error> {
+        let now = Instant::now();
+        while let Some(Reverse((due, _, _))) = self.delayed.peek() {
+            if !all && *due > now {
+                break;
+            }
+            let Some(Reverse((_, _, packet))) = self.delayed.pop() else { break };
+            write(&mut self.w, &packet).await?;
+        }
+        Ok(())
+    }
+
+    async fn command(&mut self, c: Command, events: &mpsc::Sender<Event>) -> Result<(), Error> {
         if self.state != State::Play || !self.online {
             return Ok(());
         }
         match c {
-            Command::Chat(text) => self.chat(&text).await,
+            Command::Chat(text) => self.chat(&text, events).await?,
             Command::Swing => {
                 if self.d.has(State::Play, "punch") {
-                    return self.send(State::Play, "punch", &Value::Map(vec![])).await;
+                    self.send(State::Play, "punch", &Value::Map(vec![])).await?;
+                } else {
+                    let v = fields! { "hand" => 0i64, "entityId" => self.entity_id, "animation" => 1i64 };
+                    self.send(State::Play, "arm_animation", &v).await?;
                 }
-                let v = fields! { "hand" => 0i64, "entityId" => self.entity_id, "animation" => 1i64 };
-                self.send(State::Play, "arm_animation", &v).await
             }
             Command::Rotate { yaw, pitch } => {
+                // the vanilla client never wraps yaw into 0..360, and a
+                // wrapped turn is a jump of nearly a full circle
                 let at = self.position.get_or_insert([0.0; 5]);
-                at[3] = (at[3] + f64::from(yaw)).rem_euclid(360.0);
+                at[3] += f64::from(yaw);
                 at[4] = (at[4] + f64::from(pitch)).clamp(-90.0, 90.0);
-                let v = fields! {
-                    "yaw" => at[3], "pitch" => at[4], "onGround" => self.on_ground, "flags" => i64::from(self.on_ground),
-                };
-                self.send(State::Play, "look", &v).await
+                if self.position_sent.elapsed() >= POSITION_REMINDER || self.ticks_since_position >= 20 {
+                    self.send_position(self.on_ground).await?;
+                } else {
+                    let at = *at;
+                    let v = fields! {
+                        "yaw" => at[3], "pitch" => at[4], "onGround" => self.on_ground, "flags" => i64::from(self.on_ground),
+                    };
+                    self.send(State::Play, "look", &v).await?;
+                }
             }
             Command::Sneak(down) => {
                 if self.d.has(State::Play, "player_input") {
                     const SHIFT: i64 = 1 << 5;
-                    self.send(State::Play, "player_input", &fields! { "inputs" => if down { SHIFT } else { 0 } }).await
+                    self.send(State::Play, "player_input", &fields! { "inputs" => if down { SHIFT } else { 0 } }).await?;
                 } else {
                     let action = if down { "start_sneaking" } else { "stop_sneaking" };
                     let v = fields! { "entityId" => self.entity_id, "actionId" => action, "jumpBoost" => 0i64 };
-                    self.send(State::Play, "entity_action", &v).await
+                    self.send(State::Play, "entity_action", &v).await?;
                 }
             }
-            Command::Quit => Ok(()),
+            Command::Quit => return Ok(()),
         }
+        self.end_tick().await
     }
 
-    async fn chat(&mut self, text: &str) -> Result<(), Error> {
+    /// The position and rotation, as the vanilla client sends them after a
+    /// teleport (with `on_ground` false) and as its position reminder.
+    async fn send_position(&mut self, on_ground: bool) -> Result<(), Error> {
+        let at = self.position.unwrap_or([0.0; 5]);
+        // 1.7 sends the eye height and wants both back: feet as y and eyes
+        // as stance (the server kicks for an "illegal stance" unless
+        // stance - y is within 0.1 to 1.65)
+        let (y, stance) = if self.d.protocol <= 5 { (at[1] - 1.62, at[1]) } else { (at[1], at[1] + 1.62) };
+        let v = fields! {
+            "x" => at[0], "y" => y, "stance" => stance, "z" => at[2], "yaw" => at[3], "pitch" => at[4],
+            "onGround" => on_ground, "flags" => i64::from(on_ground),
+        };
+        self.send(State::Play, "position_look", &v).await?;
+        self.position_sent = Instant::now();
+        self.ticks_since_position = 0;
+        Ok(())
+    }
+
+    /// From 1.21.2 the client closes every tick with tick_end, and Grim's
+    /// TickTimer flags movement packets that arrive without one between them.
+    async fn end_tick(&mut self) -> Result<(), Error> {
+        if self.state == State::Play && self.d.has(State::Play, "tick_end") {
+            self.send(State::Play, "tick_end", &Value::Map(vec![])).await?;
+        }
+        self.ticks_since_position += 1;
+        Ok(())
+    }
+
+    async fn chat(&mut self, text: &str, events: &mpsc::Sender<Event>) -> Result<(), Error> {
         if self.state != State::Play {
             return Ok(());
         }
@@ -760,6 +968,10 @@ impl Session {
             return self.send(State::Play, packet, &v).await;
         }
         if self.d.has(State::Play, "chat_message") {
+            if signer.is_none() && self.signed_chat_only {
+                let _ = events.try_send(Event::Notice(format!("suppressed unsigned chat: {text}")));
+                return Ok(());
+            }
             let signature = signer.map_or(Value::None, |signer| Value::Bytes(signer.sign(&text, salt, now)));
             let v = Value::Map(vec![
                 ("message".into(), Value::Str(text)),
@@ -791,8 +1003,8 @@ impl Session {
                     // metadata for the player's entity, needs the join first.
                     if !self.settings_sent {
                         self.settings_sent = true;
-                        self.send(State::Play, "custom_payload", &brand(self.d)).await?;
-                        self.send(State::Play, "settings", &settings(self.view_distance)).await?;
+                        self.send(State::Play, "custom_payload", &brand(self.d, &self.client.brand)).await?;
+                        self.send(State::Play, "settings", &settings(self.view_distance, &self.client)).await?;
                     }
                     return Ok(None);
                 }
@@ -812,6 +1024,13 @@ impl Session {
             return Ok(None);
         };
         match (state, name) {
+            (State::Play, "keep_alive") => {
+                // vanilla's reply rides its next frame, tens of ms after the
+                // request; an instant one is a clean machine signature
+                let due = (Instant::now() + human_delay(50, 200)).max(self.last_keepalive);
+                self.last_keepalive = due;
+                self.send_later(due, state, "keep_alive", &v)?;
+            }
             (_, "keep_alive") => self.send(state, "keep_alive", &v).await?,
             (_, "ping") => self.send(state, "pong", &v).await?,
             (_, "disconnect" | "kick_disconnect") => {
@@ -831,14 +1050,17 @@ impl Session {
                 }
             }
             (_, "add_resource_pack" | "resource_pack_send") => {
-                // Report every pack loaded without downloading it. A server
-                // that requires a pack kicks a client that declines, and
-                // before 1.17 the packet cannot say the pack is required
-                // (a plugin or a ViaVersion-translated server enforces it).
+                // With PackPolicy::Load, report every pack loaded without
+                // downloading it. A server that requires a pack kicks a
+                // client that declines, and before 1.17 the packet cannot say
+                // the pack is required (a plugin or ViaVersion enforces it).
                 const LOADED: i64 = 0;
+                const DECLINED: i64 = 1;
                 const ACCEPTED: i64 = 3;
                 const DOWNLOADED: i64 = 4;
-                let results: &[i64] = if self.d.protocol >= 765 {
+                let results: &[i64] = if self.resource_packs == PackPolicy::Decline {
+                    &[DECLINED]
+                } else if self.d.protocol >= 765 {
                     &[ACCEPTED, DOWNLOADED, LOADED]
                 } else {
                     &[ACCEPTED, LOADED]
@@ -854,7 +1076,19 @@ impl Session {
                 }
             }
             (_, "cookie_request") => self.send(state, "cookie_response", &cookies.response(&v)).await?,
-            (State::Configuration, "select_known_packs") => self.send(state, "select_known_packs", &v).await?,
+            (State::Configuration, "select_known_packs") => {
+                // the vanilla client knows exactly the vanilla packs of its
+                // version, so it answers with those and never a mod's
+                let vanilla: Vec<Value> = match v.get("packs") {
+                    Some(Value::List(packs)) => packs
+                        .iter()
+                        .filter(|p| matches!(p.get("namespace"), Some(Value::Str(ns)) if ns == "minecraft"))
+                        .cloned()
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                self.send(state, "select_known_packs", &Value::Map(vec![("packs".into(), Value::List(vanilla))])).await?;
+            }
             (State::Configuration, "code_of_conduct") => self.send(state, "accept_code_of_conduct", &Value::Map(vec![])).await?,
             (State::Configuration, "finish_configuration") => {
                 self.send(state, "finish_configuration", &Value::Map(vec![])).await?;
@@ -862,9 +1096,12 @@ impl Session {
                 self.loaded_pending = true;
             }
             (State::Play, "start_configuration") => {
+                // a delayed play packet sent after the ack would be read as
+                // a configuration packet
+                self.send_due(true).await?;
                 self.send(state, "configuration_acknowledged", &Value::Map(vec![])).await?;
                 self.state = State::Configuration;
-                self.send(State::Configuration, "settings", &settings(self.view_distance)).await?;
+                self.send(State::Configuration, "settings", &settings(self.view_distance, &self.client)).await?;
             }
             (State::Play, "position") => {
                 let at = self.teleport(&v);
@@ -875,23 +1112,17 @@ impl Session {
                         "teleportId" => id, "x" => at[0], "y" => at[1], "z" => at[2], "yaw" => at[3], "pitch" => at[4],
                     };
                     self.send(state, "teleport_confirm", &v).await?;
-                } else {
-                    // 1.7 sends the eye height and wants both back: feet as
-                    // y and eyes as stance (the server kicks for an "illegal
-                    // stance" unless stance - y is within 0.1 to 1.65)
-                    let (y, stance) = if self.d.protocol <= 5 { (at[1] - 1.62, at[1]) } else { (at[1], at[1] + 1.62) };
-                    let echo = fields! {
-                        "x" => at[0], "y" => y, "stance" => stance, "z" => at[2], "yaw" => at[3], "pitch" => at[4],
-                        "onGround" => false,
-                    };
-                    self.send(state, "position_look", &echo).await?;
                 }
+                // every release echoes the position it was moved to, not on
+                // the ground
+                self.send_position(false).await?;
                 if self.loaded_pending {
                     self.loaded_pending = false;
                     if self.d.has(state, "player_loaded") {
                         self.send(state, "player_loaded", &Value::Map(vec![])).await?;
                     }
                 }
+                self.end_tick().await?;
                 self.online = true;
             }
             (State::Play, "chunk_batch_finished") => {
@@ -900,23 +1131,31 @@ impl Session {
             (State::Play, "update_health") => {
                 let health = v.float("health").unwrap_or(20.0) as f32;
                 let _ = events.try_send(Event::Health(health));
-                if health <= 0.0 {
+                if health > 0.0 {
+                    self.respawn_pending = false;
+                } else if !self.respawn_pending {
+                    // a person reads the death screen before clicking respawn
+                    self.respawn_pending = true;
                     let respawn = fields! { "actionId" => "perform_respawn", "payload" => "perform_respawn" };
-                    self.send(state, "client_command", &respawn).await?;
+                    self.send_later(Instant::now() + human_delay(400, 900), state, "client_command", &respawn)?;
                     self.loaded_pending = true;
                 }
             }
             (State::Play, "chat") => {
-                // position 2 is the action bar
-                if v.int("position") != Some(2) {
-                    let _ = events.try_send(Event::Chat(v.get("message").map(text::plain).unwrap_or_default()));
-                }
+                // position: 0 chat, 1 system, 2 action bar
+                let kind = match v.int("position") {
+                    Some(1) => ChatKind::System,
+                    Some(2) => ChatKind::ActionBar,
+                    _ => ChatKind::Player,
+                };
+                let text = v.get("message").map(text::plain).unwrap_or_default();
+                let _ = events.try_send(Event::Chat(ChatLine { kind, sender: String::new(), text }));
             }
             (State::Play, "system_chat") => {
                 let action_bar = v.get("isActionBar") == Some(&Value::Bool(true)) || v.int("type") == Some(2);
-                if !action_bar {
-                    let _ = events.try_send(Event::Chat(v.get("content").map(text::plain).unwrap_or_default()));
-                }
+                let kind = if action_bar { ChatKind::ActionBar } else { ChatKind::System };
+                let text = v.get("content").map(text::plain).unwrap_or_default();
+                let _ = events.try_send(Event::Chat(ChatLine { kind, sender: String::new(), text }));
             }
             (State::Play, "player_chat") => {
                 let body = match v.get("unsignedChatContent") {
@@ -927,13 +1166,13 @@ impl Session {
                         .unwrap_or_default(),
                 };
                 let sender = ["networkName", "senderName"].iter().find_map(|k| v.get(k).map(text::plain)).unwrap_or_default();
-                let _ = events.try_send(Event::Chat(format!("<{sender}> {body}")));
+                let _ = events.try_send(Event::Chat(ChatLine { kind: ChatKind::Player, sender, text: body }));
                 self.acknowledge(&v).await?;
             }
             (State::Play, "profileless_chat") => {
                 let sender = v.get("name").map(text::plain).unwrap_or_default();
-                let body = v.get("message").map(text::plain).unwrap_or_default();
-                let _ = events.try_send(Event::Chat(format!("<{sender}> {body}")));
+                let text = v.get("message").map(text::plain).unwrap_or_default();
+                let _ = events.try_send(Event::Chat(ChatLine { kind: ChatKind::Player, sender, text }));
             }
             (State::Play, "set_compression") => {
                 self.w.compression_threshold = u32::try_from(v.int("threshold").unwrap_or(-1)).ok();
