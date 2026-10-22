@@ -97,7 +97,8 @@ fn options(v: &Value) -> Result<Options, String> {
         Some("decline") => PackPolicy::Decline,
         _ => PackPolicy::Load,
     };
-    o.follow_transfers = v["followTransfers"].as_bool().unwrap_or(true);
+    // fail closed: an owner that leaves it out vets transfer targets itself
+    o.follow_transfers = v["followTransfers"].as_bool().unwrap_or(false);
     o.signed_chat_only = v["signedChatOnly"].as_bool().unwrap_or(false);
     Ok(o)
 }

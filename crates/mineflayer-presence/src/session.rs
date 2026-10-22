@@ -98,7 +98,11 @@ impl Options {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClientInfo {
     pub locale: String,
-    /// 0 full chat, 1 system messages only, 2 hidden.
+    /// 0 full chat, 1 system messages only, 2 hidden. The session does not
+    /// track last-seen messages, so on 1.19.3+ a signed message it sends after
+    /// receiving signed chat carries an empty acknowledgement set (and no
+    /// checksum from 1.21.5); with chat mode 1, as Phantom's runner uses, no
+    /// signed chat arrives and the set is correctly empty.
     pub chat_mode: u8,
     pub chat_colors: bool,
     /// The displayed skin layers, one bit each (vanilla's order).
@@ -426,7 +430,8 @@ impl Cookies {
     const MAX_COUNT: usize = 32;
 
     fn store(&mut self, key: String, value: Vec<u8>) {
-        if value.len() > Self::MAX_LEN {
+        // the key counts too: a server could otherwise pin megabytes per cookie
+        if key.len() + value.len() > Self::MAX_LEN {
             return;
         }
         self.0.retain(|(k, _)| *k != key);
@@ -534,7 +539,11 @@ async fn run(
             connection(d, &opts, &target, transferred, &mut cookies, &mut certs, &mut cmd_rx, events, status, &mut joined).await?;
         match next {
             Next::End(end) => return Ok(end),
-            Next::Transfer { host, port } if !opts.follow_transfers => return Ok(End::Transfer { host, port }),
+            // A pinned address means the owner vets every destination; a
+            // transfer target is one it has not seen, so it goes back to them.
+            Next::Transfer { host, port } if !opts.follow_transfers || opts.address.is_some() => {
+                return Ok(End::Transfer { host, port });
+            }
             Next::Transfer { host, port } => {
                 transfers_without_join = if joined { 1 } else { transfers_without_join + 1 };
                 if transfers_without_join > MAX_TRANSFERS_WITHOUT_JOIN {
@@ -544,6 +553,17 @@ async fn run(
                 target = ServerAddr { host, port };
                 transferred = true;
             }
+        }
+    }
+}
+
+/// Resolves once the owner asks to quit or drops every handle. Commands
+/// before then are dropped: nothing can be said or done before play.
+async fn quit_requested(cmd_rx: &mut mpsc::Receiver<Command>) {
+    loop {
+        match cmd_rx.recv().await {
+            None | Some(Command::Quit) => return,
+            Some(_) => {}
         }
     }
 }
@@ -565,15 +585,25 @@ async fn connection(
         Some(socket) if !transferred => ResolvedAddr { server: target.clone(), socket },
         _ => ResolvedAddr::new(target.clone()).await?,
     };
-    let (mut r, mut w) = open(&addr, opts.proxy.as_ref()).await?;
-    let join_deadline = Instant::now() + JOIN_TIMEOUT;
-
-    let state = timeout_at(join_deadline, login(d, opts, target, transferred, cookies, &mut r, &mut w))
-        .await
-        .map_err(|_| Error::Timeout("join"))??;
+    let joining = async {
+        let (mut r, mut w) = open(&addr, opts.proxy.as_ref()).await?;
+        let join_deadline = Instant::now() + JOIN_TIMEOUT;
+        let state = timeout_at(join_deadline, login(d, opts, target, transferred, cookies, &mut r, &mut w))
+            .await
+            .map_err(|_| Error::Timeout("join"))??;
+        Ok::<_, Error>((r, w, state, join_deadline))
+    };
+    // a quit while joining drops the socket before the login is acknowledged,
+    // so a cancelled connect never shows up on the server
+    let (r, w, state, join_deadline) = tokio::select! {
+        joined = joining => joined?,
+        () = quit_requested(cmd_rx) => return Ok(Next::End(End::Quit)),
+    };
 
     let (frame_tx, mut frames) = mpsc::channel::<Result<Box<[u8]>, String>>(16);
     let reader = tokio::spawn(read_frames(d, r, frame_tx));
+    // every way out of this function, `?` included, stops the reader
+    let _reader = AbortOnDrop(reader.abort_handle());
     let mut s = Session {
         d,
         w,
@@ -612,6 +642,7 @@ async fn connection(
         }
         _ => None,
     };
+    let _fetch = fetch.as_ref().map(|f| AbortOnDrop(f.abort_handle()));
     if s.state == State::Configuration {
         s.send(State::Configuration, "custom_payload", &brand(d, &s.client.brand)).await?;
         s.send(State::Configuration, "settings", &settings(s.view_distance, &s.client)).await?;
@@ -619,7 +650,7 @@ async fn connection(
     }
 
     let mut last_frame = Instant::now();
-    let result = loop {
+    loop {
         let deadline = if s.online { last_frame + READ_TIMEOUT } else { join_deadline.min(last_frame + READ_TIMEOUT) };
         // checked here as well as in the select: a server that always has a
         // frame ready would otherwise starve the timer branch
@@ -670,9 +701,16 @@ async fn connection(
                 break Err(Error::Timeout(if s.online { "read" } else { "join" }));
             }
         }
-    };
-    reader.abort();
-    result
+    }
+}
+
+/// Aborts a spawned task when dropped, so it cannot outlive its connection.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 async fn login(
@@ -958,6 +996,11 @@ impl Session {
             } else {
                 "chat_command"
             };
+            // from 766 the unsigned chat_command has no messageCount: the
+            // count stays pending for the next packet that can carry it
+            if packet == "chat_command" && self.d.protocol >= 766 {
+                self.unacked += offset;
+            }
             let v = Value::Map(vec![
                 ("command".into(), Value::Str(command.into())),
                 ("timestamp".into(), Value::Int(timestamp)),
@@ -969,6 +1012,7 @@ impl Session {
         }
         if self.d.has(State::Play, "chat_message") {
             if signer.is_none() && self.signed_chat_only {
+                self.unacked += offset;
                 let _ = events.try_send(Event::Notice(format!("suppressed unsigned chat: {text}")));
                 return Ok(());
             }
@@ -1251,6 +1295,9 @@ mod tests {
         assert_eq!(c.response(&ask("a:b")).get("value"), Some(&Value::Bytes(vec![4])));
         assert_eq!(c.response(&ask("big")).get("value"), Some(&Value::None));
         assert_eq!(c.response(&ask("none")).get("value"), Some(&Value::None));
+        // the key counts toward the cap: a huge key with an empty value is refused
+        c.store("k".repeat(6 * 1024), Vec::new());
+        assert_eq!(c.response(&ask(&"k".repeat(6 * 1024))).get("value"), Some(&Value::None));
     }
 
     #[test]
@@ -1259,5 +1306,28 @@ mod tests {
         assert_eq!(chat_text(&"x".repeat(300), 256).len(), 256);
         // each emoji is two UTF-16 units
         assert_eq!(chat_text(&"\u{1f600}".repeat(200), 256).chars().count(), 128);
+    }
+
+    #[tokio::test]
+    async fn a_quit_while_joining_closes_the_socket_without_waiting_for_the_server() {
+        use super::{Command, End, Options, Status, spawn};
+        use tokio::io::AsyncReadExt;
+        use tokio::time::{Duration, timeout};
+
+        // a server that takes the handshake and then never answers
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut opts = Options::new("stalled.example", 25565, "Bob");
+        opts.protocol = Some(47);
+        opts.address = Some(listener.local_addr().unwrap());
+        let (handle, _events) = spawn(opts);
+        let (mut socket, _) = listener.accept().await.unwrap();
+
+        assert!(handle.send(Command::Quit).await);
+        let mut status = handle.status();
+        let ended = timeout(Duration::from_secs(2), status.wait_for(|s| matches!(s, Status::Ended(_)))).await;
+        assert_eq!(*ended.expect("quit is seen during login").unwrap(), Status::Ended(End::Quit));
+        let mut rest = Vec::new();
+        let closed = timeout(Duration::from_secs(2), socket.read_to_end(&mut rest)).await;
+        assert!(closed.is_ok(), "the client closed its socket");
     }
 }
